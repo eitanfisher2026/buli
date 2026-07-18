@@ -173,14 +173,18 @@
 
       return (
         <div className="fixed inset-0 bg-black/40 z-40 flex items-end" onClick={onClose}>
-          <div className="relative bg-white w-full max-w-md mx-auto rounded-t-3xl p-6 pb-8"
-            style={{ transform: "translateY(" + dragY + "px)", transition: dragY === 0 ? "transform 0.2s ease" : "none" }}
+          <div className="relative bg-white w-full max-w-md mx-auto rounded-t-3xl flex flex-col"
+            style={{ transform: "translateY(" + dragY + "px)", transition: dragY === 0 ? "transform 0.2s ease" : "none", maxHeight: "88dvh" }}
             onClick={e => e.stopPropagation()}>
-            <div ref={handleRef}
-              onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={onPointerUp}
-              className="w-10 h-1.5 bg-gray-200 rounded-full mx-auto mb-4 cursor-grab active:cursor-grabbing touch-none" />
-            <button onClick={onClose} className="absolute top-4 left-4 text-gray-400 hover:text-gray-600 text-2xl leading-none w-8 h-8 flex items-center justify-center">×</button>
-            {children}
+            <div className="relative flex-shrink-0 px-6 pt-6">
+              <div ref={handleRef}
+                onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={onPointerUp}
+                className="w-10 h-1.5 bg-gray-200 rounded-full mx-auto mb-4 cursor-grab active:cursor-grabbing touch-none" />
+              <button onClick={onClose} className="absolute top-4 left-4 text-gray-400 hover:text-gray-600 text-2xl leading-none w-8 h-8 flex items-center justify-center">×</button>
+            </div>
+            <div className="overflow-y-auto px-6 pb-8">
+              {children}
+            </div>
           </div>
         </div>
       );

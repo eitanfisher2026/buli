@@ -1,6 +1,6 @@
     const { useState, useEffect, useRef } = React;
 
-    const VERSION = "v5.11";
+    const VERSION = "v5.12";
 
     // ── CONFIG ────────────────────────────────────────────────────────────────────
     const FIREBASE_CONFIG = {
@@ -415,6 +415,12 @@
       const [aiModel,      setAiModel]      = useState(getAIModel("anthropic"));
       const [aiPrompt,     setAiPrompt]     = useState(DEFAULT_AI_PROMPT);
       const switchProvider = (p) => { setAiProvider(p); setAiModel(getAIModel(p)); };
+      const [promptOpen, setPromptOpen] = useState(false);
+      const API_KEY_LINKS = {
+        anthropic: "https://console.anthropic.com/settings/keys",
+        openai:    "https://platform.openai.com/api-keys",
+        gemini:    "https://aistudio.google.com/apikey"
+      };
 
       // ── Manage Users (admin only) ──────────────────────────────────────────────
       const [showUsers,   setShowUsers]   = useState(false);
@@ -990,19 +996,6 @@
                 <button onClick={function() { setShowSettings(false); onCategories(); }} className="w-full text-right px-3 py-3 text-sm text-gray-700 hover:bg-gray-50 rounded-xl flex items-center gap-3">
                   <span className="text-lg w-7 text-center">⚙️</span><span>קטגוריות וחנויות</span>
                 </button>
-                <button onClick={function() { setShowSettings(false); setShowAISettings(true); }} className="w-full text-right px-3 py-3 text-sm text-gray-700 hover:bg-gray-50 rounded-xl flex items-center gap-3">
-                  <span className="text-lg w-7 text-center">🤖</span>
-                  <span className="flex-1">הגדרות AI</span>
-                  <span className="text-xs text-gray-400">{AI_PROVIDERS[aiProvider].name}</span>
-                </button>
-                {isAdmin && (
-                  <button onClick={function() { setShowSettings(false); setShowUsers(true); loadAuthUsers(); }} className="w-full text-right px-3 py-3 text-sm text-gray-700 hover:bg-gray-50 rounded-xl flex items-center gap-3">
-                    <span className="text-lg w-7 text-center">🔑</span><span>ניהול משתמשים</span>
-                  </button>
-                )}
-                <button onClick={function() { setShowSettings(false); setShowCosts(true); loadCosts(); }} className="w-full text-right px-3 py-3 text-sm text-gray-700 hover:bg-gray-50 rounded-xl flex items-center gap-3">
-                  <span className="text-lg w-7 text-center">💰</span><span>עלויות AI</span>
-                </button>
                 <div className="px-3 py-2.5 flex items-center gap-3">
                   <span className="text-lg w-7 text-center">📝</span>
                   <span className="flex-1 text-sm text-gray-700">מילת מעבר בתפריטים</span>
@@ -1013,11 +1006,221 @@
                   }} dir="rtl" maxLength={20}
                     className="w-20 border border-gray-200 rounded-lg px-2 py-1 text-sm text-center focus:outline-none focus:border-blue-400 text-gray-700" />
                 </div>
-                <div className="border-t border-gray-100 my-1" />
-                <button onClick={function() { auth.signOut(); }} className="w-full text-right px-3 py-3 text-sm text-red-500 hover:bg-red-50 rounded-xl flex items-center gap-3">
-                  <span className="text-lg w-7 text-center">🚪</span><span>יציאה</span>
-                </button>
               </div>
+
+              {/* ── AI Provider ─────────────────────────────────────────────────── */}
+              <div className="mt-4">
+                <button onClick={function() { setShowAISettings(function(o) { return !o; }); }}
+                  className={"w-full flex items-center justify-between px-3 py-3 rounded-xl border transition " + (showAISettings ? "bg-white border-blue-200" : "bg-gray-50 border-transparent hover:bg-gray-100")}>
+                  <div className="flex items-center gap-3">
+                    <span className="text-lg w-7 text-center">🤖</span>
+                    <div className="text-right">
+                      <div className="text-sm font-semibold text-gray-700">הגדרות AI</div>
+                      <div className="text-xs text-gray-400">{AI_PROVIDERS[aiProvider].name}</div>
+                    </div>
+                  </div>
+                  <span className="text-gray-400 text-xs flex-shrink-0">{showAISettings ? "▲ הסתר" : "▼ הצג"}</span>
+                </button>
+                {showAISettings && (
+                  <div className="mt-2 bg-white border border-gray-100 rounded-2xl p-4">
+                    <p className="text-xs text-gray-500 mb-2 text-right">ספק AI</p>
+                    <div className="grid grid-cols-3 gap-2 mb-4">
+                      {Object.entries(AI_PROVIDERS).map(function(entry) {
+                        var id = entry[0], p = entry[1];
+                        var hasKey = !!(id === "openai" ? openaiKey : id === "gemini" ? geminiKey : anthropicKey);
+                        var active = aiProvider === id;
+                        return (
+                          <button key={id} onClick={function() { switchProvider(id); }}
+                            className={"py-2 rounded-xl text-sm font-medium border transition flex flex-col items-center gap-0.5 " + (active ? "bg-blue-600 text-white border-blue-600" : "bg-white text-gray-600 border-gray-200")}>
+                            <span className="font-semibold">{p.name} {hasKey ? "✓" : ""}</span>
+                            <span className={"text-xs " + (active ? "text-blue-100" : "text-gray-400")}>{p.label}{p.free ? " · חינם" : ""}</span>
+                          </button>
+                        );
+                      })}
+                    </div>
+
+                    {[["anthropic", "Anthropic API Key", anthropicKey, setAnthropicKey, "sk-ant-..."],
+                      ["openai", "OpenAI API Key", openaiKey, setOpenaiKey, "sk-..."],
+                      ["gemini", "Google AI Studio API Key", geminiKey, setGeminiKey, "AIza..."]]
+                      .filter(function(row) { return row[0] === aiProvider; })
+                      .map(function(row) {
+                        var id = row[0], label = row[1], val = row[2], setter = row[3], ph = row[4];
+                        return (
+                          <div key={id} className="mb-3">
+                            <div className="flex items-center justify-between mb-1">
+                              <a href={API_KEY_LINKS[id]} target="_blank" rel="noopener noreferrer"
+                                className="text-xs font-semibold text-blue-500 bg-blue-50 border border-blue-100 rounded-lg px-2 py-1 whitespace-nowrap">
+                                🔑 קבל מפתח API ↗
+                              </a>
+                              <p className="text-xs text-gray-500 text-right">{label}</p>
+                            </div>
+                            <input value={val} onChange={function(e) { setter(e.target.value); }} placeholder={ph} type="password" dir="ltr"
+                              className="w-full border border-gray-200 rounded-xl px-4 py-3 text-left focus:outline-none focus:border-blue-400 text-sm" />
+                          </div>
+                        );
+                      })}
+
+                    <div className="mb-4">
+                      <p className="text-xs text-gray-500 mb-1 text-right">מודל</p>
+                      <input value={aiModel} onChange={function(e) { setAiModel(e.target.value); }} dir="ltr"
+                        className="w-full border border-gray-200 rounded-xl px-4 py-3 text-left focus:outline-none focus:border-blue-400 text-sm font-mono" />
+                    </div>
+
+                    <button onClick={function() { setPromptOpen(function(o) { return !o; }); }}
+                      className="w-full flex items-center justify-between px-3 py-2 bg-gray-50 rounded-xl text-xs text-gray-500 mb-2">
+                      <span>{promptOpen ? "▲ הסתר" : "▼ הצג"}</span>
+                      <span>פרומפט מותאם אישית</span>
+                    </button>
+                    {promptOpen && (
+                      <div className="mb-4">
+                        <div className="flex items-center justify-between mb-1">
+                          <button onClick={function() { setAiPrompt(DEFAULT_AI_PROMPT); }} className="text-xs text-blue-500">אפס</button>
+                          <p className="text-xs text-gray-500">פרומפט ({"{categories}"} = רשימת קטגוריות, {"{text}"} = הטקסט)</p>
+                        </div>
+                        <textarea value={aiPrompt} onChange={function(e) { setAiPrompt(e.target.value); }} rows={8} dir="rtl"
+                          className="w-full border border-gray-200 rounded-xl p-3 text-xs font-mono resize-none focus:outline-none focus:border-blue-400" />
+                      </div>
+                    )}
+                    <button onClick={saveAISettings} className="w-full bg-blue-600 text-white py-3 rounded-2xl font-semibold">שמור</button>
+                  </div>
+                )}
+              </div>
+
+              {/* ── Manage Users (admin only) ───────────────────────────────────── */}
+              {isAdmin && (
+                <div className="mt-3">
+                  <button onClick={function() { setShowUsers(function(o) { if (!o) loadAuthUsers(); return !o; }); }}
+                    className={"w-full flex items-center justify-between px-3 py-3 rounded-xl border transition " + (showUsers ? "bg-white border-blue-200" : "bg-gray-50 border-transparent hover:bg-gray-100")}>
+                    <div className="flex items-center gap-3">
+                      <span className="text-lg w-7 text-center">🔑</span>
+                      <div className="text-right">
+                        <div className="text-sm font-semibold text-gray-700">ניהול משתמשים</div>
+                        <div className="text-xs text-gray-400">מי יכול להשתמש בבולי</div>
+                      </div>
+                    </div>
+                    <span className="text-gray-400 text-xs flex-shrink-0">{showUsers ? "▲ הסתר" : "▼ הצג"}</span>
+                  </button>
+                  {showUsers && (
+                    <div className="mt-2 bg-white border border-gray-100 rounded-2xl p-4">
+                      {usersLoading ? (
+                        <div className="flex justify-center py-6"><Spinner /></div>
+                      ) : (
+                        <div>
+                          <div className="flex items-center justify-between bg-gray-50 rounded-xl px-3 py-2 mb-2">
+                            <span className="text-sm text-gray-700">{ownerEmail}</span>
+                            <span className="text-xs font-bold text-green-500 uppercase">בעלים</span>
+                          </div>
+                          {authUsers.length === 0 ? (
+                            <p className="text-xs text-gray-400 px-3 py-2 mb-2">אין עדיין משתמשים נוספים</p>
+                          ) : authUsers.map(function(u) {
+                            return (
+                              <div key={u.email} className="flex items-center justify-between px-3 py-2 mb-1">
+                                <span className="text-sm text-gray-700 truncate">{u.email}</span>
+                                <div className="flex items-center gap-2 flex-shrink-0">
+                                  <select value={u.role} disabled={userBusy}
+                                    onChange={function(e) { handleChangeRole(u.email, e.target.value); }}
+                                    className={"text-xs font-bold uppercase border rounded-lg px-1.5 py-1 bg-white " + (u.role === "admin" ? "text-blue-500 border-blue-200" : "text-gray-500 border-gray-200")}>
+                                    <option value="user">User</option>
+                                    <option value="admin">Admin</option>
+                                  </select>
+                                  <button onClick={function() { handleRemoveUser(u.email); }} disabled={userBusy}
+                                    className="text-xs text-red-500 border border-red-200 rounded-full px-2 py-1 disabled:opacity-40">הסר</button>
+                                </div>
+                              </div>
+                            );
+                          })}
+                          <div className="flex gap-2 mt-3">
+                            <input type="email" value={newUserEmail} onChange={function(e) { setNewUserEmail(e.target.value); }}
+                              placeholder="name@example.com" dir="ltr"
+                              className="flex-1 border border-gray-200 rounded-xl px-3 py-2 text-sm text-left focus:outline-none focus:border-blue-400"
+                              onKeyDown={function(e) { if (e.key === "Enter") handleAddUser(); }} />
+                            <select value={newUserRole} onChange={function(e) { setNewUserRole(e.target.value); }}
+                              className="border border-gray-200 rounded-xl px-2 py-2 text-sm">
+                              <option value="user">User</option>
+                              <option value="admin">Admin</option>
+                            </select>
+                          </div>
+                          <button onClick={handleAddUser} disabled={!newUserEmail.trim() || userBusy}
+                            className="w-full bg-blue-600 text-white py-3 rounded-2xl font-semibold mt-3 disabled:opacity-40">הוסף</button>
+                          {userMsg && <p className={"text-xs text-center mt-2 " + (userMsg.indexOf("✓") === 0 ? "text-green-500" : "text-red-500")}>{userMsg}</p>}
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* ── Usage & Costs ────────────────────────────────────────────────── */}
+              <div className="mt-3 mb-2">
+                <button onClick={function() { setShowCosts(function(o) { if (!o) loadCosts(); return !o; }); }}
+                  className={"w-full flex items-center justify-between px-3 py-3 rounded-xl border transition " + (showCosts ? "bg-white border-blue-200" : "bg-gray-50 border-transparent hover:bg-gray-100")}>
+                  <div className="flex items-center gap-3">
+                    <span className="text-lg w-7 text-center">💰</span>
+                    <div className="text-right">
+                      <div className="text-sm font-semibold text-gray-700">עלויות AI</div>
+                      <div className="text-xs text-gray-400">{isAdmin ? "ההוצאות של כולם" : "ההוצאות שלך"}</div>
+                    </div>
+                  </div>
+                  <span className="text-gray-400 text-xs flex-shrink-0">{showCosts ? "▲ הסתר" : "▼ הצג"}</span>
+                </button>
+                {showCosts && (
+                  <div className="mt-2 bg-white border border-gray-100 rounded-2xl p-4">
+                    {costsLoading ? (
+                      <div className="flex justify-center py-6"><Spinner /></div>
+                    ) : isAdmin ? (
+                      (allCosts || []).length === 0 ? (
+                        <p className="text-xs text-gray-400 text-center py-4">אין עדיין נתוני שימוש</p>
+                      ) : (
+                        <div>
+                          {[].concat(allCosts).sort(function(a, b) { return userCostTotal(b.costs) - userCostTotal(a.costs); }).map(function(u) {
+                            return (
+                              <div key={u.uid} className="bg-gray-50 rounded-xl px-3 py-2 mb-2">
+                                <div className="flex items-center justify-between mb-1">
+                                  <span className="text-sm text-gray-700 truncate">{u.email || u.uid}</span>
+                                  <span className="text-sm font-bold text-green-500 flex-shrink-0 ml-2">{formatUsd(userCostTotal(u.costs))}</span>
+                                </div>
+                                {Object.entries(u.costs || {}).sort(function(a, b) { return b[0].localeCompare(a[0]); }).map(function(entry) {
+                                  var month = entry[0], byProvider = entry[1];
+                                  return (
+                                    <div key={month} className="flex items-center justify-between text-xs text-gray-400 border-t border-gray-200 pt-1 mt-1">
+                                      <span>{month}</span>
+                                      <span>{Object.entries(byProvider || {}).map(function(p) { return p[0] + ": " + formatUsd(p[1]); }).join(" · ")}</span>
+                                    </div>
+                                  );
+                                })}
+                              </div>
+                            );
+                          })}
+                          <p className="text-xs text-gray-400 text-left mt-2">סה"כ: {formatUsd(allCosts.reduce(function(s, u) { return s + userCostTotal(u.costs); }, 0))}</p>
+                        </div>
+                      )
+                    ) : (
+                      !myCosts || Object.keys(myCosts).length === 0 ? (
+                        <p className="text-xs text-gray-400 text-center py-4">אין עדיין נתוני שימוש</p>
+                      ) : (
+                        <div className="bg-gray-50 rounded-xl px-3 py-2">
+                          {Object.entries(myCosts).sort(function(a, b) { return b[0].localeCompare(a[0]); }).map(function(entry) {
+                            var month = entry[0], byProvider = entry[1];
+                            return (
+                              <div key={month} className="flex items-center justify-between text-sm text-gray-700 border-t border-gray-200 first:border-t-0 py-1.5">
+                                <span>{month}</span>
+                                <span className="text-xs text-gray-400">{Object.entries(byProvider || {}).map(function(p) { return p[0] + ": " + formatUsd(p[1]); }).join(" · ")}</span>
+                              </div>
+                            );
+                          })}
+                          <p className="text-xs text-gray-400 text-left mt-2 pt-2 border-t border-gray-200">סה"כ: {formatUsd(userCostTotal(myCosts))}</p>
+                        </div>
+                      )
+                    )}
+                    {costsMsg && <p className="text-xs text-red-500 text-center mt-2">{costsMsg}</p>}
+                  </div>
+                )}
+              </div>
+
+              <div className="border-t border-gray-100 my-2" />
+              <button onClick={function() { auth.signOut(); }} className="w-full text-right px-3 py-3 text-sm text-red-500 hover:bg-red-50 rounded-xl flex items-center gap-3">
+                <span className="text-lg w-7 text-center">🚪</span><span>יציאה</span>
+              </button>
             </Modal>
           )}
 
@@ -1150,167 +1353,6 @@
                 className="w-full bg-blue-600 text-white py-3 rounded-2xl font-semibold disabled:opacity-40">
                 שמור
               </button>
-            </Modal>
-          )}
-
-          {showAISettings && (
-            <Modal onClose={function() { setShowAISettings(false); }}>
-              <h3 className="text-lg font-bold text-center mb-5">הגדרות AI 🤖</h3>
-              <div className="mb-4">
-                <p className="text-xs text-gray-500 mb-2 text-right">ספק AI</p>
-                <div className="grid grid-cols-3 gap-2">
-                  {Object.entries(AI_PROVIDERS).map(function(entry) {
-                    var id = entry[0], p = entry[1];
-                    var hasKey = !!(id === "openai" ? openaiKey : id === "gemini" ? geminiKey : anthropicKey);
-                    var active = aiProvider === id;
-                    return (
-                      <button key={id} onClick={function() { switchProvider(id); }}
-                        className={"py-2 rounded-xl text-sm font-medium border transition flex flex-col items-center gap-0.5 " + (active ? "bg-blue-600 text-white border-blue-600" : "bg-white text-gray-600 border-gray-200")}>
-                        <span className="font-semibold">{p.name} {hasKey ? "✓" : ""}</span>
-                        <span className={"text-xs " + (active ? "text-blue-100" : "text-gray-400")}>{p.label}{p.free ? " · חינם" : ""}</span>
-                      </button>
-                    );
-                  })}
-                </div>
-              </div>
-              {aiProvider === "anthropic" && (
-                <div className="mb-3">
-                  <p className="text-xs text-gray-500 mb-1 text-right">Anthropic API Key</p>
-                  <input value={anthropicKey} onChange={function(e) { setAnthropicKey(e.target.value); }} placeholder="sk-ant-..." type="password" dir="ltr"
-                    className="w-full border border-gray-200 rounded-xl px-4 py-3 text-left focus:outline-none focus:border-blue-400 text-sm" />
-                </div>
-              )}
-              {aiProvider === "openai" && (
-                <div className="mb-3">
-                  <p className="text-xs text-gray-500 mb-1 text-right">OpenAI API Key</p>
-                  <input value={openaiKey} onChange={function(e) { setOpenaiKey(e.target.value); }} placeholder="sk-..." type="password" dir="ltr"
-                    className="w-full border border-gray-200 rounded-xl px-4 py-3 text-left focus:outline-none focus:border-blue-400 text-sm" />
-                </div>
-              )}
-              {aiProvider === "gemini" && (
-                <div className="mb-3">
-                  <p className="text-xs text-gray-500 mb-1 text-right">Google AI Studio API Key</p>
-                  <input value={geminiKey} onChange={function(e) { setGeminiKey(e.target.value); }} placeholder="AIza..." type="password" dir="ltr"
-                    className="w-full border border-gray-200 rounded-xl px-4 py-3 text-left focus:outline-none focus:border-blue-400 text-sm" />
-                </div>
-              )}
-              <div className="mb-4">
-                <p className="text-xs text-gray-500 mb-1 text-right">מודל</p>
-                <input value={aiModel} onChange={function(e) { setAiModel(e.target.value); }} dir="ltr"
-                  className="w-full border border-gray-200 rounded-xl px-4 py-3 text-left focus:outline-none focus:border-blue-400 text-sm font-mono" />
-              </div>
-              <div className="mb-4">
-                <div className="flex items-center justify-between mb-1">
-                  <button onClick={function() { setAiPrompt(DEFAULT_AI_PROMPT); }} className="text-xs text-blue-500">אפס</button>
-                  <p className="text-xs text-gray-500">פרומפט ({"{categories}"} = רשימת קטגוריות, {"{text}"} = הטקסט)</p>
-                </div>
-                <textarea value={aiPrompt} onChange={function(e) { setAiPrompt(e.target.value); }} rows={8} dir="rtl"
-                  className="w-full border border-gray-200 rounded-xl p-3 text-xs font-mono resize-none focus:outline-none focus:border-blue-400" />
-              </div>
-              <button onClick={saveAISettings} className="w-full bg-blue-600 text-white py-3 rounded-2xl font-semibold">שמור</button>
-            </Modal>
-          )}
-
-          {showUsers && (
-            <Modal onClose={function() { setShowUsers(false); }}>
-              <h3 className="text-lg font-bold text-center mb-5">ניהול משתמשים 🔑</h3>
-              {usersLoading ? (
-                <div className="flex justify-center py-6"><Spinner /></div>
-              ) : (
-                <div>
-                  <div className="flex items-center justify-between bg-gray-50 rounded-xl px-3 py-2 mb-2">
-                    <span className="text-sm text-gray-700">{ownerEmail}</span>
-                    <span className="text-xs font-bold text-green-500 uppercase">בעלים</span>
-                  </div>
-                  {authUsers.length === 0 ? (
-                    <p className="text-xs text-gray-400 px-3 py-2 mb-2">אין עדיין משתמשים נוספים</p>
-                  ) : authUsers.map(function(u) {
-                    return (
-                      <div key={u.email} className="flex items-center justify-between px-3 py-2 mb-1">
-                        <span className="text-sm text-gray-700 truncate">{u.email}</span>
-                        <div className="flex items-center gap-2 flex-shrink-0">
-                          <select value={u.role} disabled={userBusy}
-                            onChange={function(e) { handleChangeRole(u.email, e.target.value); }}
-                            className={"text-xs font-bold uppercase border rounded-lg px-1.5 py-1 bg-white " + (u.role === "admin" ? "text-blue-500 border-blue-200" : "text-gray-500 border-gray-200")}>
-                            <option value="user">User</option>
-                            <option value="admin">Admin</option>
-                          </select>
-                          <button onClick={function() { handleRemoveUser(u.email); }} disabled={userBusy}
-                            className="text-xs text-red-500 border border-red-200 rounded-full px-2 py-1 disabled:opacity-40">הסר</button>
-                        </div>
-                      </div>
-                    );
-                  })}
-                  <div className="flex gap-2 mt-3">
-                    <input type="email" value={newUserEmail} onChange={function(e) { setNewUserEmail(e.target.value); }}
-                      placeholder="name@example.com" dir="ltr"
-                      className="flex-1 border border-gray-200 rounded-xl px-3 py-2 text-sm text-left focus:outline-none focus:border-blue-400"
-                      onKeyDown={function(e) { if (e.key === "Enter") handleAddUser(); }} />
-                    <select value={newUserRole} onChange={function(e) { setNewUserRole(e.target.value); }}
-                      className="border border-gray-200 rounded-xl px-2 py-2 text-sm">
-                      <option value="user">User</option>
-                      <option value="admin">Admin</option>
-                    </select>
-                  </div>
-                  <button onClick={handleAddUser} disabled={!newUserEmail.trim() || userBusy}
-                    className="w-full bg-blue-600 text-white py-3 rounded-2xl font-semibold mt-3 disabled:opacity-40">הוסף</button>
-                  {userMsg && <p className={"text-xs text-center mt-2 " + (userMsg.indexOf("✓") === 0 ? "text-green-500" : "text-red-500")}>{userMsg}</p>}
-                </div>
-              )}
-            </Modal>
-          )}
-
-          {showCosts && (
-            <Modal onClose={function() { setShowCosts(false); }}>
-              <h3 className="text-lg font-bold text-center mb-5">עלויות AI 💰</h3>
-              {costsLoading ? (
-                <div className="flex justify-center py-6"><Spinner /></div>
-              ) : isAdmin ? (
-                (allCosts || []).length === 0 ? (
-                  <p className="text-xs text-gray-400 text-center py-4">אין עדיין נתוני שימוש</p>
-                ) : (
-                  <div>
-                    {[].concat(allCosts).sort(function(a, b) { return userCostTotal(b.costs) - userCostTotal(a.costs); }).map(function(u) {
-                      return (
-                        <div key={u.uid} className="bg-gray-50 rounded-xl px-3 py-2 mb-2">
-                          <div className="flex items-center justify-between mb-1">
-                            <span className="text-sm text-gray-700 truncate">{u.email || u.uid}</span>
-                            <span className="text-sm font-bold text-green-500 flex-shrink-0 ml-2">{formatUsd(userCostTotal(u.costs))}</span>
-                          </div>
-                          {Object.entries(u.costs || {}).sort(function(a, b) { return b[0].localeCompare(a[0]); }).map(function(entry) {
-                            var month = entry[0], byProvider = entry[1];
-                            return (
-                              <div key={month} className="flex items-center justify-between text-xs text-gray-400 border-t border-gray-200 pt-1 mt-1">
-                                <span>{month}</span>
-                                <span>{Object.entries(byProvider || {}).map(function(p) { return p[0] + ": " + formatUsd(p[1]); }).join(" · ")}</span>
-                              </div>
-                            );
-                          })}
-                        </div>
-                      );
-                    })}
-                    <p className="text-xs text-gray-400 text-left mt-2">סה"כ: {formatUsd(allCosts.reduce(function(s, u) { return s + userCostTotal(u.costs); }, 0))}</p>
-                  </div>
-                )
-              ) : (
-                !myCosts || Object.keys(myCosts).length === 0 ? (
-                  <p className="text-xs text-gray-400 text-center py-4">אין עדיין נתוני שימוש</p>
-                ) : (
-                  <div className="bg-gray-50 rounded-xl px-3 py-2">
-                    {Object.entries(myCosts).sort(function(a, b) { return b[0].localeCompare(a[0]); }).map(function(entry) {
-                      var month = entry[0], byProvider = entry[1];
-                      return (
-                        <div key={month} className="flex items-center justify-between text-sm text-gray-700 border-t border-gray-200 first:border-t-0 py-1.5">
-                          <span>{month}</span>
-                          <span className="text-xs text-gray-400">{Object.entries(byProvider || {}).map(function(p) { return p[0] + ": " + formatUsd(p[1]); }).join(" · ")}</span>
-                        </div>
-                      );
-                    })}
-                    <p className="text-xs text-gray-400 text-left mt-2 pt-2 border-t border-gray-200">סה"כ: {formatUsd(userCostTotal(myCosts))}</p>
-                  </div>
-                )
-              )}
-              {costsMsg && <p className="text-xs text-red-500 text-center mt-2">{costsMsg}</p>}
             </Modal>
           )}
 

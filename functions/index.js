@@ -244,8 +244,8 @@ exports.listAuthorizedUsers = onCall(
     requireAdmin(role);
     const snap = await db.ref('authorizedUsers').once('value');
     const val = snap.val() || {};
-    const users = await Promise.all(Object.values(val).map(async (u) => {
-      const emailKey = (u.email || '').replace(/\./g, ',');
+    const resolveExtra = async (email) => {
+      const emailKey = (email || '').replace(/\./g, ',');
       const uidSnap = await db.ref(`usersByEmail/${emailKey}`).once('value');
       const uid = uidSnap.val();
       let noAi = false, nickname = null;
@@ -257,10 +257,14 @@ exports.listAuthorizedUsers = onCall(
         noAi = !!noAiSnap.val();
         nickname = nickSnap.val() || null;
       }
-      return Object.assign({}, u, { noAi, nickname });
+      return { noAi, nickname };
+    };
+    const users = await Promise.all(Object.values(val).map(async (u) => {
+      return Object.assign({}, u, await resolveExtra(u.email));
     }));
     users.sort((a, b) => (a.email || '').localeCompare(b.email || ''));
-    return { owner: OWNER_EMAIL, users };
+    const ownerExtra = await resolveExtra(OWNER_EMAIL);
+    return { owner: OWNER_EMAIL, ownerNoAi: ownerExtra.noAi, ownerNickname: ownerExtra.nickname, users };
   }
 );
 

@@ -1,6 +1,6 @@
     const { useState, useEffect, useRef } = React;
 
-    const VERSION = "v5.14";
+    const VERSION = "v5.15";
 
     // ── CONFIG ────────────────────────────────────────────────────────────────────
     const FIREBASE_CONFIG = {
@@ -446,6 +446,8 @@
       const [usersLoading, setUsersLoading] = useState(false);
       const [authUsers,   setAuthUsers]   = useState([]);
       const [ownerEmail,  setOwnerEmail]  = useState("");
+      const [ownerNoAi,    setOwnerNoAi]    = useState(false);
+      const [ownerNickname, setOwnerNickname] = useState("");
       const [newUserEmail, setNewUserEmail] = useState("");
       const [newUserRole,  setNewUserRole]  = useState("user");
       const [userBusy,    setUserBusy]    = useState(false);
@@ -455,6 +457,8 @@
         setUsersLoading(true);
         fns.httpsCallable("listAuthorizedUsers")().then(function(res) {
           setOwnerEmail(res.data.owner || "");
+          setOwnerNoAi(!!res.data.ownerNoAi);
+          setOwnerNickname(res.data.ownerNickname || "");
           setAuthUsers(res.data.users || []);
           setUsersLoading(false);
         }, function(e) {
@@ -1166,9 +1170,21 @@
                         <div className="flex justify-center py-6"><Spinner /></div>
                       ) : (
                         <div>
-                          <div className="flex items-center justify-between bg-gray-50 rounded-xl px-3 py-2 mb-2">
-                            <span className="text-sm text-gray-700">{ownerEmail}</span>
-                            <span className="text-xs font-bold text-green-500 uppercase">בעלים</span>
+                          <div className="bg-gray-50 rounded-xl px-3 py-2 mb-2">
+                            <div className="flex items-center justify-between mb-1.5">
+                              <span className="text-sm text-gray-700 truncate">{ownerEmail}</span>
+                              <span className="text-xs font-bold text-green-500 uppercase flex-shrink-0">בעלים</span>
+                            </div>
+                            <div className="flex items-center gap-2">
+                              <input key={"owner:" + ownerNickname} type="text" defaultValue={ownerNickname}
+                                placeholder="כינוי (יוצג ברשימת שיתוף)" dir="rtl" disabled={userBusy}
+                                onBlur={function(e) { var v = e.target.value.trim(); if (v !== ownerNickname) handleSaveNickname(ownerEmail, v); }}
+                                className="flex-1 min-w-0 border border-gray-200 rounded-lg px-2 py-1 text-xs bg-white focus:outline-none focus:border-blue-400" />
+                              <button onClick={function() { handleToggleNoAi(ownerEmail, !ownerNoAi); }} disabled={userBusy} title="דלג על AI"
+                                className={"text-xs border rounded-full px-2 py-1 disabled:opacity-40 flex-shrink-0 " + (ownerNoAi ? "text-blue-500 border-blue-200 bg-blue-50" : "text-gray-400 border-gray-200 bg-white")}>
+                                🤖{ownerNoAi ? "🚫" : ""}
+                              </button>
+                            </div>
                           </div>
                           {authUsers.length === 0 ? (
                             <p className="text-xs text-gray-400 px-3 py-2 mb-2">אין עדיין משתמשים נוספים</p>

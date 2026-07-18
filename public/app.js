@@ -1,0 +1,2940 @@
+    const { useState, useEffect, useRef } = React;
+
+    const VERSION = "v5.11";
+
+    // ── CONFIG ────────────────────────────────────────────────────────────────────
+    const FIREBASE_CONFIG = {
+      apiKey: "AIzaSyCln4umpIgfDCxfkI6XHBo8Vtri5aAGo_E",
+      authDomain: "buli-8fdf9.firebaseapp.com",
+      databaseURL: "https://buli-8fdf9-default-rtdb.europe-west1.firebasedatabase.app",
+      projectId: "buli-8fdf9",
+      storageBucket: "buli-8fdf9.firebasestorage.app",
+      messagingSenderId: "714195385676",
+      appId: "1:714195385676:web:169e9205375a8d7737e3e9"
+    };
+    const DEFAULT_CATEGORIES = [
+      { id: "vegetables", label: "ירקות ופירות", emoji: "🥦", order: 0 },
+      { id: "pantry",     label: "קפה ושימורים", emoji: "☕", order: 1 },
+      { id: "cleaning",   label: "חומרי ניקוי",  emoji: "🧴", order: 2 },
+      { id: "dairy",      label: "מוצרי חלב",    emoji: "🥛", order: 3 },
+      { id: "eggs",       label: "ביצים",         emoji: "🥚", order: 4 },
+      { id: "paper",      label: "מוצרי נייר",   emoji: "🧻", order: 5 },
+      { id: "other",      label: "שונות",         emoji: "🛍️", order: 6 }
+    ];
+    const UNITS = ["יחידות","ק״ג","גרם","ליטר","מ״ל","קופסה","חבילה","צרור"];
+
+    const AI_PROVIDERS = {
+      anthropic: { name: "Claude", label: "Anthropic", defaultModel: "claude-haiku-4-5-20251001", keyHint: "sk-ant-...", free: false },
+      openai:    { name: "ChatGPT", label: "OpenAI",   defaultModel: "gpt-4o-mini",               keyHint: "sk-...",     free: false },
+      gemini:    { name: "Gemini",  label: "Google",   defaultModel: "gemini-2.5-flash",           keyHint: "AIza...",    free: true  }
+    };
+    function getAIModel(p) {
+      return AI_PROVIDERS[p].defaultModel;
+    }
+
+    // ── FIREBASE ──────────────────────────────────────────────────────────────────
+    firebase.initializeApp(FIREBASE_CONFIG);
+    const auth = firebase.auth();
+    const db   = firebase.database();
+    const fns  = firebase.functions();
+
+    // ── CATEGORIES HOOK ───────────────────────────────────────────────────────────
+    function useCategories(userId) {
+      const [categories, setCategories] = useState([]);
+      useEffect(() => {
+        if (!userId) return;
+        const ref = db.ref("globalCategories");
+        ref.on("value", snap => {
+          if (snap.exists()) {
+            const arr = [];
+            snap.forEach(c => { arr.push({ id: c.key, ...c.val() }); });
+            setCategories(arr.sort((a, b) => (a.order ?? 99) - (b.order ?? 99)));
+          } else {
+            setCategories([]);
+          }
+        });
+        return () => ref.off();
+      }, [userId]);
+      return categories;
+    }
+
+    // ── AI PARSING ────────────────────────────────────────────────────────────────
+    // AI keys never touch the client's network requests — parseItems (Cloud Function)
+    // does the actual provider call server-side, using the caller's own stored key.
+    var DEFAULT_AI_PROMPT = 'אתה מסייע לסיווג פריטי קנייה בעברית לקטגוריות.\n\nקטגוריות זמינות — חייב להשתמש באחד השמות המדויקים האלו:\n{categories}\n\nכללים:\n1. זהה כל פריט נפרד בטקסט (גם אם כתובים ברשימה, גם אם בטקסט חופשי)\n2. לכל פריט, בחר את הקטגוריה המתאימה ביותר מהרשימה\n3. שם הקטגוריה חייב להיות זהה לחלוטין לאחד השמות ברשימה — אל תשנה, אל תקצר, אל תתרגם\n4. "שונות" — רק אם אין שום קטגוריה מתאימה אחרת\n5. אם לא צוינה כמות — הכנס 1. אם לא צוינה יחידה — הכנס "יחידות"\n6. הערה (note) — רק אם קיימת בטקסט, אחרת ""\n\nיחידות אפשריות: יחידות / ק"ג / גרם / ליטר / מ"ל / קופסה / חבילה / צרור\n\nפרמט JSON נדרש:\n[{"name":"שם הפריט","quantity":1,"unit":"יחידות","category":"שם קטגוריה מדויק","note":""}]\n\nטקסט: {text}\n\nהחזר מערך JSON בלבד, ללא הסברים:';
+
+    function parseWithAI(text, categories, aiSettings) {
+      var cats = categories.length > 0 ? categories : DEFAULT_CATEGORIES;
+      var payload = Object.assign({
+        text: text,
+        categories: cats.map(function(c) { return { label: c.label }; })
+      }, aiSettings || {});
+      return fns.httpsCallable("parseItems")(payload).then(function(res) {
+        return res.data.items;
+      }, function(err) {
+        throw new Error(err.message || "שגיאה בחיבור ל-AI");
+      });
+    }
+
+    // ── VOICE ────────────────────────────────────────────────────────────────────
+    // Copied from FouFou utils.js startSpeechToText — continuous:false prevents the
+    // Chrome bug where stop() re-fires all prior results with resultIndex=0 (duplication).
+    // onResult(text, isFinal) — same API as FouFou.
+    function startSpeech({ onResult, onEnd, onError, maxMs, continuous }) {
+      var SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+      if (!SR) { onError && onError("הדפדפן לא תומך בזיהוי קול — נסה Chrome"); return function(){}; }
+
+      var r = new SR();
+      r.lang = "he-IL";
+      r.continuous = continuous ? true : false;
+      r.interimResults = true;
+      r.maxAlternatives = 1;
+
+      var finalText = "";
+      var timer = setTimeout(function() { try { r.stop(); } catch(e) {} }, maxMs || 30000);
+
+      r.onresult = function(e) {
+        var newFinal = "", interim = "";
+        for (var i = e.resultIndex; i < e.results.length; i++) {
+          if (e.results[i].isFinal) newFinal += e.results[i][0].transcript;
+          else interim += e.results[i][0].transcript;
+        }
+        if (newFinal) { finalText += newFinal; onResult && onResult(newFinal, true); }
+        else if (interim) { onResult && onResult(interim, false); }
+      };
+
+      r.onend = function() { clearTimeout(timer); onEnd && onEnd(finalText); };
+
+      r.onerror = function(e) {
+        clearTimeout(timer);
+        if (e.error === "not-allowed") onError && onError("אנא אשר גישה למיקרופון");
+        else if (e.error !== "aborted" && e.error !== "no-speech") onError && onError("שגיאה: " + e.error);
+      };
+
+      try { r.start(); } catch(e) {}
+      return function() { clearTimeout(timer); try { r.stop(); } catch(e) {} };
+    }
+
+    // ── HELPERS ───────────────────────────────────────────────────────────────────
+    const encodeEmail = e => e.replace(/\./g, ",");
+
+    function nextFriday(ts) {
+      var d = new Date(ts || Date.now());
+      var daysUntil = (5 - d.getDay() + 7) % 7;
+      d.setDate(d.getDate() + daysUntil);
+      return d.toISOString().split("T")[0];
+    }
+
+    function formatDinnerDate(dateStr) {
+      if (!dateStr) return "";
+      var p = dateStr.split("-");
+      return p[2] + "/" + p[1] + "/" + p[0];
+    }
+
+    const USER_COLORS = ["#ef4444","#f97316","#22c55e","#14b8a6","#8b5cf6","#ec4899","#6366f1","#f59e0b"];
+    function getUserColor(uid) {
+      if (!uid) return "#94a3b8";
+      var stored = localStorage.getItem("buli_user_color_" + uid);
+      if (stored) return stored;
+      var sum = 0;
+      for (var i = 0; i < uid.length; i++) sum += uid.charCodeAt(i);
+      return USER_COLORS[sum % USER_COLORS.length];
+    }
+
+    function Toast({ msg, onClose }) {
+      useEffect(() => { const t = setTimeout(onClose, 3000); return () => clearTimeout(t); }, []);
+      return (
+        <div className="fixed bottom-24 left-1/2 -translate-x-1/2 bg-gray-800 text-white text-sm px-5 py-2.5 rounded-full shadow-lg z-50 whitespace-nowrap">
+          {msg}
+        </div>
+      );
+    }
+    function Spinner() {
+      return <div className="spinner w-5 h-5 border-2 border-white border-t-transparent rounded-full inline-block" />;
+    }
+    function Modal({ onClose, children }) {
+      const [dragY, setDragY] = React.useState(0);
+      const startYRef = React.useRef(null);
+      const handleRef = React.useRef(null);
+
+      const onPointerDown = (e) => {
+        startYRef.current = e.clientY;
+        if (handleRef.current) handleRef.current.setPointerCapture(e.pointerId);
+      };
+      const onPointerMove = (e) => {
+        if (startYRef.current === null) return;
+        setDragY(Math.max(0, e.clientY - startYRef.current));
+      };
+      const onPointerUp = () => {
+        if (dragY > 80) { onClose(); }
+        else { setDragY(0); }
+        startYRef.current = null;
+      };
+
+      return (
+        <div className="fixed inset-0 bg-black/40 z-40 flex items-end" onClick={onClose}>
+          <div className="relative bg-white w-full max-w-md mx-auto rounded-t-3xl p-6 pb-8"
+            style={{ transform: "translateY(" + dragY + "px)", transition: dragY === 0 ? "transform 0.2s ease" : "none" }}
+            onClick={e => e.stopPropagation()}>
+            <div ref={handleRef}
+              onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={onPointerUp}
+              className="w-10 h-1.5 bg-gray-200 rounded-full mx-auto mb-4 cursor-grab active:cursor-grabbing touch-none" />
+            <button onClick={onClose} className="absolute top-4 left-4 text-gray-400 hover:text-gray-600 text-2xl leading-none w-8 h-8 flex items-center justify-center">×</button>
+            {children}
+          </div>
+        </div>
+      );
+    }
+    function ConfirmDialog({ message, confirmLabel, onConfirm, onClose }) {
+      return (
+        <Modal onClose={onClose}>
+          <p className="text-center text-gray-800 font-medium text-base mb-6">{message}</p>
+          <div className="grid grid-cols-2 gap-3">
+            <button onClick={onClose} className="py-3 rounded-2xl border border-gray-200 text-gray-600 font-medium">ביטול</button>
+            <button onClick={function() { onClose(); onConfirm(); }} className="py-3 rounded-2xl bg-red-500 text-white font-semibold">{confirmLabel || "מחק"}</button>
+          </div>
+        </Modal>
+      );
+    }
+    function Header({ onBack, title, right }) {
+      return (
+        <div className="bg-blue-600 text-white px-4 pt-10 pb-4">
+          <div className="flex items-center gap-3" dir="ltr">
+            {onBack && (
+              <button onClick={onBack} className="flex items-center gap-1 text-white font-semibold text-sm bg-white/20 px-3 py-1.5 rounded-full flex-shrink-0">
+                <span className="text-lg leading-none">‹</span><span>חזרה</span>
+              </button>
+            )}
+            <h1 className="flex-1 text-lg font-bold truncate text-right">{title}</h1>
+            {right}
+          </div>
+        </div>
+      );
+    }
+
+    // ── CHECKBOX ──────────────────────────────────────────────────────────────────
+    function Checkbox({ checked, onChange }) {
+      return (
+        <button onClick={onChange}
+          className={`w-5 h-5 rounded border-2 flex-shrink-0 flex items-center justify-center transition ${checked ? "bg-blue-600 border-blue-600" : "border-gray-400 bg-white"}`}>
+          {checked && (
+            <svg className="w-3 h-3 text-white" viewBox="0 0 12 10" fill="none">
+              <path d="M1 5l3.5 3.5L11 1" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+            </svg>
+          )}
+        </button>
+      );
+    }
+
+    // ── APP ───────────────────────────────────────────────────────────────────────
+    function App() {
+      const [user,        setUser]        = useState(null);
+      const [loading,     setLoading]     = useState(true);
+      const [role,        setRole]        = useState(null);
+      const [roleLoading, setRoleLoading] = useState(true);
+      const [screen,   setScreen]   = useState("home");
+      const [listId,   setListId]   = useState(null);
+      const [listType, setListType] = useState("shopping");
+      const [listName, setListName] = useState("");
+      const [toast,       setToast]       = useState("");
+      const [stickyToast, setStickyToast] = useState([]);
+      const histDepthRef = useRef(2);
+      const navHistoryRef = useRef([{ screen: "home" }]);
+
+      useEffect(() => {
+        // FouFou pattern: keep min 2 cushion entries so Android back never exhausts the stack.
+        // App nav history is tracked in navHistoryRef (separate from browser history).
+        window.history.replaceState({ d: 0 }, '', window.location.pathname);
+        window.history.pushState({ d: 1 }, '', window.location.pathname);
+        window.history.pushState({ d: 2 }, '', window.location.pathname);
+        var onPop = function() {
+          histDepthRef.current = Math.max(0, histDepthRef.current - 1);
+          var hist = navHistoryRef.current;
+          if (hist.length > 1) {
+            hist.pop();
+            var prev = hist[hist.length - 1];
+            setScreen(prev.screen || "home");
+            setListId(prev.listId || null);
+            setListType(prev.listType || "shopping");
+            setListName(prev.listName || "");
+          }
+          while (histDepthRef.current < 2) {
+            histDepthRef.current++;
+            window.history.pushState({ d: histDepthRef.current }, '', '/');
+          }
+        };
+        window.addEventListener('popstate', onPop);
+        return function() { window.removeEventListener('popstate', onPop); };
+      }, []);
+
+      useEffect(() => {
+        var openMajor = new URLSearchParams(window.location.search).get('open') === 'major';
+        auth.onAuthStateChanged(u => {
+          setUser(u);
+          setLoading(false);
+          if (u) {
+            setRoleLoading(true);
+            fns.httpsCallable("getMyRole")().then(function(res) {
+              setRole(res.data.role || null);
+              setRoleLoading(false);
+              if (res.data.role) {
+                // Only write the shared, authorization-gated index once we're confirmed authorized —
+                // otherwise this write races userAccess's server-side mirror and gets denied by rules.
+                db.ref("usersByEmail/" + encodeEmail(u.email)).set(u.uid);
+              }
+            }, function() {
+              setRole(null);
+              setRoleLoading(false);
+            });
+            db.ref("users/" + u.uid).update({ name: u.displayName, email: u.email, photo: u.photoURL });
+            db.ref("users/" + u.uid + "/color").once("value").then(function(snap) {
+              if (snap.exists()) localStorage.setItem("buli_user_color_" + u.uid, snap.val());
+            });
+            if (openMajor) {
+              var major = null;
+              try { major = JSON.parse(localStorage.getItem("buli_major_list")); } catch(e) {}
+              if (major && major.id) {
+                window.history.replaceState({ d: 0 }, '', window.location.pathname);
+                navHistoryRef.current.push({ screen: "add", listId: major.id, listType: "shopping", listName: major.name || "" });
+                histDepthRef.current++; window.history.pushState({ d: histDepthRef.current }, '', '/');
+                setListId(major.id); setListType("shopping"); setListName(major.name || ""); setScreen("add");
+              }
+            } else {
+              var autoOpen = localStorage.getItem("buli_auto_open_major") === "true";
+              var alreadyDone = sessionStorage.getItem("buli_auto_redirected") === "1";
+              if (autoOpen && !alreadyDone) {
+                var majorAuto = null;
+                try { majorAuto = JSON.parse(localStorage.getItem("buli_major_list")); } catch(e) {}
+                if (majorAuto && majorAuto.id) {
+                  sessionStorage.setItem("buli_auto_redirected", "1");
+                  navHistoryRef.current.push({ screen: "add", listId: majorAuto.id, listType: "shopping", listName: majorAuto.name || "" });
+                  histDepthRef.current++; window.history.pushState({ d: histDepthRef.current }, '', '/');
+                  setListId(majorAuto.id); setListType("shopping"); setListName(majorAuto.name || ""); setScreen("add");
+                }
+              }
+            }
+          }
+        });
+      }, []);
+
+      if (loading)     return <div className="flex items-center justify-center h-screen text-5xl">🛒</div>;
+      if (!user)       return <LoginScreen />;
+      if (roleLoading) return <div className="flex items-center justify-center h-screen text-5xl">🛒</div>;
+      if (!role)       return <NotAuthorizedScreen user={user} />;
+
+      const pushNav = (state) => { navHistoryRef.current.push(state); histDepthRef.current++; window.history.pushState({ d: histDepthRef.current }, '', '/'); };
+      const go = s => { pushNav({ screen: s }); setScreen(s); };
+      const goList = (id, name) => { pushNav({ screen: "list", listId: id, listName: name || "" }); setListId(id); setListName(name || ""); setScreen("list"); };
+      const goAdd  = (id, type, name) => { pushNav({ screen: "add", listId: id, listType: type || "shopping", listName: name || "" }); setListId(id); setListType(type || "shopping"); setListName(name || ""); setScreen("add"); };
+      const goHome = () => { navHistoryRef.current = [{ screen: "home" }]; pushNav({ screen: "home" }); setScreen("home"); setListId(null); };
+      const goBack = () => window.history.back();
+
+      return (
+        <div className="max-w-md mx-auto min-h-screen relative">
+          {screen === "home"       && <HomeScreen       user={user} isAdmin={role === "admin"} onOpenList={goList} onCategories={() => go("categories")} onContacts={() => go("contacts")} showToast={setToast} onAddTask={() => goAdd("tasks_" + user.uid, "tasks")} onCreateShoppingList={(id, name) => goAdd(id, "shopping", name)} onCreateNotesList={(id, name) => goAdd(id, "notes", name)} />}
+          {screen === "list"       && <ListScreen       user={user} listId={listId} onBack={goBack} onAdd={(type, name) => goAdd(listId, type, name || listName)} showToast={setToast} />}
+          {screen === "add"        && <AddScreen        user={user} listId={listId} listType={listType} listName={listName} onBack={goBack} showToast={setToast} showStickyToast={setStickyToast} />}
+          {screen === "categories" && <CategoriesScreen user={user} onBack={goBack} showToast={setToast} />}
+          {screen === "contacts"   && <ContactsScreen   user={user} onBack={goBack} showToast={setToast} />}
+          {toast && <Toast msg={toast} onClose={() => setToast("")} />}
+          {stickyToast.length > 0 && (
+            <div onClick={() => setStickyToast([])}
+              className="fixed bottom-24 left-1/2 -translate-x-1/2 w-11/12 max-w-md bg-amber-50 border border-amber-300 rounded-2xl px-4 py-3 z-50 shadow-lg cursor-pointer">
+              <p className="font-semibold text-amber-800 text-sm mb-1">כבר קיים ברשימה:</p>
+              <p className="text-amber-700 text-sm leading-relaxed">{stickyToast.join(" · ")}</p>
+              <p className="text-xs text-amber-400 text-center mt-2">לחץ לסגירה</p>
+            </div>
+          )}
+        </div>
+      );
+    }
+
+    // ── LOGIN ─────────────────────────────────────────────────────────────────────
+    function LoginScreen() {
+      const [err, setErr] = useState("");
+      return (
+        <div className="flex flex-col items-center justify-center min-h-screen bg-gradient-to-b from-blue-50 to-white px-6">
+          <div className="text-8xl mb-4">🛒</div>
+          <h1 className="text-5xl font-bold text-blue-600 mb-1">בולי</h1>
+          <p className="text-gray-300 text-xs mb-10">{VERSION}</p>
+          <p className="text-gray-400 mb-8 text-lg">רשימות קניות חכמות</p>
+          <button onClick={() => auth.signInWithPopup(new firebase.auth.GoogleAuthProvider()).catch(e => setErr(e.message))}
+            className="bg-white border border-gray-200 shadow-md rounded-2xl px-8 py-4 flex items-center gap-3 text-gray-700 font-medium text-lg hover:shadow-lg transition">
+            <img src="https://www.google.com/favicon.ico" className="w-5 h-5" />
+            כניסה עם Google
+          </button>
+          {err && <p className="text-red-500 mt-4 text-sm text-center">{err}</p>}
+        </div>
+      );
+    }
+
+    // ── NOT AUTHORIZED ────────────────────────────────────────────────────────────
+    function NotAuthorizedScreen({ user }) {
+      return (
+        <div className="flex flex-col items-center justify-center min-h-screen bg-gradient-to-b from-blue-50 to-white px-6 text-center">
+          <div className="text-6xl mb-4">🔒</div>
+          <h1 className="text-2xl font-bold text-gray-800 mb-2">אין לך גישה לבולי</h1>
+          <p className="text-gray-500 mb-1">מחובר כ־{user.email}</p>
+          <p className="text-gray-400 text-sm mb-8 leading-relaxed">בקש מהמנהל להוסיף אותך תחת הגדרות ← ניהול משתמשים</p>
+          <button onClick={() => auth.signOut()}
+            className="bg-white border border-gray-200 shadow-md rounded-2xl px-6 py-3 text-gray-600 font-medium">
+            התנתק
+          </button>
+        </div>
+      );
+    }
+
+    // ── HOME ──────────────────────────────────────────────────────────────────────
+    function HomeScreen({ user, isAdmin, onOpenList, onCategories, onContacts, showToast, onAddTask, onCreateShoppingList, onCreateNotesList }) {
+      const tasksListId = "tasks_" + user.uid;
+      const [lists,      setLists]      = useState(null);
+      const [tasks,      setTasks]      = useState(null);
+      const [editTask,   setEditTask]   = useState(null);
+      const [menuId,     setMenuId]     = useState(null);
+      const [showDone,   setShowDone]   = useState(false);
+      const [renameId,   setRenameId]   = useState(null);
+      const [renameName, setRenameName] = useState("");
+
+      const _isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) && !window.MSStream;
+      const _isInstalled = window.matchMedia('(display-mode: standalone)').matches || !!window.navigator.standalone;
+      const [canInstall, setCanInstall] = useState(!_isInstalled && (!!window.__installPrompt || _isIOS));
+      const [showInstallGuide, setShowInstallGuide] = useState(false);
+
+      const [majorListId, setMajorListIdState] = useState(function() {
+        try { var m = JSON.parse(localStorage.getItem("buli_major_list")); return m ? m.id : null; } catch(e) { return null; }
+      });
+      const [showShortcutGuide, setShowShortcutGuide] = useState(false);
+      const [showSettings, setShowSettings] = useState(false);
+      const [showAISettings, setShowAISettings] = useState(false);
+      const [notesSeparator, setNotesSeparator] = useState(function() { return localStorage.getItem("buli_notes_separator") || "הבא"; });
+      const [editingNoteInstance, setEditingNoteInstance] = useState(null);
+      const [aiProvider,   setAiProvider]   = useState("anthropic");
+      const [openaiKey,    setOpenaiKey]    = useState("");
+      const [geminiKey,    setGeminiKey]    = useState("");
+      const [anthropicKey, setAnthropicKey] = useState("");
+      const [aiModel,      setAiModel]      = useState(getAIModel("anthropic"));
+      const [aiPrompt,     setAiPrompt]     = useState(DEFAULT_AI_PROMPT);
+      const switchProvider = (p) => { setAiProvider(p); setAiModel(getAIModel(p)); };
+
+      // ── Manage Users (admin only) ──────────────────────────────────────────────
+      const [showUsers,   setShowUsers]   = useState(false);
+      const [usersLoading, setUsersLoading] = useState(false);
+      const [authUsers,   setAuthUsers]   = useState([]);
+      const [ownerEmail,  setOwnerEmail]  = useState("");
+      const [newUserEmail, setNewUserEmail] = useState("");
+      const [newUserRole,  setNewUserRole]  = useState("user");
+      const [userBusy,    setUserBusy]    = useState(false);
+      const [userMsg,     setUserMsg]     = useState("");
+
+      const loadAuthUsers = () => {
+        setUsersLoading(true);
+        fns.httpsCallable("listAuthorizedUsers")().then(function(res) {
+          setOwnerEmail(res.data.owner || "");
+          setAuthUsers(res.data.users || []);
+          setUsersLoading(false);
+        }, function(e) {
+          setUserMsg("⚠ " + e.message);
+          setUsersLoading(false);
+        });
+      };
+      const handleAddUser = () => {
+        var email = newUserEmail.trim();
+        if (!email || userBusy) return;
+        setUserBusy(true); setUserMsg("");
+        fns.httpsCallable("addAuthorizedUser")({ email: email, role: newUserRole }).then(function() {
+          setNewUserEmail(""); setNewUserRole("user"); setUserMsg("✓ נוסף"); setUserBusy(false);
+          loadAuthUsers();
+        }, function(e) { setUserMsg("⚠ " + e.message); setUserBusy(false); });
+      };
+      const handleRemoveUser = (email) => {
+        if (!window.confirm("להסיר גישה מ־" + email + "?")) return;
+        setUserBusy(true);
+        fns.httpsCallable("removeAuthorizedUser")({ email: email }).then(function() {
+          setUserBusy(false);
+          loadAuthUsers();
+        }, function(e) { setUserMsg("⚠ " + e.message); setUserBusy(false); });
+      };
+
+      const [confirmDialog, setConfirmDialog] = useState(null);
+      const [autoOpenMajor, setAutoOpenMajorState] = useState(localStorage.getItem("buli_auto_open_major") === "true");
+      const [userColor,        setUserColor]        = useState(function() { return getUserColor(user.uid); });
+      const [showColorPicker,  setShowColorPicker]  = useState(false);
+      const changeUserColor = function(color) {
+        localStorage.setItem("buli_user_color_" + user.uid, color);
+        setUserColor(color);
+        setShowColorPicker(false);
+        db.ref("users/" + user.uid + "/color").set(color);
+      };
+      const [activeTab, setActiveTab] = useState(function() { return localStorage.getItem("buli_active_tab") || "shopping"; });
+      const setTab = function(t) { setActiveTab(t); localStorage.setItem("buli_active_tab", t); };
+      const toggleAutoOpen = () => {
+        var next = !autoOpenMajor;
+        localStorage.setItem("buli_auto_open_major", next ? "true" : "false");
+        setAutoOpenMajorState(next);
+        showToast(next ? "הרשימה הראשית תיפתח אוטומטית 🚀" : "הפעלה אוטומטית כבויה");
+      };
+
+      // AI settings are per-person now (Roy News pattern) — each person's own key lives at
+      // users/{uid}/ai and is only ever sent to the parseItems Cloud Function, never to a
+      // third-party API directly from the browser.
+      const saveAISettings = () => {
+        if (aiProvider === "openai"    && !openaiKey.trim())    { showToast("נדרש מפתח OpenAI — הזן מפתח או בחר ספק אחר"); return; }
+        if (aiProvider === "gemini"    && !geminiKey.trim())    { showToast("נדרש מפתח Gemini — הזן מפתח או בחר ספק אחר"); return; }
+        if (aiProvider === "anthropic" && !anthropicKey.trim()) { showToast("נדרש מפתח Claude — הזן מפתח או בחר ספק אחר"); return; }
+        var model = aiModel.trim() || AI_PROVIDERS[aiProvider].defaultModel;
+        var settings = {
+          provider: aiProvider,
+          openaiApiKey:    openaiKey.trim(),
+          openaiModel:     aiProvider === "openai"    ? model : AI_PROVIDERS.openai.defaultModel,
+          geminiApiKey:    geminiKey.trim(),
+          geminiModel:     aiProvider === "gemini"    ? model : AI_PROVIDERS.gemini.defaultModel,
+          anthropicApiKey: anthropicKey.trim(),
+          anthropicModel:  aiProvider === "anthropic" ? model : AI_PROVIDERS.anthropic.defaultModel,
+          prompt:          aiPrompt !== DEFAULT_AI_PROMPT ? aiPrompt : null
+        };
+        db.ref("users/" + user.uid + "/ai").set(settings).then(function() {
+          showToast("הגדרות AI נשמרו");
+        }, function() { showToast("שגיאה בשמירה"); });
+        setShowAISettings(false);
+      };
+
+      useEffect(function() {
+        db.ref("users/" + user.uid + "/ai").once("value").then(function(snap) {
+          var s = snap.val();
+          if (!s) return;
+          var p = (s.provider === "openai" || s.provider === "gemini" || s.provider === "anthropic") ? s.provider : "anthropic";
+          setAiProvider(p);
+          setOpenaiKey(s.openaiApiKey || "");
+          setGeminiKey(s.geminiApiKey || "");
+          setAnthropicKey(s.anthropicApiKey || "");
+          setAiModel(s[p + "Model"] || getAIModel(p));
+          setAiPrompt(s.prompt || DEFAULT_AI_PROMPT);
+        });
+      }, [user.uid]);
+
+      const setMajor = (id, name) => {
+        localStorage.setItem("buli_major_list", JSON.stringify({ id: id, name: name }));
+        setMajorListIdState(id);
+        setMenuId(null);
+        showToast("רשימה ראשית הוגדרה ⭐");
+      };
+
+      useEffect(function() {
+        function onReady() { setCanInstall(true); }
+        function onDone()  { setCanInstall(false); }
+        window.addEventListener('pwa_install_ready', onReady);
+        window.addEventListener('pwa_installed',     onDone);
+        return function() {
+          window.removeEventListener('pwa_install_ready', onReady);
+          window.removeEventListener('pwa_installed',     onDone);
+        };
+      }, []);
+
+      const installApp = () => {
+        if (window.__installPrompt) {
+          window.__installPrompt.prompt();
+          window.__installPrompt.userChoice.then(function(r) {
+            if (r.outcome === 'accepted') { setCanInstall(false); window.__installPrompt = null; }
+          });
+        } else {
+          setShowInstallGuide(true);
+        }
+      };
+
+      useEffect(function() {
+        db.ref("lists").once("value").then(function(snap) {
+          var arr = [];
+          snap.forEach(function(c) {
+            var l = Object.assign({ id: c.key }, c.val());
+            if ((l.ownerId === user.uid || (l.sharedWith && l.sharedWith[user.uid])) && l.type !== "tasks") arr.push(l);
+          });
+          arr.sort(function(a, b) { return b.createdAt - a.createdAt; });
+          setLists(arr);
+          // Auto-set major if there's only one active shopping list and none is set
+          var active = arr.filter(function(l) { return !l.done && l.type !== "notes"; });
+          if (active.length === 1) {
+            try {
+              var existing = JSON.parse(localStorage.getItem("buli_major_list"));
+              if (!existing) { localStorage.setItem("buli_major_list", JSON.stringify({ id: active[0].id, name: active[0].name })); setMajorListIdState(active[0].id); }
+            } catch(e) { localStorage.setItem("buli_major_list", JSON.stringify({ id: active[0].id, name: active[0].name })); setMajorListIdState(active[0].id); }
+          }
+        });
+        db.ref("items/" + tasksListId).once("value").then(function(snap) {
+          var arr = [];
+          snap.forEach(function(c) { arr.push(Object.assign({ id: c.key }, c.val())); });
+          arr.sort(function(a, b) {
+            var ad = a.dueDate || "", bd = b.dueDate || "";
+            if (!ad && !bd) return (a.createdAt || 0) - (b.createdAt || 0);
+            if (!ad) return 1; if (!bd) return -1;
+            return ad > bd ? 1 : ad < bd ? -1 : 0;
+          });
+          setTasks(arr);
+        });
+      }, []);
+
+      const quickCreate = () => {
+        var prefix = "רשימת קניות #";
+        var maxNum = 0;
+        (lists || []).forEach(function(l) {
+          if (l.name && l.name.indexOf(prefix) === 0) {
+            var num = parseInt(l.name.substring(prefix.length), 10);
+            if (!isNaN(num) && num > maxNum) maxNum = num;
+          }
+        });
+        var autoName = prefix + (maxNum + 1);
+        var now = Date.now();
+        var newList = { name: autoName, type: "shopping", isPrivate: false, done: false, ownerId: user.uid, ownerName: user.displayName, sharedWith: {}, createdAt: now };
+        db.ref("lists").push(newList).then(function(ref) {
+          setLists(function(prev) { return [Object.assign({ id: ref.key }, newList)].concat(prev || []); });
+          onCreateShoppingList(ref.key, autoName);
+        }, function() { showToast("שגיאה ביצירת הרשימה"); });
+      };
+
+      const quickCreateNote = () => {
+        var prefix = "תפריט #";
+        var maxNum = 0;
+        (lists || []).filter(function(l) { return l.type === "notes"; }).forEach(function(l) {
+          if (l.name && l.name.indexOf(prefix) === 0) {
+            var num = parseInt(l.name.substring(prefix.length), 10);
+            if (!isNaN(num) && num > maxNum) maxNum = num;
+          }
+        });
+        var autoName = prefix + (maxNum + 1);
+        var now = Date.now();
+        var lastDiners = parseInt(localStorage.getItem("buli_last_diners_count"), 10) || 12;
+        var newList = { name: autoName, type: "notes", isPrivate: true, done: false, ownerId: user.uid, ownerName: user.displayName, sharedWith: {}, createdAt: now, dinnerDate: nextFriday(now), dinersCount: lastDiners };
+        db.ref("lists").push(newList).then(function(ref) {
+          setLists(function(prev) { return [Object.assign({ id: ref.key }, newList)].concat(prev || []); });
+          onCreateNotesList(ref.key, autoName);
+        }, function() { showToast("שגיאה ביצירת התפריט"); });
+      };
+
+      const reassignMajorIfNeeded = (newLists) => {
+        var active = (newLists || []).filter(function(l) { return !l.done && l.type !== "notes"; });
+        var currentMajorId = null;
+        try { var m = JSON.parse(localStorage.getItem("buli_major_list")); currentMajorId = m ? m.id : null; } catch(e) {}
+        if (active.some(function(l) { return l.id === currentMajorId; })) return;
+        if (active.length > 0) {
+          localStorage.setItem("buli_major_list", JSON.stringify({ id: active[0].id, name: active[0].name }));
+          setMajorListIdState(active[0].id);
+        } else {
+          localStorage.removeItem("buli_major_list");
+          setMajorListIdState(null);
+        }
+      };
+
+      const markListDone = (id) => {
+        var now = Date.now();
+        var newLists = (lists || []).map(function(l) { return l.id === id ? Object.assign({}, l, { done: true, doneAt: now }) : l; });
+        setLists(newLists);
+        reassignMajorIfNeeded(newLists);
+        setMenuId(null); showToast("הרשימה סומנה כהושלמה");
+        db.ref("lists/" + id).update({ done: true, doneAt: now });
+      };
+
+      const restoreList = (id) => {
+        setLists(function(prev) { return prev ? prev.map(function(l) { return l.id === id ? Object.assign({}, l, { done: false, doneAt: null }) : l; }) : []; });
+        setMenuId(null);
+        db.ref("lists/" + id).update({ done: false, doneAt: null });
+      };
+
+      const saveNoteInstance = function(id, name, date, dinersCount, note) {
+        var count = parseInt(dinersCount, 10) || 12;
+        localStorage.setItem("buli_last_diners_count", count);
+        setLists(function(prev) { return prev.map(function(l) { return l.id === id ? Object.assign({}, l, { name: name, dinnerDate: date, dinersCount: count, note: note }) : l; }); });
+        db.ref("lists/" + id).update({ name: name.trim(), dinnerDate: date, dinersCount: count, note: note || "" });
+        setEditingNoteInstance(null);
+      };
+
+      const deleteList = (id) => {
+        setMenuId(null);
+        setConfirmDialog({
+          message: "למחוק את הרשימה וכל הפריטים שלה?",
+          onConfirm: function() {
+            var newLists = (lists || []).filter(function(l) { return l.id !== id; });
+            setLists(newLists);
+            reassignMajorIfNeeded(newLists);
+            showToast("הרשימה נמחקה");
+            var updates = {};
+            updates["lists/" + id] = null;
+            updates["items/" + id] = null;
+            db.ref().update(updates);
+          }
+        });
+      };
+
+      const startRename = (id) => {
+        var list = (lists || []).find(function(l) { return l.id === id; });
+        setRenameId(id); setRenameName(list ? list.name : ""); setMenuId(null);
+      };
+
+      const confirmRename = () => {
+        if (!renameName.trim() || !renameId) return;
+        var newName = renameName.trim();
+        setLists(function(prev) { return prev ? prev.map(function(l) { return l.id === renameId ? Object.assign({}, l, { name: newName }) : l; }) : []; });
+        db.ref("lists/" + renameId).update({ name: newName });
+        setRenameId(null); showToast("שם הרשימה עודכן");
+      };
+
+      const togglePrivacy = (id) => {
+        var list = (lists || []).find(function(l) { return l.id === id; });
+        var nowPrivate = list ? !list.isPrivate : true;
+        setLists(function(prev) { return prev ? prev.map(function(l) { return l.id === id ? Object.assign({}, l, { isPrivate: nowPrivate }) : l; }) : []; });
+        setMenuId(null);
+        db.ref("lists/" + id).update({ isPrivate: nowPrivate });
+        showToast(nowPrivate ? "הרשימה עכשיו פרטית 🔒" : "הרשימה עכשיו שיתופית 👥");
+        if (!nowPrivate) {
+          db.ref("globalContacts").once("value").then(function(snap) {
+            snap.forEach(function(c) {
+              var contact = c.val();
+              if (!contact.alwaysShare) return;
+              db.ref("usersByEmail/" + encodeEmail(contact.email.toLowerCase())).once("value").then(function(us) {
+                if (us.exists()) db.ref("lists/" + id + "/sharedWith/" + us.val()).set("edit");
+              });
+            });
+          });
+        }
+      };
+
+      const toggleTask = (task) => {
+        var newDone = !task.done;
+        var now = Date.now();
+        setTasks(function(prev) { return prev ? prev.map(function(t) { return t.id === task.id ? Object.assign({}, t, { done: newDone, completedAt: newDone ? now : null }) : t; }) : []; });
+        db.ref("items/" + tasksListId + "/" + task.id).update({ done: newDone, completedAt: newDone ? now : null });
+      };
+
+      const saveTaskEdit = (updated) => {
+        setTasks(function(prev) { return prev ? prev.map(function(t) { return t.id === updated.id ? Object.assign({}, t, updated) : t; }) : []; });
+        setEditTask(null);
+        db.ref("items/" + tasksListId + "/" + updated.id).update({
+          name: updated.name, note: updated.note || "", dueDate: updated.dueDate || ""
+        }).then(function() { showToast("מטלה עודכנה"); }, function(err) { showToast("שגיאה: " + (err && err.message || "?")); });
+      };
+
+      const deleteTask = (id) => {
+        setTasks(function(prev) { return prev ? prev.filter(function(t) { return t.id !== id; }) : []; });
+        setEditTask(null);
+        db.ref("items/" + tasksListId + "/" + id).remove();
+        showToast("מטלה נמחקה");
+      };
+
+      if (lists === null || tasks === null) return (
+        <div className="bg-gray-50 flex flex-col" style={{height:"100dvh"}}>
+          <div className="bg-blue-600 text-white px-4 pt-10 pb-5 flex-shrink-0">
+            <div className="flex items-center justify-between" dir="ltr">
+              <div className="flex items-center gap-2">
+                <span className="text-2xl">🛒</span>
+                <span className="text-xl font-bold">בולי</span>
+                <span className="text-xs text-white/40">{VERSION}</span>
+              </div>
+              <button onClick={() => auth.signOut()} className="text-xs bg-white/20 px-3 py-1.5 rounded-full">יציאה</button>
+            </div>
+            <p className="text-white/60 text-sm mt-2 text-right">שלום, {user.displayName.split(" ")[0]}</p>
+          </div>
+          <div className="flex-1 flex items-center justify-center">
+            <div className="spinner w-8 h-8 border-2 border-blue-600 border-t-transparent rounded-full" />
+          </div>
+        </div>
+      );
+
+      const shareApp = () => {
+        var url = 'https://buli-8fdf9.web.app';
+        if (navigator.share) {
+          navigator.share({ title: 'בולי - רשימות קניות', text: 'נסה את בולי — רשימות קניות חכמות עם AI 🛒', url: url });
+        } else {
+          navigator.clipboard.writeText(url).then(function() { showToast('הקישור הועתק! 🔗'); }, function() { showToast(url); });
+        }
+      };
+
+      var byDate = function(a, b) { return (a.createdAt || 0) - (b.createdAt || 0); };
+      var activeShopping = lists.filter(function(l) { return !l.done && l.type !== "notes"; }).sort(byDate);
+      var doneLists      = lists.filter(function(l) { return  l.done && l.type !== "notes"; }).sort(byDate);
+      var byDinnerDate   = function(a, b) { return (b.dinnerDate || "").localeCompare(a.dinnerDate || ""); };
+      var activeNotes    = lists.filter(function(l) { return !l.done && l.type === "notes"; }).sort(byDinnerDate);
+      var doneNotes      = lists.filter(function(l) { return  l.done && l.type === "notes"; }).sort(byDinnerDate);
+      var sortTasksByDue = function(arr) {
+        return arr.slice().sort(function(a, b) {
+          var ad = a.dueDate || "", bd = b.dueDate || "";
+          if (!ad && !bd) return (a.createdAt || 0) - (b.createdAt || 0);
+          if (!ad) return 1; if (!bd) return -1;
+          return ad > bd ? 1 : ad < bd ? -1 : 0;
+        });
+      };
+      var pendingTasks   = sortTasksByDue(tasks.filter(function(t) { return !t.done; }));
+      var doneTasks      = sortTasksByDue(tasks.filter(function(t) { return  t.done; }));
+
+
+      var cardProps = function(l) { return {
+        key: l.id, list: l, userId: user.uid,
+        onOpen: function() { onOpenList(l.id, l.name); },
+        menuOpen: menuId === l.id,
+        onMenuToggle: function(e) { e.stopPropagation(); setMenuId(menuId === l.id ? null : l.id); },
+        onMarkDone:      function() { markListDone(l.id); },
+        onRestore:       function() { restoreList(l.id); },
+        onTogglePrivacy: function() { togglePrivacy(l.id); },
+        onRename:        function() { startRename(l.id); },
+        onDelete:        function() { deleteList(l.id); },
+        isMajor:         majorListId === l.id,
+        onSetMajor:      function() { setMajor(l.id, l.name); },
+        onShowShortcut:  function(e) { e.stopPropagation(); setMenuId(null); setShowShortcutGuide(true); }
+      }; };
+
+      var noteCardProps = function(l) { return {
+        key: l.id, list: l, userId: user.uid,
+        onOpen: function() { onOpenList(l.id, l.name); },
+        menuOpen: menuId === l.id,
+        onMenuToggle: function(e) { e.stopPropagation(); setMenuId(menuId === l.id ? null : l.id); },
+        onMarkDone:  function() { markListDone(l.id); },
+        onRestore:   function() { restoreList(l.id); },
+        onDelete:    function() { deleteList(l.id); },
+        onEdit:      function() { setMenuId(null); setEditingNoteInstance({ id: l.id, name: l.name || "", date: l.dinnerDate || nextFriday(l.createdAt || Date.now()), dinersCount: l.dinersCount || parseInt(localStorage.getItem("buli_last_diners_count"), 10) || 12, note: l.note || "" }); }
+      }; };
+
+      return (
+        <div className="bg-gray-50 flex flex-col" style={{height:"100dvh"}} onClick={() => setMenuId(null)}>
+          <div className="bg-blue-600 text-white px-4 pt-10 pb-3 flex-shrink-0">
+            <div className="flex items-center justify-between" dir="ltr">
+              <div className="flex items-center gap-2">
+                <span className="text-2xl">🛒</span>
+                <span className="text-xl font-bold">בולי</span>
+                <span className="text-xs text-white/40">{VERSION}</span>
+              </div>
+              <button onClick={e => { e.stopPropagation(); setShowSettings(true); }} className="text-white text-xl w-9 h-9 flex items-center justify-center bg-white/20 rounded-full">☰</button>
+            </div>
+            <p className="text-white/60 text-sm mt-1 text-right">שלום, {user.displayName.split(" ")[0]}</p>
+          </div>
+          <div className="bg-white border-b border-gray-200 flex-shrink-0 flex" dir="rtl">
+            {[["shopping","🛒","קניות"],["notes","📝","תפריטים"],["tasks","✅","מטלות"]].map(function(t) {
+              var id = t[0], icon = t[1], label = t[2];
+              return (
+                <button key={id} onClick={function(e) { e.stopPropagation(); setTab(id); }}
+                  className={"flex-1 py-2.5 flex flex-col items-center gap-0.5 border-b-2 transition " + (activeTab===id ? "text-blue-600 border-blue-600 font-semibold" : "text-gray-400 border-transparent")}>
+                  <span className="text-base">{icon}</span>
+                  <span className="text-xs">{label}</span>
+                </button>
+              );
+            })}
+          </div>
+
+          <div className="flex-1 overflow-y-auto p-4 pb-24">
+
+            {/* ── Shopping tab ── */}
+            {activeTab === "shopping" && (
+              <div className="space-y-4">
+                <div className="flex items-center justify-between">
+                  <button onClick={e => { e.stopPropagation(); quickCreate(); }} className="bg-blue-600 text-white text-sm font-medium px-4 py-2 rounded-full shadow">+ רשימה חדשה</button>
+                </div>
+                {activeShopping.length === 0
+                  ? <p className="text-center text-gray-300 text-sm py-8">אין רשימות קניות — לחץ "+ רשימה חדשה"</p>
+                  : <div className="space-y-2">{activeShopping.map(l => <ListCard {...cardProps(l)} />)}</div>
+                }
+                {doneLists.length > 0 && (
+                  <div>
+                    <button onClick={() => setShowDone(v => !v)} className="text-sm text-gray-400 flex items-center gap-1 mb-2 w-full justify-end">
+                      <span>{showDone ? "▾" : "▸"}</span><span>הושלמו ({doneLists.length})</span>
+                    </button>
+                    {showDone && <div className="space-y-2 opacity-60">{doneLists.map(l => <ListCard {...cardProps(l)} isDone />)}</div>}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* ── Notes tab ── */}
+            {activeTab === "notes" && (
+              <div className="space-y-4">
+                <div className="flex items-center justify-between">
+                  <button onClick={e => { e.stopPropagation(); quickCreateNote(); }} className="bg-blue-600 text-white text-sm font-medium px-4 py-2 rounded-full shadow">+ תפריט חדש</button>
+                </div>
+                {activeNotes.length === 0
+                  ? <p className="text-center text-gray-300 text-sm py-8">אין תפריטים — לחץ "+ תפריט חדש"</p>
+                  : <div className="space-y-2">{activeNotes.map(l => <ListCard {...noteCardProps(l)} />)}</div>
+                }
+                {doneNotes.length > 0 && (
+                  <div>
+                    <button onClick={() => setShowDone(v => !v)} className="text-sm text-gray-400 flex items-center gap-1 mb-2 w-full justify-end">
+                      <span>{showDone ? "▾" : "▸"}</span><span>הושלמו ({doneNotes.length})</span>
+                    </button>
+                    {showDone && <div className="space-y-2 opacity-60">{doneNotes.map(l => <ListCard {...noteCardProps(l)} isDone />)}</div>}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* ── Tasks tab ── */}
+            {activeTab === "tasks" && (
+              <div>
+                <div className="flex items-center justify-between mb-3">
+                  <button onClick={e => { e.stopPropagation(); onAddTask(); }} className="bg-blue-600 text-white text-sm font-medium px-4 py-2 rounded-full shadow">+ מטלה חדשה</button>
+                </div>
+                <div className="bg-white rounded-2xl border border-gray-100 shadow-sm px-4 py-1">
+                  {pendingTasks.length === 0 && doneTasks.length === 0 ? (
+                    <p className="text-center text-gray-300 text-sm py-6">אין מטלות — לחץ "+ מטלה חדשה"</p>
+                  ) : (
+                    <>
+                      {pendingTasks.map(function(task) {
+                        return <HomeTaskRow key={task.id} task={task} onToggle={toggleTask} onTap={function() { setEditTask(Object.assign({}, task)); }} />;
+                      })}
+                      {doneTasks.length > 0 && (
+                        <div className="border-t border-gray-50 mt-1">
+                          <p className="text-xs text-gray-300 py-2 text-center">הושלם ({doneTasks.length})</p>
+                          {doneTasks.map(function(task) {
+                            return <HomeTaskRow key={task.id} task={task} onToggle={toggleTask} onTap={function() { setEditTask(Object.assign({}, task)); }} />;
+                          })}
+                        </div>
+                      )}
+                    </>
+                  )}
+                </div>
+              </div>
+            )}
+          </div>
+
+          {editTask && <TaskEditModal item={editTask} onChange={setEditTask} onSave={saveTaskEdit} onDelete={deleteTask} onClose={() => setEditTask(null)} />}
+
+          {/* Rename modal */}
+          {renameId && (
+            <Modal onClose={() => setRenameId(null)}>
+              <h3 className="text-lg font-bold text-center mb-4">שינוי שם</h3>
+              <input value={renameName} onChange={e => setRenameName(e.target.value)} autoFocus
+                onKeyDown={e => e.key === "Enter" && confirmRename()}
+                className="w-full border border-gray-200 rounded-xl px-4 py-3 text-right focus:outline-none focus:border-blue-400 mb-4" />
+              <button onClick={confirmRename} disabled={!renameName.trim()}
+                className="w-full bg-blue-600 text-white py-4 rounded-2xl font-semibold text-lg disabled:opacity-40">
+                שמור
+              </button>
+            </Modal>
+          )}
+
+          {/* Settings modal */}
+          {showSettings && (
+            <Modal onClose={() => setShowSettings(false)}>
+              <div className="mb-5 pb-4 border-b border-gray-100">
+                <div className="flex items-center gap-3">
+                  {user.photoURL
+                    ? <img src={user.photoURL} className="w-10 h-10 rounded-full flex-shrink-0" referrerPolicy="no-referrer" />
+                    : <div className="w-10 h-10 rounded-full bg-blue-100 flex items-center justify-center text-blue-600 font-bold flex-shrink-0">{(user.displayName || "?")[0]}</div>
+                  }
+                  <div className="flex-1 text-right">
+                    <p className="font-semibold text-gray-800">{user.displayName}</p>
+                    <p className="text-xs text-gray-400">{user.email}</p>
+                  </div>
+                  <button onClick={function() { setShowColorPicker(function(v) { return !v; }); }}
+                    style={{background: userColor}}
+                    className="w-8 h-8 rounded-full flex-shrink-0 border-2 border-white shadow-md"
+                    title="שנה צבע" />
+                </div>
+                {showColorPicker && (
+                  <div className="mt-3">
+                    <p className="text-xs text-gray-400 mb-2 text-right">הצבע שלי — גלוי לכולם ברשימות משותפות</p>
+                    <div className="flex gap-2 flex-wrap">
+                      {USER_COLORS.map(function(c) {
+                        return (
+                          <button key={c} onClick={function() { changeUserColor(c); }}
+                            style={{background: c, outline: userColor === c ? "3px solid " + c : "none", outlineOffset: "2px"}}
+                            className="w-8 h-8 rounded-full shadow transition-transform hover:scale-110" />
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
+              </div>
+              <div className="space-y-1">
+                {canInstall && (
+                  <button onClick={function() { setShowSettings(false); installApp(); }} className="w-full text-right px-3 py-3 text-sm text-gray-700 hover:bg-gray-50 rounded-xl flex items-center gap-3">
+                    <span className="text-lg w-7 text-center">📲</span><span>התקן אפליקציה</span>
+                  </button>
+                )}
+                <button onClick={function() { setShowSettings(false); shareApp(); }} className="w-full text-right px-3 py-3 text-sm text-gray-700 hover:bg-gray-50 rounded-xl flex items-center gap-3">
+                  <span className="text-lg w-7 text-center">🔗</span><span>שתף את בולי</span>
+                </button>
+                <button onClick={function() { setShowSettings(false); setShowShortcutGuide(true); }} className="w-full text-right px-3 py-3 text-sm text-gray-700 hover:bg-gray-50 rounded-xl flex items-center gap-3">
+                  <span className="text-lg w-7 text-center">📱</span><span>קיצור דרך לרשימה ראשית</span>
+                </button>
+                <button onClick={toggleAutoOpen} className="w-full text-right px-3 py-3 text-sm text-gray-700 hover:bg-gray-50 rounded-xl flex items-center gap-3">
+                  <span className="text-lg w-7 text-center">🚀</span>
+                  <span className="flex-1">פתח רשימה ראשית בהפעלה</span>
+                  <span className={`w-11 h-6 rounded-full transition-colors flex-shrink-0 flex items-center px-0.5 ${autoOpenMajor ? "bg-blue-500" : "bg-gray-300"}`}>
+                    <span className={`w-5 h-5 bg-white rounded-full shadow transition-transform ${autoOpenMajor ? "translate-x-5" : "translate-x-0"}`} />
+                  </span>
+                </button>
+                <div className="border-t border-gray-100 my-1" />
+                <button onClick={function() { setShowSettings(false); onContacts(); }} className="w-full text-right px-3 py-3 text-sm text-gray-700 hover:bg-gray-50 rounded-xl flex items-center gap-3">
+                  <span className="text-lg w-7 text-center">👥</span><span>אנשי קשר</span>
+                </button>
+                <button onClick={function() { setShowSettings(false); onCategories(); }} className="w-full text-right px-3 py-3 text-sm text-gray-700 hover:bg-gray-50 rounded-xl flex items-center gap-3">
+                  <span className="text-lg w-7 text-center">⚙️</span><span>קטגוריות וחנויות</span>
+                </button>
+                <button onClick={function() { setShowSettings(false); setShowAISettings(true); }} className="w-full text-right px-3 py-3 text-sm text-gray-700 hover:bg-gray-50 rounded-xl flex items-center gap-3">
+                  <span className="text-lg w-7 text-center">🤖</span>
+                  <span className="flex-1">הגדרות AI</span>
+                  <span className="text-xs text-gray-400">{AI_PROVIDERS[aiProvider].name}</span>
+                </button>
+                {isAdmin && (
+                  <button onClick={function() { setShowSettings(false); setShowUsers(true); loadAuthUsers(); }} className="w-full text-right px-3 py-3 text-sm text-gray-700 hover:bg-gray-50 rounded-xl flex items-center gap-3">
+                    <span className="text-lg w-7 text-center">🔑</span><span>ניהול משתמשים</span>
+                  </button>
+                )}
+                <div className="px-3 py-2.5 flex items-center gap-3">
+                  <span className="text-lg w-7 text-center">📝</span>
+                  <span className="flex-1 text-sm text-gray-700">מילת מעבר בתפריטים</span>
+                  <input value={notesSeparator} onChange={function(e) {
+                    var val = e.target.value;
+                    setNotesSeparator(val);
+                    if (val.trim()) localStorage.setItem("buli_notes_separator", val.trim());
+                  }} dir="rtl" maxLength={20}
+                    className="w-20 border border-gray-200 rounded-lg px-2 py-1 text-sm text-center focus:outline-none focus:border-blue-400 text-gray-700" />
+                </div>
+                <div className="border-t border-gray-100 my-1" />
+                <button onClick={function() { auth.signOut(); }} className="w-full text-right px-3 py-3 text-sm text-red-500 hover:bg-red-50 rounded-xl flex items-center gap-3">
+                  <span className="text-lg w-7 text-center">🚪</span><span>יציאה</span>
+                </button>
+              </div>
+            </Modal>
+          )}
+
+          {/* Shortcut guide — device-aware */}
+          {showShortcutGuide && (function() {
+            var ua = navigator.userAgent || "";
+            var isIOS = /iPhone|iPad|iPod/i.test(ua) && !window.MSStream;
+            var isAndroid = /Android/i.test(ua);
+            var isSamsung = isAndroid && /Samsung|SM-[A-Z]/i.test(ua);
+            var copyUrl = function() {
+              navigator.clipboard.writeText("https://buli-8fdf9.web.app/?open=major").then(function() { showToast("הקישור הועתק! 🔗"); }, function() { showToast("העתק: buli-8fdf9.web.app/?open=major"); });
+            };
+            var urlBox = (
+              <div className="bg-blue-50 rounded-2xl px-4 py-3 mb-4 flex items-center justify-between gap-2">
+                <span className="text-xs text-blue-500 font-mono break-all">buli-8fdf9.web.app/?open=major</span>
+                <button onClick={copyUrl} className="bg-blue-600 text-white text-xs px-3 py-1.5 rounded-xl flex-shrink-0 font-semibold">העתק</button>
+              </div>
+            );
+            var androidSteps = isSamsung ? (
+              <div className="space-y-2 mb-4">
+                <div className="bg-yellow-50 border border-yellow-200 rounded-2xl px-4 py-3">
+                  <p className="font-semibold text-gray-800 text-sm mb-2">Samsung Galaxy — כפתור הצד</p>
+                  <ol className="text-xs text-gray-600 space-y-1 list-decimal list-inside">
+                    <li>פתח <strong>הגדרות</strong> ← <strong>תכונות מתקדמות</strong> ← <strong>מקש הצד</strong></li>
+                    <li>תחת "לחיצה כפולה" בחר <strong>הפעל אפליקציות מהירות</strong></li>
+                    <li>בחר <strong>Chrome</strong> כאפליקציה</li>
+                    <li>לחץ פעמיים על כפתור הצד ← Chrome נפתח ← הקלד את הכתובת</li>
+                  </ol>
+                  <p className="text-xs text-gray-400 mt-2">* לגישה מהירה יותר: הוסף קיצור דרך למסך הבית (ראה למטה)</p>
+                </div>
+                <div className="bg-gray-50 rounded-2xl px-4 py-3">
+                  <p className="font-semibold text-gray-800 text-sm mb-2">קיצור דרך במסך הבית (הכי קל)</p>
+                  <ol className="text-xs text-gray-600 space-y-1 list-decimal list-inside">
+                    <li>העתק את הקישור למעלה</li>
+                    <li>פתח <strong>Chrome</strong> ← הדבק בשורת הכתובת</li>
+                    <li>תפריט ⋮ ← <strong>הוסף למסך הבית</strong></li>
+                    <li>תן שם "בולי ראשי" ← לחץ <strong>הוסף</strong></li>
+                  </ol>
+                </div>
+              </div>
+            ) : (
+              <div className="space-y-2 mb-4">
+                <div className="bg-gray-50 rounded-2xl px-4 py-3">
+                  <p className="font-semibold text-gray-800 text-sm mb-2">קיצור דרך במסך הבית</p>
+                  <ol className="text-xs text-gray-600 space-y-1 list-decimal list-inside">
+                    <li>העתק את הקישור למעלה</li>
+                    <li>פתח <strong>Chrome</strong> ← הדבק בשורת הכתובת</li>
+                    <li>תפריט ⋮ ← <strong>הוסף למסך הבית</strong></li>
+                    <li>תן שם "בולי ראשי" ← לחץ <strong>הוסף</strong></li>
+                  </ol>
+                </div>
+              </div>
+            );
+            var iosSteps = (
+              <div className="space-y-2 mb-4">
+                <div className="bg-yellow-50 border border-yellow-200 rounded-2xl px-4 py-3">
+                  <p className="font-semibold text-gray-800 text-sm mb-2">iPhone 15 ומעלה — כפתור הפעולה</p>
+                  <ol className="text-xs text-gray-600 space-y-1 list-decimal list-inside">
+                    <li>פתח אפליקציית <strong>קיצורי דרך</strong></li>
+                    <li>לחץ <strong>+</strong> ← <strong>הוסף פעולה</strong> ← חפש "פתח כתובת URL"</li>
+                    <li>הדבק את הקישור ← שמור בשם "בולי ראשי"</li>
+                    <li><strong>הגדרות</strong> ← <strong>כפתור פעולה</strong> ← <strong>קיצור דרך</strong> ← בחר "בולי ראשי"</li>
+                  </ol>
+                </div>
+                <div className="bg-gray-50 rounded-2xl px-4 py-3">
+                  <p className="font-semibold text-gray-800 text-sm mb-2">כל iPhone — הקשה על הגב</p>
+                  <ol className="text-xs text-gray-600 space-y-1 list-decimal list-inside">
+                    <li>צור קיצור דרך כנ"ל (שלבים 1–3)</li>
+                    <li><strong>הגדרות</strong> ← <strong>נגישות</strong> ← <strong>מגע</strong> ← <strong>הקשה על הגב</strong></li>
+                    <li>בחר <strong>הקשה כפולה</strong> ← <strong>קיצורי דרך</strong> ← "בולי ראשי"</li>
+                  </ol>
+                </div>
+              </div>
+            );
+            return (
+              <Modal onClose={() => setShowShortcutGuide(false)}>
+                <h3 className="text-xl font-bold text-center mb-1">קיצור דרך לרשימה ראשית 📱</h3>
+                <p className="text-sm text-gray-400 text-center mb-4">פתח את הרשימה הראשית ישירות מהטלפון</p>
+                {urlBox}
+                {isIOS ? iosSteps : androidSteps}
+                <button onClick={() => setShowShortcutGuide(false)} className="w-full bg-blue-600 text-white py-4 rounded-2xl font-semibold">הבנתי</button>
+              </Modal>
+            );
+          })()}
+
+          {confirmDialog && <ConfirmDialog message={confirmDialog.message} confirmLabel={confirmDialog.confirmLabel} onConfirm={confirmDialog.onConfirm} onClose={function() { setConfirmDialog(null); }} />}
+
+          {editingNoteInstance && (
+            <Modal onClose={function() { setEditingNoteInstance(null); }}>
+              <h3 className="text-lg font-bold text-center mb-4">עריכת תפריט</h3>
+              <div className="space-y-3 mb-4">
+                <div>
+                  <label className="text-xs text-gray-500 block mb-1 text-right">שם</label>
+                  <input value={editingNoteInstance.name}
+                    onChange={function(e) { setEditingNoteInstance(function(p) { return Object.assign({}, p, { name: e.target.value }); }); }}
+                    dir="rtl" placeholder="שם התפריט" autoFocus
+                    className="w-full border border-gray-200 rounded-xl px-4 py-3 text-right focus:outline-none focus:border-blue-400 text-sm" />
+                </div>
+                <div>
+                  <label className="text-xs text-gray-500 block mb-1 text-right">תאריך ארוחה 📅</label>
+                  <input type="date" value={editingNoteInstance.date}
+                    onChange={function(e) { setEditingNoteInstance(function(p) { return Object.assign({}, p, { date: e.target.value }); }); }}
+                    className="w-full border border-gray-200 rounded-xl px-4 py-3 focus:outline-none focus:border-blue-400 text-center text-base" />
+                </div>
+                <div>
+                  <label className="text-xs text-gray-500 block mb-1 text-right">מספר סועדים 👥</label>
+                  <input type="number" min="1" max="999" value={editingNoteInstance.dinersCount}
+                    onChange={function(e) { setEditingNoteInstance(function(p) { return Object.assign({}, p, { dinersCount: e.target.value }); }); }}
+                    className="w-full border border-gray-200 rounded-xl px-4 py-3 focus:outline-none focus:border-blue-400 text-center text-base" />
+                </div>
+                <div>
+                  <div className="flex items-center justify-between mb-1">
+                    <InlineMic onText={function(t) { setEditingNoteInstance(function(p) { return Object.assign({}, p, { note: (p.note ? p.note + " " : "") + t }); }); }} />
+                    <label className="text-xs text-gray-500">הערות</label>
+                  </div>
+                  <div className="relative">
+                    <textarea value={editingNoteInstance.note || ""}
+                      onChange={function(e) { setEditingNoteInstance(function(p) { return Object.assign({}, p, { note: e.target.value }); }); }}
+                      dir="rtl" rows={3} placeholder="הערות (אופציונלי)"
+                      className="w-full border border-gray-200 rounded-xl p-3 text-right resize-none focus:outline-none focus:border-blue-400 text-sm" />
+                    {editingNoteInstance.note ? (
+                      <button onClick={function() { setEditingNoteInstance(function(p) { return Object.assign({}, p, { note: "" }); }); }}
+                        className="absolute left-2 top-2 text-gray-300 hover:text-gray-500 text-base leading-none">✕</button>
+                    ) : null}
+                  </div>
+                </div>
+              </div>
+              <button onClick={function() { saveNoteInstance(editingNoteInstance.id, editingNoteInstance.name, editingNoteInstance.date, editingNoteInstance.dinersCount, editingNoteInstance.note); }}
+                disabled={!editingNoteInstance.name.trim() || !editingNoteInstance.date}
+                className="w-full bg-blue-600 text-white py-3 rounded-2xl font-semibold disabled:opacity-40">
+                שמור
+              </button>
+            </Modal>
+          )}
+
+          {showAISettings && (
+            <Modal onClose={function() { setShowAISettings(false); }}>
+              <h3 className="text-lg font-bold text-center mb-5">הגדרות AI 🤖</h3>
+              <div className="mb-4">
+                <p className="text-xs text-gray-500 mb-2 text-right">ספק AI</p>
+                <div className="grid grid-cols-3 gap-2">
+                  {Object.entries(AI_PROVIDERS).map(function(entry) {
+                    var id = entry[0], p = entry[1];
+                    var hasKey = !!(id === "openai" ? openaiKey : id === "gemini" ? geminiKey : anthropicKey);
+                    var active = aiProvider === id;
+                    return (
+                      <button key={id} onClick={function() { switchProvider(id); }}
+                        className={"py-2 rounded-xl text-sm font-medium border transition flex flex-col items-center gap-0.5 " + (active ? "bg-blue-600 text-white border-blue-600" : "bg-white text-gray-600 border-gray-200")}>
+                        <span className="font-semibold">{p.name} {hasKey ? "✓" : ""}</span>
+                        <span className={"text-xs " + (active ? "text-blue-100" : "text-gray-400")}>{p.label}{p.free ? " · חינם" : ""}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+              {aiProvider === "anthropic" && (
+                <div className="mb-3">
+                  <p className="text-xs text-gray-500 mb-1 text-right">Anthropic API Key</p>
+                  <input value={anthropicKey} onChange={function(e) { setAnthropicKey(e.target.value); }} placeholder="sk-ant-..." type="password" dir="ltr"
+                    className="w-full border border-gray-200 rounded-xl px-4 py-3 text-left focus:outline-none focus:border-blue-400 text-sm" />
+                </div>
+              )}
+              {aiProvider === "openai" && (
+                <div className="mb-3">
+                  <p className="text-xs text-gray-500 mb-1 text-right">OpenAI API Key</p>
+                  <input value={openaiKey} onChange={function(e) { setOpenaiKey(e.target.value); }} placeholder="sk-..." type="password" dir="ltr"
+                    className="w-full border border-gray-200 rounded-xl px-4 py-3 text-left focus:outline-none focus:border-blue-400 text-sm" />
+                </div>
+              )}
+              {aiProvider === "gemini" && (
+                <div className="mb-3">
+                  <p className="text-xs text-gray-500 mb-1 text-right">Google AI Studio API Key</p>
+                  <input value={geminiKey} onChange={function(e) { setGeminiKey(e.target.value); }} placeholder="AIza..." type="password" dir="ltr"
+                    className="w-full border border-gray-200 rounded-xl px-4 py-3 text-left focus:outline-none focus:border-blue-400 text-sm" />
+                </div>
+              )}
+              <div className="mb-4">
+                <p className="text-xs text-gray-500 mb-1 text-right">מודל</p>
+                <input value={aiModel} onChange={function(e) { setAiModel(e.target.value); }} dir="ltr"
+                  className="w-full border border-gray-200 rounded-xl px-4 py-3 text-left focus:outline-none focus:border-blue-400 text-sm font-mono" />
+              </div>
+              <div className="mb-4">
+                <div className="flex items-center justify-between mb-1">
+                  <button onClick={function() { setAiPrompt(DEFAULT_AI_PROMPT); }} className="text-xs text-blue-500">אפס</button>
+                  <p className="text-xs text-gray-500">פרומפט ({"{categories}"} = רשימת קטגוריות, {"{text}"} = הטקסט)</p>
+                </div>
+                <textarea value={aiPrompt} onChange={function(e) { setAiPrompt(e.target.value); }} rows={8} dir="rtl"
+                  className="w-full border border-gray-200 rounded-xl p-3 text-xs font-mono resize-none focus:outline-none focus:border-blue-400" />
+              </div>
+              <button onClick={saveAISettings} className="w-full bg-blue-600 text-white py-3 rounded-2xl font-semibold">שמור</button>
+            </Modal>
+          )}
+
+          {showUsers && (
+            <Modal onClose={function() { setShowUsers(false); }}>
+              <h3 className="text-lg font-bold text-center mb-5">ניהול משתמשים 🔑</h3>
+              {usersLoading ? (
+                <div className="flex justify-center py-6"><Spinner /></div>
+              ) : (
+                <div>
+                  <div className="flex items-center justify-between bg-gray-50 rounded-xl px-3 py-2 mb-2">
+                    <span className="text-sm text-gray-700">{ownerEmail}</span>
+                    <span className="text-xs font-bold text-green-500 uppercase">בעלים</span>
+                  </div>
+                  {authUsers.length === 0 ? (
+                    <p className="text-xs text-gray-400 px-3 py-2 mb-2">אין עדיין משתמשים נוספים</p>
+                  ) : authUsers.map(function(u) {
+                    return (
+                      <div key={u.email} className="flex items-center justify-between px-3 py-2 mb-1">
+                        <span className="text-sm text-gray-700 truncate">{u.email}</span>
+                        <div className="flex items-center gap-2 flex-shrink-0">
+                          <span className={"text-xs font-bold uppercase " + (u.role === "admin" ? "text-blue-500" : "text-gray-400")}>{u.role}</span>
+                          <button onClick={function() { handleRemoveUser(u.email); }} disabled={userBusy}
+                            className="text-xs text-red-500 border border-red-200 rounded-full px-2 py-1 disabled:opacity-40">הסר</button>
+                        </div>
+                      </div>
+                    );
+                  })}
+                  <div className="flex gap-2 mt-3">
+                    <input type="email" value={newUserEmail} onChange={function(e) { setNewUserEmail(e.target.value); }}
+                      placeholder="name@example.com" dir="ltr"
+                      className="flex-1 border border-gray-200 rounded-xl px-3 py-2 text-sm text-left focus:outline-none focus:border-blue-400"
+                      onKeyDown={function(e) { if (e.key === "Enter") handleAddUser(); }} />
+                    <select value={newUserRole} onChange={function(e) { setNewUserRole(e.target.value); }}
+                      className="border border-gray-200 rounded-xl px-2 py-2 text-sm">
+                      <option value="user">User</option>
+                      <option value="admin">Admin</option>
+                    </select>
+                  </div>
+                  <button onClick={handleAddUser} disabled={!newUserEmail.trim() || userBusy}
+                    className="w-full bg-blue-600 text-white py-3 rounded-2xl font-semibold mt-3 disabled:opacity-40">הוסף</button>
+                  {userMsg && <p className={"text-xs text-center mt-2 " + (userMsg.indexOf("✓") === 0 ? "text-green-500" : "text-red-500")}>{userMsg}</p>}
+                </div>
+              )}
+            </Modal>
+          )}
+
+          {/* iOS install guide */}
+          {showInstallGuide && (
+            <Modal onClose={() => setShowInstallGuide(false)}>
+              <h3 className="text-xl font-bold text-center mb-1">הוסף למסך הבית 📲</h3>
+              <p className="text-sm text-gray-400 text-center mb-5">בצע את הצעדים הבאים בספארי</p>
+              <div className="space-y-3 mb-5">
+                <div className="flex items-center gap-3 bg-gray-50 rounded-2xl px-4 py-3">
+                  <span className="text-2xl w-8 text-center flex-shrink-0">1</span>
+                  <div>
+                    <p className="font-semibold text-gray-800 text-sm">לחץ על כפתור השיתוף</p>
+                    <p className="text-xs text-gray-400">הסמל <span className="font-bold">↑</span> בתחתית המסך</p>
+                  </div>
+                </div>
+                <div className="flex items-center gap-3 bg-gray-50 rounded-2xl px-4 py-3">
+                  <span className="text-2xl w-8 text-center flex-shrink-0">2</span>
+                  <div>
+                    <p className="font-semibold text-gray-800 text-sm">גלול ובחר</p>
+                    <p className="text-xs text-gray-400">"הוסף למסך הבית"</p>
+                  </div>
+                </div>
+                <div className="flex items-center gap-3 bg-gray-50 rounded-2xl px-4 py-3">
+                  <span className="text-2xl w-8 text-center flex-shrink-0">3</span>
+                  <div>
+                    <p className="font-semibold text-gray-800 text-sm">לחץ "הוסף"</p>
+                    <p className="text-xs text-gray-400">האפליקציה תופיע במסך הבית</p>
+                  </div>
+                </div>
+              </div>
+              <button onClick={() => setShowInstallGuide(false)} className="w-full bg-blue-600 text-white py-4 rounded-2xl font-semibold">הבנתי</button>
+            </Modal>
+          )}
+        </div>
+      );
+    }
+
+    function ListCard({ list, userId, onOpen, menuOpen, onMenuToggle, onMarkDone, onRestore, onTogglePrivacy, onRename, onDelete, isDone, isMajor, onSetMajor, onShowShortcut, onEdit }) {
+      const isOwner = list.ownerId === userId;
+      var dateStr = list.dinnerDate
+        ? formatDinnerDate(list.dinnerDate)
+        : (list.createdAt ? (function(){ var d = new Date(list.createdAt); return d.getDate()+"/"+(d.getMonth()+1)+"/"+d.getFullYear(); })() : "");
+      return (
+        <div className="relative">
+          <div className={`w-full bg-white rounded-2xl p-4 flex items-center gap-3 shadow-sm border transition cursor-pointer ${isMajor ? "border-yellow-300 bg-yellow-50/30" : "border-gray-100 hover:border-blue-200"}`} onClick={onOpen}>
+            {isMajor && (
+              <button onClick={onShowShortcut}
+                className="text-lg flex-shrink-0 leading-none"
+                title="רשימה ראשית — לחץ להגדרת קיצור דרך">⭐</button>
+            )}
+            <div className="flex-1 min-w-0 text-right">
+              <div className={`font-semibold truncate ${isDone ? "line-through text-gray-400" : "text-gray-800"}`}>{list.name}</div>
+              {list.dinnerDate ? (
+                <>
+                  <div className="flex items-center justify-between mt-0.5">
+                    <span className="text-xs text-gray-400">{list.dinersCount ? <span>מספר סועדים <strong>{list.dinersCount}</strong></span> : null}</span>
+                    <span className="text-xs text-gray-400">תאריך ארוחה <strong>{dateStr}</strong></span>
+                  </div>
+                  {list.note && <div className="text-xs text-gray-400 mt-0.5 text-right truncate">{list.note}</div>}
+                  {isDone && <div className="text-xs text-gray-400 text-right">✓</div>}
+                </>
+              ) : (
+                <div className="text-xs text-gray-400 mt-0.5 flex items-center gap-1.5 justify-end">
+                  {dateStr && <span>{dateStr}</span>}
+                  {isDone && <><span>·</span><span>✓</span></>}
+                </div>
+              )}
+            </div>
+            <button onClick={onMenuToggle} className="text-gray-400 text-xl px-1 hover:text-gray-600 flex-shrink-0">⋮</button>
+          </div>
+          {menuOpen && (
+            <div className="absolute left-2 top-full mt-1 bg-white rounded-xl shadow-xl border border-gray-100 z-20 overflow-hidden min-w-44" onClick={e => e.stopPropagation()}>
+              {!isDone && !isMajor && onSetMajor && (
+                <button onClick={onSetMajor} className="w-full text-right px-4 py-3 text-sm text-gray-700 hover:bg-gray-50 flex items-center gap-2">
+                  <span>⭐</span><span>הגדר כראשי</span>
+                </button>
+              )}
+              {!isDone && isMajor && onShowShortcut && (
+                <button onClick={onShowShortcut} className="w-full text-right px-4 py-3 text-sm text-gray-700 hover:bg-gray-50 flex items-center gap-2">
+                  <span>📱</span><span>קיצור דרך לכפתור הצד</span>
+                </button>
+              )}
+              {isOwner && onRename && (
+                <button onClick={onRename} className="w-full text-right px-4 py-3 text-sm text-gray-700 hover:bg-gray-50 flex items-center gap-2">
+                  <span>✏️</span><span>שנה שם</span>
+                </button>
+              )}
+              {onEdit && (
+                <button onClick={onEdit} className="w-full text-right px-4 py-3 text-sm text-gray-700 hover:bg-gray-50 flex items-center gap-2">
+                  <span>✏️</span><span>עריכה</span>
+                </button>
+              )}
+              {!isDone && onMarkDone && (
+                <button onClick={onMarkDone} className="w-full text-right px-4 py-3 text-sm text-gray-700 hover:bg-gray-50 flex items-center gap-2">
+                  <span>✅</span><span>סמן כהושלם</span>
+                </button>
+              )}
+              {isDone && onRestore && (
+                <button onClick={onRestore} className="w-full text-right px-4 py-3 text-sm text-gray-700 hover:bg-gray-50 flex items-center gap-2">
+                  <span>↩️</span><span>החזר לפעיל</span>
+                </button>
+              )}
+              {isOwner && onTogglePrivacy && (
+                <button onClick={onTogglePrivacy} className="w-full text-right px-4 py-3 text-sm text-gray-700 hover:bg-gray-50 flex items-center gap-2">
+                  <span>{list.isPrivate ? "👥" : "🔒"}</span>
+                  <span>{list.isPrivate ? "הפוך לשיתופי" : "הפוך לפרטי"}</span>
+                </button>
+              )}
+              <button onClick={onDelete} className="w-full text-right px-4 py-3 text-sm text-red-500 hover:bg-red-50 flex items-center gap-2 border-t border-gray-100">
+                <span>🗑️</span><span>מחק</span>
+              </button>
+            </div>
+          )}
+        </div>
+      );
+    }
+
+    function HomeTaskRow({ task, onToggle, onTap }) {
+      return (
+        <div className="flex items-center gap-3 py-3 border-b border-gray-50 last:border-0 cursor-pointer" onClick={onTap}>
+          <span onClick={function(e) { e.stopPropagation(); onToggle(task); }}>
+            <Checkbox checked={!!task.done} onChange={function() { onToggle(task); }} />
+          </span>
+          <div className="flex-1 min-w-0">
+            <span className={"text-sm font-medium " + (task.done ? "line-through text-gray-400" : "text-gray-700")}>{task.name}</span>
+            {task.dueDate ? <div className="text-xs text-blue-400">{formatDueDate(task.dueDate)}</div> : null}
+            {task.note ? <div className="text-xs text-gray-400 truncate">{task.note}</div> : null}
+          </div>
+          <span className="text-gray-300 text-sm flex-shrink-0">›</span>
+        </div>
+      );
+    }
+
+    function InlineMic({ onText }) {
+      var [rec, setRec] = React.useState(false);
+      var stopRef = React.useRef(null);
+      var heldRef = React.useRef(false);
+
+      var startRec = function(e) {
+        e.preventDefault(); e.stopPropagation();
+        heldRef.current = true;
+        setRec(true);
+        function doStart() {
+          if (!heldRef.current) return;
+          stopRef.current = startSpeech({
+            onResult: function(text, isFinal) { if (isFinal) onText(text); },
+            onEnd:    function() { if (heldRef.current) { doStart(); } else { setRec(false); stopRef.current = null; } },
+            onError:  function() { if (heldRef.current) { setTimeout(doStart, 100); } else { setRec(false); stopRef.current = null; } }
+          });
+        }
+        doStart();
+      };
+      var stopRec = function(e) {
+        e.stopPropagation();
+        heldRef.current = false;
+        if (stopRef.current) { stopRef.current(); stopRef.current = null; }
+        setRec(false);
+      };
+
+      return (
+        <button
+          onPointerDown={startRec} onPointerUp={stopRec} onPointerCancel={stopRec}
+          style={{ touchAction: "none", userSelect: "none" }}
+          className={"w-14 h-14 rounded-full flex-shrink-0 flex items-center justify-center text-2xl transition select-none " + (rec ? "bg-red-500 text-white" : "bg-gray-100 text-gray-500 hover:bg-gray-200")}>
+          🎤
+        </button>
+      );
+    }
+
+    function NoteItemRow({ item, canEdit, onToggle, onDelete, onEdit, onSaveNote, onMoveUp, onMoveDown, isFirst, isLast }) {
+      var [editingNote, setEditingNote] = React.useState(false);
+      var [noteVal,     setNoteVal]     = React.useState(item.note || "");
+
+      var openNote   = function(e) { e.stopPropagation(); setNoteVal(item.note || ""); setEditingNote(true); };
+      var saveNote   = function(e) { e.stopPropagation(); onSaveNote(item.id, noteVal.trim()); setEditingNote(false); };
+      var cancelNote = function(e) { e.stopPropagation(); setNoteVal(item.note || ""); setEditingNote(false); };
+
+      return (
+        <div className="bg-white rounded-xl border border-gray-100 overflow-hidden">
+          <div className="flex items-center gap-2 px-3 py-2.5">
+            <Checkbox checked={!!item.done} onChange={function() { onToggle(item); }} />
+            <div className="flex-1 min-w-0">
+              <span className={"text-sm font-medium block " + (item.done ? "line-through text-gray-400" : "text-gray-800")}>{item.name}</span>
+              {!editingNote && item.note ? (
+                <div onClick={canEdit ? openNote : undefined}
+                  className={"text-xs text-gray-400 mt-0.5 flex items-start gap-1 " + (canEdit ? "cursor-pointer hover:text-gray-600" : "")}>
+                  <span className="flex-shrink-0">💬</span><span className="break-words">{item.note}</span>
+                </div>
+              ) : !editingNote && canEdit ? (
+                <button onClick={openNote} className="text-xs text-gray-300 hover:text-gray-500 mt-0.5 flex items-center gap-0.5">
+                  <span>💬</span><span>הוסף הערה</span>
+                </button>
+              ) : null}
+            </div>
+            {canEdit && (
+              <div className="flex items-center gap-1 flex-shrink-0">
+                <div className="flex flex-col gap-px">
+                  <button onClick={onMoveUp} disabled={isFirst}
+                    className="w-5 h-4 flex items-center justify-center text-gray-300 hover:text-blue-500 disabled:opacity-20 text-xs leading-none">▲</button>
+                  <button onClick={onMoveDown} disabled={isLast}
+                    className="w-5 h-4 flex items-center justify-center text-gray-300 hover:text-blue-500 disabled:opacity-20 text-xs leading-none">▼</button>
+                </div>
+                <button onClick={function() { onEdit(item); }} className="text-gray-300 hover:text-blue-400 text-sm px-0.5">✏️</button>
+                <button onClick={function() { onDelete(item.id); }} className="text-gray-300 hover:text-red-400 text-base">🗑️</button>
+              </div>
+            )}
+          </div>
+          {editingNote && (
+            <div className="px-3 pb-3 pt-1 border-t border-gray-50">
+              <div className="relative">
+                <textarea value={noteVal} onChange={function(e) { setNoteVal(e.target.value); }} autoFocus rows={2}
+                  placeholder="הוסף הערה..." dir="rtl"
+                  className="w-full text-sm border border-blue-200 rounded-xl px-3 py-2 resize-none focus:outline-none focus:border-blue-400 text-right" />
+                {noteVal ? (
+                  <button onClick={function() { setNoteVal(""); }} className="absolute left-2 top-2 text-gray-300 hover:text-gray-500 text-base leading-none">✕</button>
+                ) : null}
+              </div>
+              <div className="flex gap-2 mt-1.5 items-center justify-start" dir="ltr">
+                <button onClick={saveNote} className="text-xs bg-blue-600 text-white px-4 py-1.5 rounded-lg font-medium">שמור</button>
+                <button onClick={cancelNote} className="text-xs text-gray-400 px-3 py-1.5 rounded-lg border border-gray-200">ביטול</button>
+                <InlineMic onText={function(t) { setNoteVal(function(prev) { return prev ? prev + " " + t : t; }); }} />
+              </div>
+            </div>
+          )}
+        </div>
+      );
+    }
+
+    function NoteEditModal({ item, onSave, onClose }) {
+      var [name, setName] = React.useState(item.name || "");
+      var [note, setNote] = React.useState(item.note || "");
+      return (
+        <Modal onClose={onClose}>
+          <h3 className="text-lg font-bold text-center mb-4">עריכת מנה</h3>
+          <div className="space-y-3">
+            <div>
+              <label className="text-xs text-gray-500 block mb-1 text-right">שם המנה</label>
+              <input value={name} onChange={function(e) { setName(e.target.value); }} dir="rtl" placeholder="שם המנה" autoFocus
+                className="w-full border border-gray-200 rounded-xl p-3 text-right focus:outline-none focus:border-blue-400 text-sm" />
+            </div>
+            <div>
+              <div className="flex items-center justify-between mb-1">
+                <InlineMic onText={function(t) { setNote(function(prev) { return prev ? prev + " " + t : t; }); }} />
+                <label className="text-xs text-gray-500">הערה</label>
+              </div>
+              <textarea value={note} onChange={function(e) { setNote(e.target.value); }} dir="rtl" placeholder="הערה (אופציונלי)" rows={3}
+                className="w-full border border-gray-200 rounded-xl p-3 text-right resize-none focus:outline-none focus:border-blue-400 text-sm" />
+            </div>
+          </div>
+          <button onClick={function() { if (name.trim()) onSave(name.trim(), note.trim()); }} disabled={!name.trim()}
+            className="w-full mt-4 bg-blue-600 text-white py-3 rounded-xl font-semibold disabled:opacity-40">
+            שמור
+          </button>
+        </Modal>
+      );
+    }
+
+    // ── CONTACTS SCREEN ───────────────────────────────────────────────────────────
+    function ContactsScreen({ user, onBack, showToast }) {
+      const [contacts, setContacts] = useState(null);
+      const [addName,  setAddName]  = useState("");
+      const [addEmail, setAddEmail] = useState("");
+      const [adding,   setAdding]   = useState(false);
+      const [showAdd,  setShowAdd]  = useState(false);
+      const [confirmDialog, setConfirmDialog] = useState(null);
+
+      useEffect(function() {
+        db.ref("globalContacts").once("value").then(function(snap) {
+          var arr = [];
+          snap.forEach(function(c) { arr.push(Object.assign({ id: c.key }, c.val())); });
+          arr.sort(function(a, b) { return (a.name || "").localeCompare(b.name || "", "he"); });
+          setContacts(arr);
+        });
+      }, []);
+
+      const addContact = () => {
+        if (!addName.trim() || !addEmail.trim()) return;
+        setAdding(true);
+        var newContact = { name: addName.trim(), email: addEmail.trim().toLowerCase(), alwaysShare: false };
+        db.ref("globalContacts").push(newContact).then(function(ref) {
+          setContacts(function(prev) {
+            var arr = (prev || []).concat(Object.assign({ id: ref.key }, newContact));
+            arr.sort(function(a, b) { return (a.name || "").localeCompare(b.name || "", "he"); });
+            return arr;
+          });
+          setAddName(""); setAddEmail(""); setShowAdd(false); setAdding(false);
+          showToast("איש קשר נוסף!");
+        }, function() { showToast("שגיאה בהוספה"); setAdding(false); });
+      };
+
+      const toggleAlways = (id) => {
+        setContacts(function(prev) {
+          return prev.map(function(c) { return c.id === id ? Object.assign({}, c, { alwaysShare: !c.alwaysShare }) : c; });
+        });
+        var contact = (contacts || []).find(function(c) { return c.id === id; });
+        if (contact) db.ref("globalContacts" + "/" + id + "/alwaysShare").set(!contact.alwaysShare);
+      };
+
+      const promptDeleteContact = (c) => {
+        setConfirmDialog({
+          message: "למחוק את " + c.name + "?",
+          onConfirm: function() {
+            setContacts(function(prev) { return prev.filter(function(x) { return x.id !== c.id; }); });
+            db.ref("globalContacts/" + c.id).remove();
+            showToast("איש קשר נמחק");
+          }
+        });
+      };
+
+      return (
+        <div className="bg-gray-50 flex flex-col" style={{height:"100dvh"}}>
+          <div className="bg-blue-600 text-white px-4 pt-10 pb-4 flex-shrink-0">
+            <div className="flex items-center gap-3" dir="ltr">
+              <button onClick={onBack} className="flex items-center gap-1 text-white font-semibold text-sm bg-white/20 px-3 py-1.5 rounded-full flex-shrink-0">
+                <span className="text-lg leading-none">‹</span><span>חזרה</span>
+              </button>
+              <h1 className="flex-1 text-lg font-bold text-right">אנשי קשר</h1>
+              <button onClick={() => setShowAdd(true)} className="text-sm bg-white/20 px-3 py-1.5 rounded-full">+ הוסף</button>
+            </div>
+            <p className="text-white/60 text-xs mt-1 text-right">משתמשים שאתה משתף איתם בקביעות</p>
+          </div>
+
+          <div className="flex-1 overflow-y-auto p-4">
+            {contacts === null ? (
+              <div className="flex justify-center py-20"><div className="spinner w-8 h-8 border-2 border-blue-600 border-t-transparent rounded-full" /></div>
+            ) : contacts.length === 0 ? (
+              <div className="text-center py-20 text-gray-400">
+                <div className="text-5xl mb-3">👥</div>
+                <p className="font-medium">אין אנשי קשר</p>
+                <p className="text-sm mt-1">הוסף אנשי קשר לשיתוף מהיר</p>
+              </div>
+            ) : (
+              <div className="space-y-3">
+                {contacts.map(function(c) {
+                  return (
+                    <div key={c.id} className="bg-white rounded-2xl border border-gray-100 shadow-sm px-4 py-3 flex items-center gap-3">
+                      <div className="flex-1 min-w-0">
+                        <div className="font-medium text-gray-800">{c.name}</div>
+                        <div className="text-xs text-gray-400 truncate">{c.email}</div>
+                      </div>
+                      <div className="flex items-center gap-3 flex-shrink-0">
+                        <div className="flex flex-col items-center gap-0.5">
+                          <button onClick={function() { toggleAlways(c.id); }}
+                            className={"relative inline-flex h-6 w-11 items-center rounded-full transition-colors " + (c.alwaysShare ? "bg-blue-600" : "bg-gray-200")}>
+                            <span className={"inline-block h-4 w-4 rounded-full bg-white shadow transition-transform " + (c.alwaysShare ? "translate-x-6" : "translate-x-1")} />
+                          </button>
+                          <span className="text-xs text-gray-400">תמיד</span>
+                        </div>
+                        <button onClick={function() { promptDeleteContact(c); }} className="text-gray-300 hover:text-red-400 text-lg">🗑️</button>
+                      </div>
+                    </div>
+                  );
+                })}
+                <p className="text-xs text-gray-400 text-center pt-2">אנשי קשר עם "תמיד" יתווספו אוטומטית כשרשימה הופכת לשיתופית</p>
+              </div>
+            )}
+          </div>
+
+          {showAdd && (
+            <Modal onClose={() => { setShowAdd(false); setAddName(""); setAddEmail(""); }}>
+              <h3 className="text-lg font-bold text-center mb-4">הוסף איש קשר</h3>
+              <input value={addName} onChange={e => setAddName(e.target.value)} placeholder="שם"
+                className="w-full border border-gray-200 rounded-xl px-4 py-3 text-right focus:outline-none focus:border-blue-400 mb-3" />
+              <input value={addEmail} onChange={e => setAddEmail(e.target.value)} type="email" placeholder="אימייל"
+                className="w-full border border-gray-200 rounded-xl px-4 py-3 text-right focus:outline-none focus:border-blue-400 mb-4" />
+              <button onClick={addContact} disabled={!addName.trim() || !addEmail.trim() || adding}
+                className="w-full bg-blue-600 text-white py-4 rounded-2xl font-semibold disabled:opacity-40 flex items-center justify-center gap-2">
+                {adding ? <Spinner /> : "הוסף"}
+              </button>
+            </Modal>
+          )}
+
+          {confirmDialog && <ConfirmDialog message={confirmDialog.message} onConfirm={confirmDialog.onConfirm} onClose={function() { setConfirmDialog(null); }} />}
+        </div>
+      );
+    }
+
+    // ── CATEGORIES SCREEN ─────────────────────────────────────────────────────────
+    function guessEmoji(label) {
+      var l = label;
+      var map = [
+        [["בשר","עוף","כבש","טלה","נקניק","המבורגר","שווארמה","קבב","סטייק"], "🥩"],
+        [["דג","סלמון","טונה","מקרל","אנשובי","בקלה","דניס","לברק"], "🐟"],
+        [["לחם","מאפה","בגט","פיתה","חלה","עוגה","עוגיה","קרואסון","סופגניה","בורקס","כיש"], "🍞"],
+        [["ירק","פרי","עגבניה","מלפפון","חסה","גזר","בצל","תפוח","בננה","תפוז","ענב","אבוקדו","אפרסק","מנגו","לימון","תות","קיווי","רימון","אגס","שזיף"], "🥦"],
+        [["חלב","גבינה","יוגורט","שמנת","חמאה","קוטג","לבנה","קשקבל","מוצרלה","בולגרית"], "🥛"],
+        [["ביצ"], "🥚"],
+        [["נייר","טואלט","מגבת","ניילון","שקית","מפית"], "🧻"],
+        [["ניקוי","סבון","מרכך","אבקה","אקונומיקה","ברק","ג'אב","פיירי","דטרגנט"], "🧴"],
+        [["שמן","חומץ","מלח","פלפל","תבל","פפריקה","כורכום","רוטב","חרדל","מיונז","קטשופ"], "🫙"],
+        [["קמח","סוכר","שוקולד","ריבה","דבש","ממרח","גרנולה","דגני"], "🫙"],
+        [["קפה","תה","שימור","קופסא","קופסת","שעועית","אורז","פסטה","קטניות","עדשים","חומוס"], "📦"],
+        [["שתיה","מיץ","מים","סודה","בירה","יין","קולה","ספרייט","פאנטה","ענבים"], "🧃"],
+        [["קרח","גלידה","קפוא","ארטיק","פרוז"], "🧊"],
+        [["חטיף","ביסקויט","קרקר","פרינגלס","פצפוצים","נאגטס","פופקורן"], "🍿"],
+        [["רחצה","שיניים","מברשת","שמפו","קרם","אפטרשייב","דאודורנט","היגיינה","אישי","סבוני","קצף"], "🛁"],
+        [["חיות","כלב","חתול","פינוקים","מזון לחיות"], "🐾"],
+        [["תינוק","חיתול","מחית","פורמולה","מוצץ"], "👶"],
+        [["תרופה","ויטמין","כדור","אספירין","פארמ","בריאות"], "💊"],
+        [["פרח","צמח","אדמה","זרע","עציץ"], "🌸"],
+        [["כלי בית","סיר","מחבת","כוס","צלחת","קערה","ווק"], "🍳"],
+      ];
+      for (var i = 0; i < map.length; i++) {
+        var kws = map[i][0];
+        for (var j = 0; j < kws.length; j++) {
+          if (l.indexOf(kws[j]) !== -1) return map[i][1];
+        }
+      }
+      return "📦";
+    }
+
+    function resolveProfileOrder(categoryOrder, allCategories) {
+      var labels = allCategories.map(function(c) { return c.label; });
+      var order = (categoryOrder || []).filter(function(l) { return labels.indexOf(l) !== -1; });
+      labels.forEach(function(l) { if (order.indexOf(l) === -1) order.push(l); });
+      return order;
+    }
+
+    function CategoriesScreen({ user, onBack, showToast }) {
+      const [categories,    setCategories]    = useState(null);
+      const [editingId,     setEditingId]     = useState(null);
+      const [editLabel,     setEditLabel]     = useState("");
+      const [editEmoji,     setEditEmoji]     = useState("");
+      const [newLabel,      setNewLabel]      = useState("");
+      const [newEmoji,      setNewEmoji]      = useState("📦");
+      const [profiles,      setProfiles]      = useState([]);
+      const [editProfile,   setEditProfile]   = useState(null);
+      const [addProfileName,setAddProfileName]= useState("");
+      const [confirmDialog, setConfirmDialog] = useState(null);
+
+      useEffect(function() {
+        db.ref("globalCategories").once("value").then(function(snap) {
+          if (snap.exists()) {
+            var arr = [];
+            snap.forEach(function(c) { arr.push(Object.assign({ id: c.key }, c.val())); });
+            arr.sort(function(a, b) { return (a.order || 0) - (b.order || 0); });
+            setCategories(arr);
+          } else {
+            setCategories([]);
+          }
+        });
+        db.ref("globalProfiles").once("value").then(function(snap) {
+          var arr = [];
+          snap.forEach(function(c) { arr.push(Object.assign({ id: c.key }, c.val())); });
+          setProfiles(arr);
+        });
+      }, []);
+
+      const addCategory = () => {
+        if (!newLabel.trim()) return;
+        const id = "cat_" + Date.now();
+        const cat = { id: id, label: newLabel.trim(), emoji: newEmoji.trim() || "📦", order: categories ? categories.length : 0 };
+        setCategories(function(prev) { return prev ? prev.concat([cat]) : [cat]; });
+        setNewLabel(""); setNewEmoji("📦");
+        db.ref("globalCategories" + "/" + id).set({ label: cat.label, emoji: cat.emoji, order: cat.order })
+          .then(function() { showToast("קטגוריה נוספה!"); },
+                function(err) { showToast("שגיאה: " + (err && err.message || "?")); setCategories(function(prev) { return prev ? prev.filter(function(c) { return c.id !== id; }) : []; }); });
+      };
+
+      const saveEdit = (cat) => {
+        if (!editLabel.trim()) return;
+        const lbl = editLabel.trim(), emoji = editEmoji.trim() || "📦";
+        setCategories(function(prev) { return prev ? prev.map(function(c) { return c.id === cat.id ? Object.assign({}, c, { label: lbl, emoji: emoji }) : c; }) : []; });
+        setEditingId(null);
+        db.ref("globalCategories" + "/" + cat.id).update({ label: lbl, emoji: emoji })
+          .then(function() { showToast("קטגוריה עודכנה!"); },
+                function(err) { showToast("שגיאה: " + (err && err.message || "?")); });
+      };
+
+      const deleteCategory = (cat) => {
+        setConfirmDialog({
+          message: 'למחוק את הקטגוריה "' + cat.label + '"?',
+          onConfirm: function() {
+            setCategories(function(prev) { return prev ? prev.filter(function(c) { return c.id !== cat.id; }) : []; });
+            db.ref("globalCategories/" + cat.id).remove()
+              .then(function() { showToast("קטגוריה נמחקה"); },
+                    function(err) { showToast("שגיאה: " + (err && err.message || "?")); });
+          }
+        });
+      };
+
+      const moveUp = (idx) => {
+        if (idx === 0 || !categories) return;
+        const arr = categories.slice();
+        const tmp = arr[idx]; arr[idx] = arr[idx - 1]; arr[idx - 1] = tmp;
+        arr.forEach(function(c, i) { c.order = i; });
+        setCategories(arr.slice());
+        const updates = {};
+        updates["globalCategories" + "/" + arr[idx].id + "/order"] = idx;
+        updates["globalCategories" + "/" + arr[idx - 1].id + "/order"] = idx - 1;
+        db.ref().update(updates);
+      };
+
+      const moveDown = (idx) => {
+        if (!categories || idx >= categories.length - 1) return;
+        const arr = categories.slice();
+        const tmp = arr[idx]; arr[idx] = arr[idx + 1]; arr[idx + 1] = tmp;
+        arr.forEach(function(c, i) { c.order = i; });
+        setCategories(arr.slice());
+        const updates = {};
+        updates["globalCategories" + "/" + arr[idx].id + "/order"] = idx;
+        updates["globalCategories" + "/" + arr[idx + 1].id + "/order"] = idx + 1;
+        db.ref().update(updates);
+      };
+
+      const addProfile = () => {
+        if (!addProfileName.trim() || !categories) return;
+        var order = categories.map(function(c) { return c.label; });
+        var newProfile = { name: addProfileName.trim(), categoryOrder: order };
+        db.ref("globalProfiles").push(newProfile).then(function(ref) {
+          var p = Object.assign({ id: ref.key }, newProfile);
+          setProfiles(function(prev) { return prev.concat(p); });
+          setAddProfileName("");
+          showToast("פרופיל נוסף!");
+        }, function() { showToast("שגיאה"); });
+      };
+
+      const promptDeleteProfile = (p) => {
+        setConfirmDialog({
+          message: "למחוק את הפרופיל " + p.name + "?",
+          onConfirm: function() {
+            setProfiles(function(prev) { return prev.filter(function(x) { return x.id !== p.id; }); });
+            db.ref("globalProfiles/" + p.id).remove();
+            showToast("פרופיל נמחק");
+            if (localStorage.getItem("buli_profile") === p.id) localStorage.removeItem("buli_profile");
+          }
+        });
+      };
+
+      const moveProfileCatUp = (idx) => {
+        if (!editProfile || idx === 0) return;
+        var order = resolveProfileOrder(editProfile.categoryOrder, categories || []);
+        var tmp = order[idx]; order[idx] = order[idx - 1]; order[idx - 1] = tmp;
+        var updated = Object.assign({}, editProfile, { categoryOrder: order });
+        setEditProfile(updated);
+        setProfiles(function(prev) { return prev.map(function(p) { return p.id === updated.id ? updated : p; }); });
+        db.ref("globalProfiles" + "/" + updated.id + "/categoryOrder").set(order);
+      };
+
+      const moveProfileCatDown = (idx) => {
+        if (!editProfile) return;
+        var order = resolveProfileOrder(editProfile.categoryOrder, categories || []);
+        if (idx >= order.length - 1) return;
+        var tmp = order[idx]; order[idx] = order[idx + 1]; order[idx + 1] = tmp;
+        var updated = Object.assign({}, editProfile, { categoryOrder: order });
+        setEditProfile(updated);
+        setProfiles(function(prev) { return prev.map(function(p) { return p.id === updated.id ? updated : p; }); });
+        db.ref("globalProfiles" + "/" + updated.id + "/categoryOrder").set(order);
+      };
+
+      if (categories === null) return (
+        <div className="bg-gray-50 flex flex-col" style={{height:"100dvh"}}>
+          <Header onBack={onBack} title="הגדרות" />
+          <div className="flex-1 flex items-center justify-center">
+            <div className="spinner w-8 h-8 border-2 border-blue-600 border-t-transparent rounded-full" />
+          </div>
+        </div>
+      );
+
+      const profileCatOrder = editProfile ? resolveProfileOrder(editProfile.categoryOrder, categories) : [];
+
+      return (
+        <div className="bg-gray-50 flex flex-col" style={{height:"100dvh"}}>
+          <Header onBack={onBack} title="הגדרות" />
+          <div className="flex-1 overflow-y-auto p-4 pb-8">
+
+            {/* — Categories section — */}
+            <h2 className="font-bold text-gray-600 text-sm mb-2 text-right">קטגוריות</h2>
+            <p className="text-xs text-gray-400 mb-3 text-right">סדר ברירת המחדל של הקטגוריות ברשימה</p>
+            {categories.length === 0 && (
+              <p className="text-center text-gray-400 py-4 text-sm">עדיין אין קטגוריות</p>
+            )}
+            <div className="space-y-2 mb-4">
+              {categories.map((cat, idx) => (
+                <div key={cat.id} className="bg-white rounded-xl border border-gray-100 px-3 py-2.5">
+                  {editingId === cat.id ? (
+                    <div className="flex gap-2 items-center">
+                      <input value={editEmoji} onChange={e => setEditEmoji(e.target.value)} maxLength={2}
+                        className="w-12 border border-gray-200 rounded-lg text-center text-xl py-1.5 focus:outline-none focus:border-blue-400" />
+                      <input value={editLabel} onChange={e => setEditLabel(e.target.value)} autoFocus
+                        onKeyDown={e => e.key === "Enter" && saveEdit(cat)}
+                        className="flex-1 border border-gray-200 rounded-lg px-3 py-1.5 text-right text-sm focus:outline-none focus:border-blue-400" />
+                      <button onClick={() => saveEdit(cat)} className="text-green-500 text-xl font-bold w-8 text-center">✓</button>
+                      <button onClick={() => setEditingId(null)} className="text-gray-400 text-xl w-8 text-center">✕</button>
+                    </div>
+                  ) : (
+                    <div className="flex items-center gap-2" dir="ltr">
+                      <div className="flex gap-0.5">
+                        <button onClick={() => moveUp(idx)} disabled={idx === 0}
+                          className="w-7 h-7 flex items-center justify-center text-gray-400 hover:text-blue-600 disabled:opacity-20 text-sm">↑</button>
+                        <button onClick={() => moveDown(idx)} disabled={idx === categories.length - 1}
+                          className="w-7 h-7 flex items-center justify-center text-gray-400 hover:text-blue-600 disabled:opacity-20 text-sm">↓</button>
+                      </div>
+                      <span className="text-xl">{cat.emoji}</span>
+                      <span className="flex-1 font-medium text-gray-800 text-sm text-right">{cat.label}</span>
+                      <button onClick={() => { setEditingId(cat.id); setEditLabel(cat.label); setEditEmoji(cat.emoji); }}
+                        className="w-7 h-7 flex items-center justify-center text-gray-400 hover:text-blue-500 text-sm">✏️</button>
+                      <button onClick={() => deleteCategory(cat)}
+                        className="w-7 h-7 flex items-center justify-center text-gray-300 hover:text-red-500 text-base">🗑️</button>
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+            <div className="bg-white rounded-2xl border border-gray-200 p-4 mb-8">
+              <h3 className="font-semibold text-gray-700 mb-3 text-sm">קטגוריה חדשה</h3>
+              <div className="flex gap-2 mb-3">
+                <input value={newEmoji} onChange={e => setNewEmoji(e.target.value)} maxLength={2}
+                  className="w-14 border border-gray-200 rounded-xl px-2 py-3 text-center text-xl focus:outline-none focus:border-blue-400" />
+                <input value={newLabel} onChange={e => { setNewLabel(e.target.value); setNewEmoji(guessEmoji(e.target.value)); }}
+                  placeholder="שם הקטגוריה..." onKeyDown={e => e.key === "Enter" && addCategory()}
+                  className="flex-1 border border-gray-200 rounded-xl px-4 py-3 text-right focus:outline-none focus:border-blue-400" />
+              </div>
+              <button onClick={addCategory} disabled={!newLabel.trim()}
+                className="w-full bg-blue-600 text-white py-3 rounded-xl font-medium disabled:opacity-40">
+                + הוסף קטגוריה
+              </button>
+            </div>
+
+            {/* — Store profiles section — */}
+            <h2 className="font-bold text-gray-600 text-sm mb-1 text-right">פרופילי חנויות 🏪</h2>
+            <p className="text-xs text-gray-400 mb-3 text-right">סדר קטגוריות שונה לכל רשת סופרמרקט</p>
+            <div className="space-y-2 mb-4">
+              {profiles.length === 0 && (
+                <p className="text-center text-gray-400 py-3 text-sm">אין פרופילים — הוסף חנות למטה</p>
+              )}
+              {profiles.map(function(p) {
+                return (
+                  <div key={p.id} className="bg-white rounded-xl border border-gray-100 px-3 py-2.5 flex items-center gap-2" dir="ltr">
+                    <button onClick={function() { setEditProfile(p); }}
+                      className="w-7 h-7 flex items-center justify-center text-gray-400 hover:text-blue-500 text-sm">✏️</button>
+                    <span className="flex-1 font-medium text-gray-800 text-sm text-right">{p.name}</span>
+                    <button onClick={function() { promptDeleteProfile(p); }}
+                      className="w-7 h-7 flex items-center justify-center text-gray-300 hover:text-red-500 text-base">🗑️</button>
+                  </div>
+                );
+              })}
+            </div>
+            <div className="bg-white rounded-2xl border border-gray-200 p-4">
+              <h3 className="font-semibold text-gray-700 mb-3 text-sm">פרופיל חנות חדש</h3>
+              <input value={addProfileName} onChange={e => setAddProfileName(e.target.value)}
+                placeholder="שם החנות (למשל: רמי לוי)" onKeyDown={e => e.key === "Enter" && addProfile()}
+                className="w-full border border-gray-200 rounded-xl px-4 py-3 text-right focus:outline-none focus:border-blue-400 mb-3" />
+              <button onClick={addProfile} disabled={!addProfileName.trim() || !categories || !categories.length}
+                className="w-full bg-blue-600 text-white py-3 rounded-xl font-medium disabled:opacity-40">
+                + הוסף חנות
+              </button>
+            </div>
+          </div>
+
+          {/* Profile category order editor */}
+          {editProfile && (
+            <Modal onClose={function() { setEditProfile(null); }}>
+              <h3 className="text-lg font-bold text-center mb-1">{editProfile.name}</h3>
+              <p className="text-xs text-gray-400 text-center mb-4">גרור או לחץ חצים לשינוי הסדר</p>
+              <div className="space-y-2 max-h-64 overflow-y-auto mb-4">
+                {profileCatOrder.map(function(label, idx) {
+                  var cat = (categories || []).find(function(c) { return c.label === label; });
+                  return (
+                    <div key={label} className="flex items-center gap-2 bg-gray-50 rounded-xl px-3 py-2" dir="ltr">
+                      <div className="flex gap-0.5">
+                        <button onClick={function() { moveProfileCatUp(idx); }} disabled={idx === 0}
+                          className="w-7 h-7 flex items-center justify-center text-gray-400 hover:text-blue-600 disabled:opacity-20 text-sm">↑</button>
+                        <button onClick={function() { moveProfileCatDown(idx); }} disabled={idx === profileCatOrder.length - 1}
+                          className="w-7 h-7 flex items-center justify-center text-gray-400 hover:text-blue-600 disabled:opacity-20 text-sm">↓</button>
+                      </div>
+                      <span className="text-lg">{cat ? cat.emoji : "📦"}</span>
+                      <span className="flex-1 text-sm font-medium text-gray-800 text-right">{label}</span>
+                      <span className="text-xs text-gray-300">{idx + 1}</span>
+                    </div>
+                  );
+                })}
+              </div>
+              <p className="text-xs text-gray-400 text-center mb-3">השינויים נשמרים אוטומטית</p>
+              <button onClick={function() { setEditProfile(null); }} className="w-full bg-blue-600 text-white py-3 rounded-2xl font-semibold">סיום</button>
+            </Modal>
+          )}
+
+          {confirmDialog && <ConfirmDialog message={confirmDialog.message} onConfirm={confirmDialog.onConfirm} onClose={function() { setConfirmDialog(null); }} />}
+        </div>
+      );
+    }
+
+    // ── LIST SCREEN ───────────────────────────────────────────────────────────────
+    function ListScreen({ user, listId, onBack, onAdd, showToast }) {
+      const [categories, setCategories] = useState([]);
+      const [list,       setList]       = useState(null);
+      const [items,      setItems]      = useState([]);
+      const [loading,    setLoading]    = useState(true);
+      const [sortBy,     setSortBy]     = useState("category");
+      const [profiles,         setProfiles]         = useState([]);
+      const [activeProfile,    setActiveProfile]    = useState(function() { return localStorage.getItem("buli_profile") || "default"; });
+      const [showProfilePicker,setShowProfilePicker]= useState(false);
+      const [editItem,      setEditItem]      = useState(null);
+      const [taskEdit,      setTaskEdit]      = useState(null);
+      const [noteEdit,      setNoteEdit]      = useState(null);
+      const [confirmDialog, setConfirmDialog] = useState(null);
+      const [showShare,        setShowShare]        = useState(false);
+      const [contacts,         setContacts]         = useState([]);
+      const [selectedContacts, setSelectedContacts] = useState([]);
+      const [shareEmail,       setShareEmail]       = useState("");
+      const [shareRole,        setShareRole]        = useState("edit");
+      const [sharing,          setSharing]          = useState(false);
+      const [filterStatus, setFilterStatus] = useState(function() { return localStorage.getItem("buli_filter_status") || "all"; });
+      const [filterPerson, setFilterPerson] = useState(function() { return localStorage.getItem("buli_filter_person") || "all"; });
+      const [showSearch,   setShowSearch]   = useState(false);
+      const [searchQuery,  setSearchQuery]  = useState("");
+
+      // Load everything once — optimistic updates for all mutations
+      useEffect(function() {
+        var done = 0;
+        function tick() { if (++done >= 3) setLoading(false); }
+
+        db.ref("globalCategories").once("value").then(function(snap) {
+          if (snap.exists()) {
+            var arr = [];
+            snap.forEach(function(c) { arr.push(Object.assign({ id: c.key }, c.val())); });
+            arr.sort(function(a, b) { return (a.order || 0) - (b.order || 0); });
+            setCategories(arr);
+          }
+          tick();
+        });
+
+        db.ref("lists/" + listId).once("value").then(function(snap) {
+          if (snap.exists()) setList(Object.assign({ id: snap.key }, snap.val()));
+          tick();
+        });
+
+        db.ref("items/" + listId).once("value").then(function(snap) {
+          var arr = [];
+          snap.forEach(function(c) { arr.push(Object.assign({ id: c.key }, c.val())); });
+          arr.sort(function(a, b) { return (a.createdAt || 0) - (b.createdAt || 0); });
+          setItems(arr);
+          tick();
+        });
+
+        db.ref("globalContacts").once("value").then(function(snap) {
+          var arr = [];
+          snap.forEach(function(c) { arr.push(Object.assign({ id: c.key }, c.val())); });
+          arr.sort(function(a, b) { return (a.name || "").localeCompare(b.name || "", "he"); });
+          setContacts(arr);
+        });
+
+        db.ref("globalProfiles").once("value").then(function(snap) {
+          var arr = [];
+          snap.forEach(function(c) { arr.push(Object.assign({ id: c.key }, c.val())); });
+          setProfiles(arr);
+        });
+      }, []);
+
+      if (loading || !list) return (
+        <div className="bg-gray-50 flex flex-col items-center justify-center" style={{height:"100dvh"}}>
+          <div className="spinner w-8 h-8 border-2 border-blue-600 border-t-transparent rounded-full" />
+        </div>
+      );
+
+      const isOwner    = list.ownerId === user.uid;
+      const role       = isOwner ? "edit" : ((list.sharedWith && list.sharedWith[user.uid]) || "view");
+      const canEditAll  = isOwner || role === "edit";
+      const canAddItems = canEditAll || role === "own";
+      const canEditItem = function(item) {
+        if (canEditAll) return true;
+        if (role === "own") return !!(item && item.addedBy === user.uid);
+        return false;
+      };
+
+      const toggle = (item) => {
+        if (!canEditItem(item)) return;
+        const newDone = !item.done;
+        const now = Date.now();
+        setItems(function(prev) { return prev.map(function(i) { return i.id === item.id ? Object.assign({}, i, { done: newDone, completedAt: newDone ? now : null }) : i; }); });
+        db.ref("items/" + listId + "/" + item.id).update({ done: newDone, completedAt: newDone ? now : null });
+      };
+
+      const remove = (id) => {
+        var item = items.find(function(i) { return i.id === id; });
+        if (!canEditItem(item)) return;
+        setConfirmDialog({
+          message: "למחוק " + (item ? item.name : "") + "?",
+          onConfirm: function() {
+            setItems(function(prev) { return prev.filter(function(i) { return i.id !== id; }); });
+            db.ref("items/" + listId + "/" + id).remove();
+            showToast("פריט נמחק");
+          }
+        });
+      };
+
+      const clearDone = () => {
+        const doneItems = items.filter(function(i) { return i.done; });
+        if (!doneItems.length) return;
+        setConfirmDialog({
+          message: "למחוק " + doneItems.length + (list && list.type === "tasks" ? " מטלות שהושלמו?" : " פריטים שנסלו?"),
+          confirmLabel: "מחק",
+          onConfirm: function() {
+            setItems(function(prev) { return prev.filter(function(i) { return !i.done; }); });
+            const updates = {};
+            doneItems.forEach(function(i) { updates["items/" + listId + "/" + i.id] = null; });
+            db.ref().update(updates);
+            showToast("נוקה!");
+          }
+        });
+      };
+
+      const saveEdit = (updated) => {
+        setItems(function(prev) { return prev.map(function(i) { return i.id === updated.id ? Object.assign({}, i, updated) : i; }); });
+        setEditItem(null);
+        db.ref("items/" + listId + "/" + updated.id).update({
+          name: updated.name, quantity: updated.quantity !== "" && updated.quantity != null ? Number(updated.quantity) || 1 : null,
+          unit: updated.unit, category: updated.category, note: updated.note || ""
+        }).then(function() { showToast("פריט עודכן"); }, function(err) { showToast("שגיאה: " + (err && err.message || "?")); });
+      };
+
+      const saveTaskEdit = (updated) => {
+        setItems(function(prev) { return prev.map(function(i) { return i.id === updated.id ? Object.assign({}, i, updated) : i; }); });
+        setTaskEdit(null);
+        db.ref("items/" + listId + "/" + updated.id).update({
+          name: updated.name, note: updated.note || "", dueDate: updated.dueDate || ""
+        }).then(function() { showToast("מטלה עודכנה"); }, function(err) { showToast("שגיאה: " + (err && err.message || "?")); });
+      };
+
+      const deleteTask = (id) => {
+        setItems(function(prev) { return prev.filter(function(i) { return i.id !== id; }); });
+        setTaskEdit(null);
+        db.ref("items/" + listId + "/" + id).remove();
+        showToast("מטלה נמחקה");
+      };
+
+      const saveNoteEdit = function(name, note) {
+        if (!noteEdit || !name) return;
+        var id = noteEdit.id;
+        setItems(function(prev) { return prev.map(function(i) { return i.id === id ? Object.assign({}, i, { name: name, note: note }) : i; }); });
+        setNoteEdit(null);
+        db.ref("items/" + listId + "/" + id).update({ name: name, note: note });
+      };
+
+      const updateNote = (id, note) => {
+        setItems(function(prev) { return prev.map(function(i) { return i.id === id ? Object.assign({}, i, { note: note }) : i; }); });
+        db.ref("items/" + listId + "/" + id + "/note").set(note);
+      };
+
+      const shareList = () => {
+        if (!shareEmail.trim()) return;
+        setSharing(true);
+        db.ref("usersByEmail/" + encodeEmail(shareEmail.trim().toLowerCase())).once("value")
+          .then(function(snap) {
+            if (!snap.exists()) { showToast("המשתמש לא נמצא"); setSharing(false); return; }
+            db.ref("lists/" + listId + "/sharedWith/" + snap.val()).set(shareRole)
+              .then(function() { setShareEmail(""); showToast("שותף!"); setSharing(false); },
+                    function() { showToast("שגיאה בשיתוף"); setSharing(false); });
+          }, function() { showToast("שגיאה בשיתוף"); setSharing(false); });
+      };
+
+      const shareWithContacts = () => {
+        if (!selectedContacts.length && !shareEmail.trim()) return;
+        setSharing(true);
+        var total = selectedContacts.length + (shareEmail.trim() ? 1 : 0);
+        var completed = 0;
+        function done() {
+          completed++;
+          if (completed >= total) {
+            setShowShare(false);
+            setSelectedContacts([]);
+            setShareEmail("");
+            showToast("שותף!");
+            setSharing(false);
+          }
+        }
+        selectedContacts.forEach(function(cid) {
+          var contact = contacts.find(function(c) { return c.id === cid; });
+          if (!contact) { done(); return; }
+          db.ref("usersByEmail/" + encodeEmail(contact.email.toLowerCase())).once("value").then(function(snap) {
+            if (!snap.exists()) { done(); return; }
+            db.ref("lists/" + listId + "/sharedWith/" + snap.val()).set(shareRole).then(done, done);
+          }, done);
+        });
+        if (shareEmail.trim()) {
+          db.ref("usersByEmail/" + encodeEmail(shareEmail.trim().toLowerCase())).once("value").then(function(snap) {
+            if (!snap.exists()) { showToast("אימייל לא נמצא"); done(); return; }
+            db.ref("lists/" + listId + "/sharedWith/" + snap.val()).set(shareRole).then(done, done);
+          }, done);
+        }
+      };
+
+      const openShare = () => {
+        var preSelected = contacts.filter(function(c) { return c.alwaysShare; }).map(function(c) { return c.id; });
+        setSelectedContacts(preSelected);
+        setShareEmail("");
+        setShowShare(true);
+      };
+
+      const isTasks = list.type === "tasks";
+      const isNotes = list.type === "notes";
+      const notesSorted = isNotes ? [...items].sort(function(a,b) { return (a.order||0)-(b.order||0); }) : [];
+      const moveNoteItem = function(id, dir) {
+        var idx = notesSorted.findIndex(function(i) { return i.id === id; });
+        var swapIdx = idx + dir;
+        if (idx < 0 || swapIdx < 0 || swapIdx >= notesSorted.length) return;
+        var a = notesSorted[idx], b = notesSorted[swapIdx];
+        var ao = a.order != null ? a.order : idx;
+        var bo = b.order != null ? b.order : swapIdx;
+        db.ref("items/" + listId + "/" + a.id + "/order").set(bo);
+        db.ref("items/" + listId + "/" + b.id + "/order").set(ao);
+        setItems(function(prev) {
+          return prev.map(function(i) {
+            if (i.id === a.id) return Object.assign({}, i, { order: bo });
+            if (i.id === b.id) return Object.assign({}, i, { order: ao });
+            return i;
+          });
+        });
+      };
+      const moveNoteUp   = function(id) { moveNoteItem(id, -1); };
+      const moveNoteDown = function(id) { moveNoteItem(id,  1); };
+
+      const applyStatusFilter = function(v) { setFilterStatus(v); localStorage.setItem("buli_filter_status", v); };
+      const applyPersonFilter = function(v) { setFilterPerson(v); localStorage.setItem("buli_filter_person", v); };
+      const clearAllFilters   = function() { applyStatusFilter("all"); applyPersonFilter("all"); setSearchQuery(""); setShowSearch(false); };
+
+      const filteredItems = items.filter(function(item) {
+        if (filterPerson === "mine"   && item.addedBy !== user.uid) return false;
+        if (filterPerson === "others" && item.addedBy === user.uid) return false;
+        if (filterStatus === "done"    && !item.done) return false;
+        if (filterStatus === "pending" &&  item.done) return false;
+        if (searchQuery.trim()) {
+          var q = searchQuery.trim().toLowerCase();
+          if ((item.name || "").toLowerCase().indexOf(q) === -1) return false;
+        }
+        return true;
+      });
+      const notDone = filteredItems.filter(i => !i.done);
+      const done    = filteredItems.filter(i =>  i.done);
+
+      const editFn = (item) => isTasks ? setTaskEdit({...item}) : setEditItem({...item});
+
+      const renderGroup = (arr) => {
+        if (!isTasks && sortBy === "name") {
+          return (
+            <div className="space-y-2">
+              {[...arr].sort((a,b) => (a.name||"").localeCompare(b.name||"","he")).map(item =>
+                <ItemRow key={item.id} item={item} canEdit={canEditItem(item)} onToggle={toggle} onDelete={remove} onEdit={() => editFn(item)} onUpdateNote={updateNote} isTasks={false} currentUserId={user.uid} />
+              )}
+            </div>
+          );
+        }
+        if (isTasks) {
+          return (
+            <div className="space-y-2">
+              {arr.map(item =>
+                <ItemRow key={item.id} item={item} canEdit={canEditItem(item)} onToggle={toggle} onDelete={remove} onEdit={() => editFn(item)} onUpdateNote={updateNote} isTasks={true} currentUserId={user.uid} />
+              )}
+            </div>
+          );
+        }
+        // By category — respect user-defined category order
+        var activeProf = activeProfile !== "default" ? profiles.find(function(p) { return p.id === activeProfile; }) : null;
+        const catOrder = activeProf
+          ? resolveProfileOrder(activeProf.categoryOrder, categories)
+          : categories.map(c => c.label);
+        const catMap = {};
+        arr.forEach(i => {
+          const c = i.category || "שונות";
+          if (!catMap[c]) catMap[c] = { emoji: i.categoryEmoji || "🛍️", items: [] };
+          catMap[c].items.push(i);
+        });
+        const sortedGroups = [
+          ...catOrder.filter(l => catMap[l]).map(l => ({ label: l, ...catMap[l] })),
+          ...Object.entries(catMap).filter(([l]) => !catOrder.includes(l)).map(([l,v]) => ({ label: l, ...v }))
+        ];
+        return sortedGroups.map(group => (
+          <div key={group.label} className="mb-5">
+            <div className="text-xs font-semibold text-gray-400 mb-2 flex items-center gap-1 uppercase tracking-wide">
+              <span>{group.emoji}</span><span>{group.label}</span>
+            </div>
+            <div className="space-y-2">
+              {group.items.map(item => <ItemRow key={item.id} item={item} canEdit={canEditItem(item)} onToggle={toggle} onDelete={remove} onEdit={() => editFn(item)} onUpdateNote={updateNote} isTasks={false} currentUserId={user.uid} />)}
+            </div>
+          </div>
+        ));
+      };
+
+      const doneCount  = filteredItems.filter(i => i.done).length;
+      const isFiltered = filterStatus !== "all" || filterPerson !== "all" || searchQuery.trim().length > 0;
+
+      return (
+        <div className="bg-gray-50 flex flex-col" style={{height:"100dvh"}}>
+          <div className="bg-blue-600 text-white px-4 pt-10 pb-3 flex-shrink-0">
+            <div className="flex items-center gap-3" dir="ltr">
+              <button onClick={onBack} className="flex items-center gap-1 text-white font-semibold text-sm bg-white/20 px-3 py-1.5 rounded-full flex-shrink-0">
+                <span className="text-lg leading-none">‹</span><span>חזרה</span>
+              </button>
+              <h1 className="flex-1 text-lg font-bold truncate text-right">{list.name}</h1>
+              {isOwner && !list.isPrivate && !isNotes && (
+                <button onClick={openShare} className="text-sm bg-white/20 px-3 py-1 rounded-full flex-shrink-0">שתף</button>
+              )}
+            </div>
+            <div className="flex items-center justify-between mt-2" dir="ltr">
+              {!isNotes ? (
+                <div className="flex bg-white/15 rounded-full p-0.5">
+                  <button onClick={function() { setSortBy("name"); }}
+                    className={"text-xs px-3 py-1 rounded-full transition " + (sortBy==="name" ? "bg-white text-blue-600 font-semibold" : "text-white/70")}>שם</button>
+                  <button onClick={function() {
+                    setSortBy("category");
+                    if (profiles.length > 0) setShowProfilePicker(true);
+                  }} className={"text-xs px-3 py-1 rounded-full transition flex items-center gap-1 " + (sortBy==="category" ? "bg-white text-blue-600 font-semibold" : "text-white/70")}>
+                    {sortBy === "category" && activeProfile !== "default"
+                      ? ((profiles.find(function(p) { return p.id === activeProfile; }) || {}).name || "קטגוריה")
+                      : "קטגוריה"}
+                    {profiles.length > 0 && <span style={{fontSize:"9px"}}>▾</span>}
+                  </button>
+                </div>
+              ) : <div />}
+              <span className="text-white/50 text-xs flex items-center gap-2">
+                {isNotes ? (notesSorted.filter(i=>i.done).length + "/" + notesSorted.length) : (isFiltered ? filteredItems.length + "/" + items.length : doneCount + "/" + items.length)}
+                {doneCount > 0 && canEditAll && !isFiltered && (
+                  <button onClick={clearDone} className="bg-white/20 text-white text-xs px-2.5 py-1 rounded-full font-medium">
+                    🗑️ {isTasks ? "מחק הושלמו" : isNotes ? "מחק סיימו" : "מחק מסל"}
+                  </button>
+                )}
+              </span>
+            </div>
+            {!isNotes && (
+              <div className="flex items-center gap-1.5 mt-2" dir="ltr">
+                <div className="flex bg-white/15 rounded-full p-0.5 gap-0.5">
+                  {[["all","הכל"],["pending","○ פתוח"],["done","✓ " + (isTasks ? "הושלם" : "בסל")]].map(function(entry) {
+                    var v = entry[0], l = entry[1];
+                    return (
+                      <button key={v} onClick={function() { applyStatusFilter(v); }}
+                        className={"text-xs px-2 py-1 rounded-full transition whitespace-nowrap " + (filterStatus===v ? "bg-white text-blue-600 font-semibold" : "text-white/70")}>
+                        {l}
+                      </button>
+                    );
+                  })}
+                </div>
+                <div className="flex bg-white/15 rounded-full p-0.5 gap-0.5">
+                  {[["all","כולם"],["mine","שלי"],["others","אחרים"]].map(function(entry) {
+                    var v = entry[0], l = entry[1];
+                    return (
+                      <button key={v} onClick={function() { applyPersonFilter(v); }}
+                        className={"text-xs px-2 py-1 rounded-full transition " + (filterPerson===v ? "bg-white text-blue-600 font-semibold" : "text-white/70")}>
+                        {l}
+                      </button>
+                    );
+                  })}
+                </div>
+                <button onClick={function() { setShowSearch(function(p) { return !p; }); setSearchQuery(""); }}
+                  className={"w-7 h-7 flex-shrink-0 flex items-center justify-center rounded-full text-sm transition " + (showSearch ? "bg-white text-blue-600" : "bg-white/15 text-white/80")}>
+                  🔍
+                </button>
+                {isFiltered && (
+                  <button onClick={clearAllFilters} className="text-white/60 hover:text-white text-xs flex-shrink-0" title="נקה פילטרים">✕</button>
+                )}
+              </div>
+            )}
+            {!isNotes && showSearch && (
+              <div className="mt-2">
+                <input value={searchQuery} onChange={function(e) { setSearchQuery(e.target.value); }}
+                  autoFocus placeholder="חפש פריט..." dir="rtl"
+                  className="w-full bg-white/20 text-white placeholder-white/40 rounded-full px-4 py-1.5 text-sm focus:outline-none border border-white/20" />
+              </div>
+            )}
+          </div>
+
+          <div className="flex-1 overflow-y-auto p-4 pb-28">
+            {isNotes ? (
+              notesSorted.length === 0 ? (
+                <div className="text-center py-20 text-gray-400">
+                  <div className="text-6xl mb-4">📝</div>
+                  <p className="font-medium">אין מנות עדיין</p>
+                  {canAddItems && <p className="text-sm mt-1">לחץ + להוסיף מנות</p>}
+                </div>
+              ) : (
+                <div className="space-y-2">
+                  {notesSorted.map(function(item, idx) {
+                    return <NoteItemRow key={item.id} item={item} canEdit={canEditAll} onToggle={toggle} onDelete={remove} onEdit={function(it) { setNoteEdit(it); }} onSaveNote={updateNote} onMoveUp={function() { moveNoteUp(item.id); }} onMoveDown={function() { moveNoteDown(item.id); }} isFirst={idx===0} isLast={idx===notesSorted.length-1} />;
+                  })}
+                </div>
+              )
+            ) : items.length === 0 ? (
+              <div className="text-center py-20 text-gray-400">
+                <div className="text-6xl mb-4">🛍️</div>
+                <p className="font-medium">הרשימה ריקה</p>
+                {canAddItems && <p className="text-sm mt-1">{list.type === "tasks" ? "לחץ + להוסיף מטלות" : "לחץ + להוסיף פריטים"}</p>}
+              </div>
+            ) : filteredItems.length === 0 ? (
+              <div className="text-center py-16 text-gray-400">
+                <div className="text-5xl mb-3">🔍</div>
+                <p className="font-medium">אין פריטים תואמים</p>
+                <button onClick={clearAllFilters} className="mt-4 text-sm text-blue-500 bg-blue-50 px-5 py-2 rounded-full">נקה פילטרים</button>
+              </div>
+            ) : (
+              <>
+                {renderGroup(notDone)}
+                {done.length > 0 && (
+                  <div className="mb-5 mt-2">
+                    <div className="text-xs font-semibold text-gray-300 mb-2 flex items-center gap-1">
+                      <span>{isTasks ? "✅" : "🛒"}</span><span>{isTasks ? "הושלם" : "בסל"}</span>
+                    </div>
+                    <div className="space-y-2">
+                      {done.map(item => <ItemRow key={item.id} item={item} canEdit={canEditItem(item)} onToggle={toggle} onDelete={remove} onEdit={() => editFn(item)} onUpdateNote={updateNote} isTasks={isTasks} currentUserId={user.uid} />)}
+                    </div>
+                  </div>
+                )}
+              </>
+            )}
+          </div>
+
+          {canAddItems && (
+            <button onClick={() => onAdd(list.type, list.name)} className="fixed bottom-6 left-1/2 -translate-x-1/2 bg-blue-600 text-white px-8 py-4 rounded-2xl shadow-xl font-semibold text-base flex items-center gap-2">
+              <span className="text-xl font-light">+</span> {isTasks ? "הוסף מטלה" : isNotes ? "הוסף מנות" : "הוסף פריטים"}
+            </button>
+          )}
+
+          {editItem && <EditItemModal item={editItem} categories={categories} onChange={setEditItem} onSave={saveEdit} onClose={() => setEditItem(null)} />}
+          {noteEdit && <NoteEditModal item={noteEdit} onSave={saveNoteEdit} onClose={function() { setNoteEdit(null); }} />}
+          {taskEdit && <TaskEditModal item={taskEdit} onChange={setTaskEdit} onSave={saveTaskEdit} onDelete={deleteTask} onClose={() => setTaskEdit(null)} />}
+          {confirmDialog && <ConfirmDialog message={confirmDialog.message} confirmLabel={confirmDialog.confirmLabel} onConfirm={confirmDialog.onConfirm} onClose={function() { setConfirmDialog(null); }} />}
+
+          {showShare && (
+            <Modal onClose={() => setShowShare(false)}>
+              <h3 className="text-lg font-bold text-center mb-4">שתף רשימה</h3>
+              {contacts.length > 0 && (
+                <div className="mb-4">
+                  <p className="text-xs text-gray-400 mb-2 text-right">אנשי קשר</p>
+                  <div className="space-y-2 max-h-48 overflow-y-auto">
+                    {contacts.filter(function(c) { return c.id !== user.uid && (c.email || "").toLowerCase() !== (user.email || "").toLowerCase(); }).map(function(c) {
+                      var sel = selectedContacts.indexOf(c.id) !== -1;
+                      return (
+                        <button key={c.id} onClick={function() {
+                          setSelectedContacts(function(prev) {
+                            return sel ? prev.filter(function(x) { return x !== c.id; }) : prev.concat(c.id);
+                          });
+                        }} className={"w-full flex items-center gap-3 px-3 py-2.5 rounded-xl border text-right transition " + (sel ? "bg-blue-50 border-blue-400" : "bg-white border-gray-200")}>
+                          <div className={"w-5 h-5 rounded-full border-2 flex-shrink-0 flex items-center justify-center text-xs " + (sel ? "bg-blue-600 border-blue-600 text-white" : "border-gray-300")}>
+                            {sel ? "✓" : ""}
+                          </div>
+                          <div className="flex-1 min-w-0">
+                            <div className="text-sm font-medium text-gray-800 truncate">{c.name}</div>
+                            <div className="text-xs text-gray-400 truncate">{c.email}</div>
+                          </div>
+                          {c.alwaysShare && <span className="text-xs text-blue-400 flex-shrink-0">תמיד</span>}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+              <input value={shareEmail} onChange={e => setShareEmail(e.target.value)} type="email" placeholder={contacts.length > 0 ? "או הוסף אימייל" : "אימייל"}
+                className="w-full border border-gray-200 rounded-xl px-4 py-3 text-right focus:outline-none focus:border-blue-400 mb-3" />
+              <p className="text-xs text-gray-400 mb-2 text-right">הרשאות</p>
+              <div className="grid grid-cols-3 gap-2 mb-4">
+                {[["edit","✏️ מלאה"],["own","👤 שלי בלבד"],["view","👁️ צפייה"]].map(([v,l]) => (
+                  <button key={v} onClick={() => setShareRole(v)}
+                    className={`py-3 rounded-xl text-xs font-medium border transition ${shareRole===v?"bg-blue-600 text-white border-blue-600":"bg-white text-gray-600 border-gray-200"}`}>{l}</button>
+                ))}
+              </div>
+              <button onClick={shareWithContacts} disabled={(!selectedContacts.length && !shareEmail.trim()) || sharing}
+                className="w-full bg-blue-600 text-white py-4 rounded-2xl font-semibold disabled:opacity-40 flex items-center justify-center gap-2">
+                {sharing ? <Spinner /> : "שתף"}
+              </button>
+            </Modal>
+          )}
+
+          {showProfilePicker && (
+            <Modal onClose={function() { setShowProfilePicker(false); }}>
+              <h3 className="text-lg font-bold text-center mb-4">סדר קטגוריות לפי חנות</h3>
+              <div className="space-y-2">
+                <button onClick={function() {
+                  setActiveProfile("default");
+                  localStorage.setItem("buli_profile", "default");
+                  setShowProfilePicker(false);
+                }} className={"w-full flex items-center gap-3 px-4 py-3 rounded-xl border text-right transition " + (activeProfile === "default" ? "bg-blue-50 border-blue-400" : "bg-white border-gray-200")}>
+                  <div className={"w-5 h-5 rounded-full border-2 flex-shrink-0 flex items-center justify-center text-xs " + (activeProfile === "default" ? "bg-blue-600 border-blue-600 text-white" : "border-gray-300")}>
+                    {activeProfile === "default" ? "✓" : ""}
+                  </div>
+                  <span className="font-medium text-gray-800">ברירת מחדל</span>
+                </button>
+                {profiles.map(function(p) {
+                  var sel = activeProfile === p.id;
+                  return (
+                    <button key={p.id} onClick={function() {
+                      setActiveProfile(p.id);
+                      localStorage.setItem("buli_profile", p.id);
+                      setShowProfilePicker(false);
+                    }} className={"w-full flex items-center gap-3 px-4 py-3 rounded-xl border text-right transition " + (sel ? "bg-blue-50 border-blue-400" : "bg-white border-gray-200")}>
+                      <div className={"w-5 h-5 rounded-full border-2 flex-shrink-0 flex items-center justify-center text-xs " + (sel ? "bg-blue-600 border-blue-600 text-white" : "border-gray-300")}>
+                        {sel ? "✓" : ""}
+                      </div>
+                      <span className="font-medium text-gray-800">{p.name}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            </Modal>
+          )}
+        </div>
+      );
+    }
+
+    function formatDueDate(dateStr) {
+      if (!dateStr) return "";
+      try { var p = dateStr.split("-"); return p[2] + "/" + p[1] + "/" + p[0]; } catch(e) { return dateStr; }
+    }
+
+    function ItemRow({ item, canEdit, onToggle, onDelete, onEdit, onUpdateNote, isTasks, currentUserId }) {
+      const [editingNote, setEditingNote] = useState(false);
+      const [noteVal,     setNoteVal]     = useState(item.note || "");
+
+      const openNote = (e) => { e.stopPropagation(); setNoteVal(item.note || ""); setEditingNote(true); };
+      const saveNote = (e) => { e.stopPropagation(); onUpdateNote(item.id, noteVal.trim()); setEditingNote(false); };
+      const cancelNote = (e) => { e.stopPropagation(); setNoteVal(item.note || ""); setEditingNote(false); };
+
+      const qty = (!isTasks && (item.quantity > 1 || (item.unit && item.unit !== "יחידות"))) ? item.quantity + " " + (item.unit || "") : "";
+      const dateStr = isTasks ? formatDueDate(item.dueDate) : "";
+
+      return (
+        <div className="bg-white rounded-xl border border-gray-100 overflow-hidden">
+          <div className={`flex items-center gap-2 px-3 py-2.5 ${isTasks && canEdit ? "cursor-pointer active:bg-gray-50" : ""}`}
+               onClick={isTasks && canEdit ? onEdit : undefined}>
+            <span onClick={isTasks ? function(e){e.stopPropagation();} : undefined}>
+              <Checkbox checked={!!item.done} onChange={() => onToggle(item)} />
+            </span>
+            <div className="flex-1 min-w-0">
+              <span className={`font-medium text-sm ${item.done ? "line-through text-gray-400" : "text-gray-800"}`}>{item.name}</span>
+              {currentUserId && item.addedBy && item.addedBy !== currentUserId && (
+                <span style={{color: item.addedByColor || getUserColor(item.addedBy)}} className="block text-xs font-medium mt-0.5">
+                  ● {item.addedByName ? item.addedByName.split(" ")[0] : ""}
+                </span>
+              )}
+              {dateStr ? <div className="text-xs text-blue-400">{dateStr}</div> : null}
+              {!editingNote && item.note ? (
+                <div onClick={!isTasks && canEdit ? openNote : undefined}
+                  className={`text-xs text-gray-400 mt-0.5 flex items-start gap-1 ${!isTasks && canEdit ? "cursor-pointer hover:text-gray-600" : ""}`}>
+                  <span className="flex-shrink-0">💬</span><span className="break-words">{item.note}</span>
+                </div>
+              ) : !editingNote && !isTasks && canEdit ? (
+                <button onClick={openNote} className="text-xs text-gray-300 hover:text-gray-500 mt-0.5 flex items-center gap-0.5">
+                  <span>💬</span><span>הוסף הערה</span>
+                </button>
+              ) : null}
+            </div>
+            {!isTasks && qty ? (
+              <span className="text-xs font-medium text-gray-500 bg-gray-100 px-2 py-0.5 rounded-full flex-shrink-0 min-w-12 text-center">{qty}</span>
+            ) : !isTasks ? <span className="w-12" /> : null}
+            {!isTasks && canEdit && <button onClick={function(e){e.stopPropagation(); onEdit();}} className="text-gray-300 hover:text-blue-500 flex-shrink-0 text-sm px-0.5">✏️</button>}
+            {!isTasks && canEdit && <button onClick={function(e){e.stopPropagation(); onDelete(item.id);}} className="text-gray-300 hover:text-red-400 flex-shrink-0 text-base leading-none px-0.5">🗑️</button>}
+            {isTasks && canEdit && <span className="text-gray-300 text-base flex-shrink-0">›</span>}
+          </div>
+          {editingNote && (
+            <div className="px-3 pb-3 pt-1 border-t border-gray-50">
+              <div className="relative">
+                <textarea value={noteVal} onChange={e => setNoteVal(e.target.value)} autoFocus rows={2}
+                  placeholder="הוסף הערה..." dir="rtl"
+                  className="w-full text-sm border border-blue-200 rounded-xl px-3 py-2 resize-none focus:outline-none focus:border-blue-400 text-right" />
+                {noteVal ? (
+                  <button onClick={() => setNoteVal("")} className="absolute left-2 top-2 text-gray-300 hover:text-gray-500 text-base leading-none">✕</button>
+                ) : null}
+              </div>
+              <div className="flex gap-2 mt-1.5 items-center justify-start" dir="ltr">
+                <button onClick={saveNote} className="text-xs bg-blue-600 text-white px-4 py-1.5 rounded-lg font-medium">שמור</button>
+                <button onClick={cancelNote} className="text-xs text-gray-400 px-3 py-1.5 rounded-lg border border-gray-200">ביטול</button>
+                <InlineMic onText={function(t) { setNoteVal(function(prev) { return prev ? prev + " " + t : t; }); }} />
+              </div>
+            </div>
+          )}
+        </div>
+      );
+    }
+
+    function TaskEditModal({ item, onChange, onSave, onDelete, onClose }) {
+      return (
+        <Modal onClose={onClose}>
+          <h3 className="text-lg font-bold text-center mb-4">עריכת מטלה</h3>
+          <div className="space-y-3">
+            <div>
+              <label className="text-xs text-gray-500 block mb-1">שם המטלה</label>
+              <input value={item.name || ""} onChange={e => onChange({...item, name: e.target.value})}
+                className="w-full border border-gray-200 rounded-xl px-4 py-3 text-right focus:outline-none focus:border-blue-400" />
+            </div>
+            <div>
+              <label className="text-xs text-gray-500 block mb-1">תיאור</label>
+              <textarea value={item.note || ""} onChange={e => onChange({...item, note: e.target.value})} rows={3} placeholder="הערות, פרטים נוספים..."
+                className="w-full border border-gray-200 rounded-xl px-4 py-3 text-right resize-none focus:outline-none focus:border-blue-400" />
+            </div>
+            <div>
+              <label className="text-xs text-gray-500 block mb-1">תאריך יעד</label>
+              <input type="date" value={item.dueDate || ""} onChange={e => onChange({...item, dueDate: e.target.value})}
+                className="w-full border border-gray-200 rounded-xl px-4 py-3 focus:outline-none focus:border-blue-400" />
+            </div>
+          </div>
+          <button onClick={() => onSave(item)} disabled={!item.name || !item.name.trim()}
+            className="w-full bg-blue-600 text-white py-4 rounded-2xl font-semibold mt-5 disabled:opacity-40">
+            שמור שינויים
+          </button>
+          <button onClick={() => onDelete(item.id)}
+            className="w-full mt-2 py-3 rounded-2xl text-red-500 font-medium border border-red-100 text-sm">
+            🗑️ מחק מטלה
+          </button>
+        </Modal>
+      );
+    }
+
+    function EditItemModal({ item, categories, onChange, onSave, onClose }) {
+      return (
+        <Modal onClose={onClose}>
+          <h3 className="text-lg font-bold text-center mb-4">עריכת פריט</h3>
+          <div className="space-y-3">
+            <div>
+              <label className="text-xs text-gray-500 block mb-1">שם</label>
+              <input value={item.name || ""} onChange={e => onChange({...item, name: e.target.value})}
+                className="w-full border border-gray-200 rounded-xl px-4 py-3 text-right focus:outline-none focus:border-blue-400" />
+            </div>
+            <div className="grid grid-cols-2 gap-2">
+              <div>
+                <label className="text-xs text-gray-500 block mb-1">כמות</label>
+                <div className="relative">
+                  <input type="number" min="0.1" step="0.1" value={item.quantity || ""} onChange={e => onChange({...item, quantity: e.target.value})}
+                    className="w-full border border-gray-200 rounded-xl px-4 py-3 text-center focus:outline-none focus:border-blue-400 pr-8" />
+                  {item.quantity ? (
+                    <button onClick={() => onChange({...item, quantity: ""})}
+                      className="absolute left-2 top-1/2 -translate-y-1/2 text-gray-300 hover:text-gray-500 text-base leading-none">✕</button>
+                  ) : null}
+                </div>
+              </div>
+              <div>
+                <label className="text-xs text-gray-500 block mb-1">יחידה</label>
+                <select value={item.unit || "יחידות"} onChange={e => onChange({...item, unit: e.target.value})}
+                  className="w-full border border-gray-200 rounded-xl px-3 py-3 text-right focus:outline-none focus:border-blue-400 bg-white">
+                  {UNITS.map(u => <option key={u} value={u}>{u}</option>)}
+                </select>
+              </div>
+            </div>
+            <div>
+              <label className="text-xs text-gray-500 block mb-1">קטגוריה</label>
+              <div className="flex flex-wrap gap-1.5 max-h-28 overflow-y-auto">
+                {categories.map(cat => (
+                  <button key={cat.id} onClick={() => onChange({...item, category: cat.label})}
+                    className={`text-xs px-2.5 py-1 rounded-full border transition ${item.category===cat.label?"bg-blue-600 text-white border-blue-600":"bg-white text-gray-600 border-gray-200"}`}>
+                    {cat.emoji} {cat.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+            <div>
+              <label className="text-xs text-gray-500 block mb-1">הערה</label>
+              <input value={item.note || ""} onChange={e => onChange({...item, note: e.target.value})} placeholder="אופציונלי"
+                className="w-full border border-gray-200 rounded-xl px-4 py-3 text-right focus:outline-none focus:border-blue-400" />
+            </div>
+          </div>
+          <button onClick={() => onSave(item)} disabled={!item.name || !item.name.trim()}
+            className="w-full bg-blue-600 text-white py-4 rounded-2xl font-semibold mt-5 disabled:opacity-40">
+            שמור שינויים
+          </button>
+        </Modal>
+      );
+    }
+
+    // ── ADD SCREEN ────────────────────────────────────────────────────────────────
+    function AddScreen({ user, listId, listType, listName, onBack, showToast, showStickyToast }) {
+      const isTasks = listType === "tasks";
+      const isNotes = listType === "notes";
+      const categories = useCategories(user.uid);
+      const [listDisplayName] = useState(listName || "");
+      const [mode,        setMode]       = useState(function() { return localStorage.getItem("buli_add_mode") || "text"; });
+      const [inputText,   setInputText]  = useState("");
+      const [interimText, setInterimText]= useState("");
+      const [isRecording, setIsRecording]= useState(false);
+      const [processing,  setProcessing] = useState(false);
+      const [saving,      setSaving]     = useState(false);
+      const [error,       setError]      = useState("");
+      const [taskName,    setTaskName]   = useState("");
+      const [taskNote,    setTaskNote]   = useState("");
+      const [taskDueDate, setTaskDueDate]= useState(new Date().toISOString().split("T")[0]);
+      const [taskSaving,  setTaskSaving] = useState(false);
+      const [existingItems, setExistingItems] = useState([]);
+      const stopRef        = useRef(null);
+      const heldRef        = useRef(false);
+      const categoriesRef  = useRef(DEFAULT_CATEGORIES);
+      useEffect(function() { if (categories.length > 0) categoriesRef.current = categories; }, [categories]);
+
+      useEffect(function() {
+        if (!isTasks) {
+          db.ref("items/" + listId).once("value").then(function(snap) {
+            var arr = [];
+            snap.forEach(function(c) { arr.push(c.val()); });
+            setExistingItems(arr);
+          });
+        }
+      }, [listId]);
+      const textareaRef = useRef(null);
+      const micRef = useRef(null);
+
+      const changeMode = (v) => { setMode(v); localStorage.setItem("buli_add_mode", v); setError(""); };
+
+      useEffect(function() {
+        if (mode === "text") {
+          setTimeout(function() { if (textareaRef.current) textareaRef.current.focus(); }, 50);
+        } else {
+          setTimeout(function() { if (micRef.current) micRef.current.focus(); }, 50);
+        }
+      }, [mode]);
+
+      const startRec = () => {
+        setInterimText(""); setIsRecording(true); setError("");
+        heldRef.current = true;
+        function doStart() {
+          if (!heldRef.current) return;
+          stopRef.current = startSpeech({
+            onResult: function(text, isFinal) {
+              if (isFinal) {
+                setInputText(function(prev) { return prev ? prev + " " + text.trim() : text.trim(); });
+                setInterimText("");
+              } else {
+                setInterimText(text);
+              }
+            },
+            onEnd: function() {
+              setInterimText("");
+              if (heldRef.current) { doStart(); } else { setIsRecording(false); }
+            },
+            onError: function(err) {
+              if (err) setError(err);
+              if (heldRef.current) { setTimeout(doStart, 100); } else { setIsRecording(false); }
+            }
+          });
+        }
+        doStart();
+      };
+      const stopRec = () => { heldRef.current = false; if (stopRef.current) { stopRef.current(); stopRef.current = null; } setIsRecording(false); setInterimText(""); };
+
+      const saveItems = (itemsArr, cats) => {
+        if (!itemsArr.length) return;
+
+        // Detect duplicates against active (not-done) items already in the list
+        var activeNames = existingItems
+          .filter(function(i) { return !i.done; })
+          .map(function(i) { return (i.name || "").trim().toLowerCase(); });
+        var dupeNames = [];
+        var toAdd = itemsArr.filter(function(item) {
+          var n = ((item.name || item.item || "").trim()).toLowerCase();
+          if (activeNames.indexOf(n) !== -1) { dupeNames.push((item.name || item.item || "").trim()); return false; }
+          return true;
+        });
+        if (dupeNames.length > 0) showStickyToast(dupeNames);
+        if (!toAdd.length) return;
+
+        setSaving(true);
+        var catEmojis = {};
+        var validCats = new Set();
+        var activeCats = (cats && cats.length > 0) ? cats : categoriesRef.current;
+        console.log("[buli] saveItems — validCats:", activeCats.map(function(c){return c.label;}));
+        activeCats.forEach(function(c) { catEmojis[c.label] = c.emoji; validCats.add(c.label); });
+        var now = Date.now();
+        var pos = 0;
+        function saveNext() {
+          if (pos >= toAdd.length) {
+            showToast(toAdd.length + " פריטים נוספו!");
+            setSaving(false);
+            onBack();
+            return;
+          }
+          var item = toAdd[pos++];
+          var aiCat = (item.category || "").trim();
+          var cat = validCats.has(aiCat) ? aiCat : "שונות";
+          db.ref("items/" + listId).push({
+            name:          ((item.name || item.item || "").trim()) || "פריט",
+            category:      cat,
+            categoryEmoji: catEmojis[cat] || "🛍️",
+            quantity:      parseFloat(item.quantity) || 1,
+            unit:          item.unit || "יחידות",
+            note:          item.note || "",
+            dueDate:       "",
+            done:          false,
+            addedBy:       user.uid,
+            addedByName:   user.displayName,
+            addedByColor:  getUserColor(user.uid),
+            createdAt:     now + pos
+          }).then(saveNext, function(err) {
+            showToast("שגיאה בשמירה: " + (err && err.message));
+            setSaving(false);
+          });
+        }
+        saveNext();
+      };
+
+      const process = () => {
+        var t = inputText.trim();
+        if (!t) return;
+        setProcessing(true); setError("");
+        var catsSnapshot = categoriesRef.current.slice();
+        db.ref("users/" + user.uid + "/ai").once("value").then(function(snap) {
+          var ai = snap.val();
+          if (!ai || !ai.provider) {
+            setError("יש להגדיר ספק AI תחילה — הגדרות ← הגדרות AI");
+            setProcessing(false);
+            return null;
+          }
+          return parseWithAI(t, catsSnapshot, ai).then(function(items) {
+            if (!items || !items.length) { setError("לא זוהו פריטים בטקסט"); setProcessing(false); return; }
+            setProcessing(false);
+            saveItems(items, catsSnapshot);
+          });
+        }).catch(function(e) { setError(e.message || "שגיאה בחיבור ל-AI"); setProcessing(false); });
+      };
+
+      const saveTask = () => {
+        if (!taskName.trim()) return;
+        setTaskSaving(true);
+        db.ref("items/" + listId).push({
+          name:          taskName.trim(),
+          note:          taskNote,
+          dueDate:       taskDueDate,
+          done:          false,
+          category:      "מטלה",
+          categoryEmoji: "✅",
+          quantity:      1,
+          unit:          "יחידות",
+          addedBy:       user.uid,
+          addedByName:   user.displayName,
+          addedByColor:  getUserColor(user.uid),
+          createdAt:     Date.now()
+        }).then(function() {
+          showToast("מטלה נוספה!");
+          onBack();
+        }, function(err) {
+          showToast("שגיאה: " + (err && err.message));
+          setTaskSaving(false);
+        });
+      };
+
+      const notesSeparator = localStorage.getItem("buli_notes_separator") || "הבא";
+      const parseDishes = function(text) {
+        var sep = notesSeparator.trim();
+        var pattern = sep ? new RegExp("\\n|" + sep.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "gi") : /\n/g;
+        return text.split(pattern).map(function(s) { return s.trim(); }).filter(function(s) { return s.length > 0; });
+      };
+
+      const saveNotes = function() {
+        var dishes = parseDishes(inputText);
+        if (!dishes.length) return;
+        setSaving(true);
+        var now = Date.now();
+        var pos = 0;
+        function saveNext() {
+          if (pos >= dishes.length) {
+            showToast(dishes.length + " מנות נוספו!");
+            setSaving(false);
+            onBack();
+            return;
+          }
+          db.ref("items/" + listId).push({
+            name: dishes[pos], done: false, order: pos,
+            addedBy: user.uid, addedByName: user.displayName,
+            addedByColor: getUserColor(user.uid), createdAt: now + pos
+          }).then(function() { pos++; saveNext(); }, function(err) {
+            showToast("שגיאה: " + (err && err.message));
+            setSaving(false);
+          });
+        }
+        saveNext();
+      };
+
+      if (isNotes) {
+        return (
+          <div className="bg-gray-50 flex flex-col" style={{height:"100dvh"}}>
+            <Header onBack={onBack} title={"הוסף מנות ל" + (listName || "")} />
+            <div className="flex-shrink-0 px-4 pt-3 pb-2">
+              <div className="grid grid-cols-2 gap-2">
+                {[["text","✍️ כתיבה"],["voice","🎤 קול"]].map(function(pair) {
+                  var v = pair[0], l = pair[1];
+                  return (
+                    <button key={v} onClick={function() { changeMode(v); }}
+                      className={"py-3 rounded-xl text-sm font-semibold border transition " + (mode===v ? "bg-blue-600 text-white border-blue-600" : "bg-white text-gray-600 border-gray-200")}>{l}</button>
+                  );
+                })}
+              </div>
+            </div>
+            <div className="flex-1 overflow-y-auto px-4 pb-2 pt-3">
+              {mode === "text" ? (
+                <textarea ref={textareaRef} value={inputText}
+                  onChange={function(e) {
+                    setInputText(e.target.value);
+                    e.target.style.height = "auto";
+                    e.target.style.height = e.target.scrollHeight + "px";
+                  }}
+                  dir="rtl"
+                  placeholder={"לדוגמה:\nסלט ירקות\nסלט וולדורף\nסלט חצילים\nמרק עוף\nעוף בתנור\n\nאפשר גם לכתוב '" + notesSeparator + "' בין מנות"}
+                  rows={4}
+                  style={{minHeight:"140px", height:"auto"}}
+                  className="w-full border border-gray-200 bg-white rounded-2xl p-4 text-right resize-none focus:outline-none focus:border-blue-400 text-gray-800 text-sm" />
+              ) : (
+                <div className="flex flex-col items-center py-8 gap-4">
+                  <button ref={micRef}
+                    onPointerDown={function(e) { e.preventDefault(); startRec(); }}
+                    onPointerUp={stopRec}
+                    onPointerCancel={stopRec}
+                    style={{ touchAction: "none", userSelect: "none" }}
+                    className={"w-28 h-28 rounded-full text-5xl flex items-center justify-center shadow-xl transition select-none " + (isRecording ? "bg-red-500 recording-btn" : "bg-blue-600")}>
+                    🎤
+                  </button>
+                  <p className="text-sm text-gray-400">{isRecording ? "מקליט... שחרר לעצירה" : "לחץ והחזק להקלטה"}</p>
+                  <p className="text-xs text-gray-400 text-center">אמור <span className="font-semibold text-gray-600">"{notesSeparator}"</span> כדי לעבור למנה הבאה</p>
+                  {(inputText || interimText) && (
+                    <div className="w-full bg-white rounded-2xl p-4 border border-gray-100 text-right">
+                      <p className="text-gray-700 text-sm">{inputText}</p>
+                      {interimText && <p className="text-gray-300 italic text-sm mt-1">{interimText}</p>}
+                    </div>
+                  )}
+                </div>
+              )}
+              {error && <p className="text-red-500 text-sm text-center mt-3">{error}</p>}
+            </div>
+            {!isRecording && (
+              <div className="flex-shrink-0 px-4 pb-6 pt-2 bg-gray-50 border-t border-gray-100">
+                <button onClick={saveNotes} disabled={!inputText.trim() || saving}
+                  className="w-full bg-blue-600 text-white py-4 rounded-2xl font-semibold text-base disabled:opacity-40 flex items-center justify-center gap-2">
+                  {saving ? <><Spinner /><span>שומר...</span></> : "הוסף מנות"}
+                </button>
+              </div>
+            )}
+          </div>
+        );
+      }
+
+      if (isTasks) return (
+        <div className="bg-gray-50 flex flex-col" style={{height:"100dvh"}}>
+          <Header onBack={onBack} title="הוסף מטלה" />
+          <div className="flex-1 overflow-y-auto p-4 pb-32">
+            <div className="space-y-4">
+              <div>
+                <label className="text-xs text-gray-500 block mb-1">שם המטלה</label>
+                <input value={taskName} onChange={e => setTaskName(e.target.value)} placeholder="מה צריך לעשות?" dir="rtl" autoFocus
+                  className="w-full border border-gray-200 bg-white rounded-2xl p-4 text-right focus:outline-none focus:border-blue-400 text-gray-800 text-sm" />
+              </div>
+              <div>
+                <label className="text-xs text-gray-500 block mb-1">תיאור</label>
+                <textarea value={taskNote} onChange={e => setTaskNote(e.target.value)} rows={4} placeholder="פרטים נוספים... (אופציונלי)" dir="rtl"
+                  className="w-full border border-gray-200 bg-white rounded-2xl p-4 text-right resize-none focus:outline-none focus:border-blue-400 text-gray-800 text-sm" />
+              </div>
+              <div>
+                <label className="text-xs text-gray-500 block mb-1">תאריך יעד</label>
+                <input type="date" value={taskDueDate} onChange={e => setTaskDueDate(e.target.value)}
+                  className="w-full border border-gray-200 bg-white rounded-2xl p-4 focus:outline-none focus:border-blue-400" />
+              </div>
+            </div>
+          </div>
+          <div className="flex-shrink-0 px-4 pb-6 pt-3 bg-gray-50 border-t border-gray-100">
+            <button onClick={saveTask} disabled={!taskName.trim() || taskSaving}
+              className="w-full bg-blue-600 text-white py-4 rounded-2xl font-semibold text-lg disabled:opacity-40 flex items-center justify-center gap-2">
+              {taskSaving ? <Spinner /> : "הוסף מטלה"}
+            </button>
+          </div>
+        </div>
+      );
+
+      // ── Input ──
+      return (
+        <div className="bg-gray-50 flex flex-col" style={{height:"100dvh"}}>
+          <Header onBack={onBack} title={isTasks ? "הוסף מטלה" : ("הוסף ל" + listDisplayName)} />
+          <div className="flex-shrink-0 px-4 pt-3 pb-2">
+            <div className="grid grid-cols-2 gap-2">
+              {[["text","✍️ כתיבה"],["voice","🎤 קול"]].map(([v,l]) => (
+                <button key={v} onClick={() => changeMode(v)}
+                  className={`py-3 rounded-xl text-sm font-semibold border transition ${mode===v?"bg-blue-600 text-white border-blue-600":"bg-white text-gray-600 border-gray-200"}`}>{l}</button>
+              ))}
+            </div>
+          </div>
+          <div className="flex-1 overflow-y-auto px-4 pb-2 pt-3">
+            {mode === "text" ? (
+              <textarea ref={textareaRef} value={inputText}
+                onChange={function(e) {
+                  setInputText(e.target.value);
+                  e.target.style.height = "auto";
+                  e.target.style.height = e.target.scrollHeight + "px";
+                }}
+                dir="rtl"
+                placeholder={isTasks ? "לדוגמה:\nלקנות מתנה למירי\nלשלם חשבון חשמל\nלתאם תור לרופא\nלאסוף את הילדים ב-16:00" : "לדוגמה:\n3 ק״ג עגבניות\nחלב 3% שני ליטר\nסבון כלים\n6 ביצים"}
+                rows={3}
+                style={{minHeight:"120px", height:"auto"}}
+                className="w-full border border-gray-200 bg-white rounded-2xl p-4 text-right resize-none focus:outline-none focus:border-blue-400 text-gray-800 text-sm" />
+            ) : (
+              <div className="flex flex-col items-center py-8 gap-4">
+                <button ref={micRef}
+                  onPointerDown={function(e) { e.preventDefault(); startRec(); }}
+                  onPointerUp={stopRec}
+                  onPointerCancel={stopRec}
+                  style={{ touchAction: "none", userSelect: "none" }}
+                  className={`w-28 h-28 rounded-full text-5xl flex items-center justify-center shadow-xl transition select-none ${isRecording ? "bg-red-500 recording-btn" : "bg-blue-600"}`}>
+                  🎤
+                </button>
+                <p className="text-sm text-gray-400">{isRecording ? "מקליט... שחרר לעצירה" : "לחץ והחזק להקלטה"}</p>
+                {(inputText || interimText) && (
+                  <div className="w-full bg-white rounded-2xl p-4 border border-gray-100 text-right">
+                    <p className="text-gray-700 text-sm">{inputText}</p>
+                    {interimText && <p className="text-gray-300 italic text-sm mt-1">{interimText}</p>}
+                  </div>
+                )}
+              </div>
+            )}
+            {error && <p className="text-red-500 text-sm text-center mt-3">{error}</p>}
+          </div>
+
+          {!isRecording && (
+            <div className="flex-shrink-0 px-4 pb-6 pt-2 bg-gray-50 border-t border-gray-100">
+              <button onClick={process} disabled={!inputText.trim() || processing || saving}
+                className="w-full bg-blue-600 text-white py-4 rounded-2xl font-semibold text-base disabled:opacity-40 flex items-center justify-center gap-2">
+                {saving ? <><Spinner /><span>שומר...</span></> : processing ? <><Spinner /><span>מנתח עם AI...</span></> : "הוסף לרשימה"}
+              </button>
+            </div>
+          )}
+
+        </div>
+      );
+    }
+
+    ReactDOM.createRoot(document.getElementById("root")).render(<App />);

@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="he" dir="rtl">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
+  <title>בולי</title>
+  <link rel="manifest" href="manifest.json">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🛒</text></svg>">
+  <meta name="theme-color" content="#2563eb">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <meta name="apple-mobile-web-app-title" content="בולי">
+  <link rel="stylesheet" href="styles.css">
+  <script>
+    // Capture Android/Chrome install prompt before React loads
+    window.__installPrompt = null;
+    window.addEventListener('beforeinstallprompt', function(e) {
+      e.preventDefault();
+      window.__installPrompt = e;
+      window.dispatchEvent(new Event('pwa_install_ready'));
+    });
+    window.addEventListener('appinstalled', function() {
+      window.__installPrompt = null;
+      window.dispatchEvent(new Event('pwa_installed'));
+    });
+    // Generate apple-touch-icon PNG dynamically (iOS doesn't support SVG)
+    try {
+      var _c = document.createElement('canvas');
+      _c.width = _c.height = 180;
+      var _x = _c.getContext('2d');
+      var _r = 38;
+      _x.fillStyle = '#2563eb';
+      _x.beginPath();
+      _x.moveTo(_r,0); _x.lineTo(180-_r,0);
+      _x.arcTo(180,0,180,_r,_r); _x.lineTo(180,180-_r);
+      _x.arcTo(180,180,180-_r,180,_r); _x.lineTo(_r,180);
+      _x.arcTo(0,180,0,180-_r,_r); _x.lineTo(0,_r);
+      _x.arcTo(0,0,_r,0,_r); _x.closePath(); _x.fill();
+      _x.font = '110px serif'; _x.textAlign = 'center'; _x.textBaseline = 'middle';
+      _x.fillText('🛒', 90, 98);
+      var _l = document.createElement('link');
+      _l.rel = 'apple-touch-icon'; _l.href = _c.toDataURL('image/png');
+      document.head.appendChild(_l);
+    } catch(e) {}
+  </script>
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-auth-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-database-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-functions-compat.js"></script>
+  <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body>
+  <div id="root"></div>
+  <script type="text/babel" src="app.js?v=1"></script>
+  <script>
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.register('/sw.js').catch(() => {});
+    }
+  </script>
+</body>
+</html>

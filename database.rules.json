@@ -1,0 +1,32 @@
+{
+  "rules": {
+    ".read": false,
+    ".write": false,
+
+    "authorizedUsers": {
+      ".read": false,
+      ".write": false
+    },
+    "userCosts": {
+      ".read": false,
+      ".write": false
+    },
+    "userAccess": {
+      "$uid": {
+        ".read": "auth != null && auth.uid === $uid",
+        ".write": false
+      }
+    },
+    "users": {
+      "$uid": {
+        ".read": "auth != null && auth.uid === $uid",
+        ".write": "auth != null && auth.uid === $uid"
+      }
+    },
+
+    "$other": {
+      ".read": "auth != null && (root.child('userAccess').child(auth.uid).child('authorized').val() === true || auth.token.email === 'eitanfisher100@gmail.com')",
+      ".write": "auth != null && (root.child('userAccess').child(auth.uid).child('authorized').val() === true || auth.token.email === 'eitanfisher100@gmail.com')"
+    }
+  }
+}

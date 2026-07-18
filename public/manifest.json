@@ -1,0 +1,14 @@
+{
+  "name": "בולי - רשימות קניות",
+  "short_name": "בולי",
+  "description": "רשימות קניות חכמות עם AI",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#ffffff",
+  "theme_color": "#2563eb",
+  "lang": "he",
+  "dir": "rtl",
+  "icons": [
+    { "src": "/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }
+  ]
+}

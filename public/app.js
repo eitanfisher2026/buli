@@ -1,6 +1,6 @@
     const { useState, useEffect, useRef } = React;
 
-    const VERSION = "v5.12";
+    const VERSION = "v5.13";
 
     // ── CONFIG ────────────────────────────────────────────────────────────────────
     const FIREBASE_CONFIG = {
@@ -418,6 +418,7 @@
       const [anthropicKey, setAnthropicKey] = useState("");
       const [aiModel,      setAiModel]      = useState(getAIModel("anthropic"));
       const [aiPrompt,     setAiPrompt]     = useState(DEFAULT_AI_PROMPT);
+      const [aiNoAi,       setAiNoAi]       = useState(false);
       const switchProvider = (p) => { setAiProvider(p); setAiModel(getAIModel(p)); };
       const [promptOpen, setPromptOpen] = useState(false);
       const API_KEY_LINKS = {
@@ -471,6 +472,13 @@
           loadAuthUsers();
         }, function(e) { setUserMsg("⚠ " + e.message); setUserBusy(false); });
       };
+      const handleToggleNoAi = (email, nextNoAi) => {
+        setUserBusy(true); setUserMsg("");
+        fns.httpsCallable("setUserNoAi")({ email: email, noAi: nextNoAi }).then(function() {
+          setUserBusy(false);
+          loadAuthUsers();
+        }, function(e) { setUserMsg("⚠ " + e.message); setUserBusy(false); });
+      };
 
       // ── Usage & Costs ────────────────────────────────────────────────────────
       const [showCosts,    setShowCosts]    = useState(false);
@@ -517,12 +525,15 @@
       // users/{uid}/ai and is only ever sent to the parseItems Cloud Function, never to a
       // third-party API directly from the browser.
       const saveAISettings = () => {
-        if (aiProvider === "openai"    && !openaiKey.trim())    { showToast("נדרש מפתח OpenAI — הזן מפתח או בחר ספק אחר"); return; }
-        if (aiProvider === "gemini"    && !geminiKey.trim())    { showToast("נדרש מפתח Gemini — הזן מפתח או בחר ספק אחר"); return; }
-        if (aiProvider === "anthropic" && !anthropicKey.trim()) { showToast("נדרש מפתח Claude — הזן מפתח או בחר ספק אחר"); return; }
+        if (!aiNoAi) {
+          if (aiProvider === "openai"    && !openaiKey.trim())    { showToast("נדרש מפתח OpenAI — הזן מפתח או בחר ספק אחר"); return; }
+          if (aiProvider === "gemini"    && !geminiKey.trim())    { showToast("נדרש מפתח Gemini — הזן מפתח או בחר ספק אחר"); return; }
+          if (aiProvider === "anthropic" && !anthropicKey.trim()) { showToast("נדרש מפתח Claude — הזן מפתח או בחר ספק אחר"); return; }
+        }
         var model = aiModel.trim() || AI_PROVIDERS[aiProvider].defaultModel;
         var settings = {
           provider: aiProvider,
+          noAi:            !!aiNoAi,
           openaiApiKey:    openaiKey.trim(),
           openaiModel:     aiProvider === "openai"    ? model : AI_PROVIDERS.openai.defaultModel,
           geminiApiKey:    geminiKey.trim(),
@@ -548,6 +559,7 @@
           setAnthropicKey(s.anthropicApiKey || "");
           setAiModel(s[p + "Model"] || getAIModel(p));
           setAiPrompt(s.prompt || DEFAULT_AI_PROMPT);
+          setAiNoAi(!!s.noAi);
         });
       }, [user.uid]);
 
@@ -1020,69 +1032,84 @@
                     <span className="text-lg w-7 text-center">🤖</span>
                     <div className="text-right">
                       <div className="text-sm font-semibold text-gray-700">הגדרות AI</div>
-                      <div className="text-xs text-gray-400">{AI_PROVIDERS[aiProvider].name}</div>
+                      <div className="text-xs text-gray-400">{aiNoAi ? "ללא AI" : AI_PROVIDERS[aiProvider].name}</div>
                     </div>
                   </div>
                   <span className="text-gray-400 text-xs flex-shrink-0">{showAISettings ? "▲ הסתר" : "▼ הצג"}</span>
                 </button>
                 {showAISettings && (
                   <div className="mt-2 bg-white border border-gray-100 rounded-2xl p-4">
-                    <p className="text-xs text-gray-500 mb-2 text-right">ספק AI</p>
-                    <div className="grid grid-cols-3 gap-2 mb-4">
-                      {Object.entries(AI_PROVIDERS).map(function(entry) {
-                        var id = entry[0], p = entry[1];
-                        var hasKey = !!(id === "openai" ? openaiKey : id === "gemini" ? geminiKey : anthropicKey);
-                        var active = aiProvider === id;
-                        return (
-                          <button key={id} onClick={function() { switchProvider(id); }}
-                            className={"py-2 rounded-xl text-sm font-medium border transition flex flex-col items-center gap-0.5 " + (active ? "bg-blue-600 text-white border-blue-600" : "bg-white text-gray-600 border-gray-200")}>
-                            <span className="font-semibold">{p.name} {hasKey ? "✓" : ""}</span>
-                            <span className={"text-xs " + (active ? "text-blue-100" : "text-gray-400")}>{p.label}{p.free ? " · חינם" : ""}</span>
-                          </button>
-                        );
-                      })}
+                    <div className="flex items-center gap-3 bg-gray-50 rounded-xl px-3 py-2.5 mb-4">
+                      <button onClick={function() { setAiNoAi(function(v) { return !v; }); }}
+                        className={"relative inline-flex h-6 w-11 items-center rounded-full transition-colors flex-shrink-0 " + (aiNoAi ? "bg-blue-600" : "bg-gray-200")}>
+                        <span className={"inline-block h-4 w-4 rounded-full bg-white shadow transition-transform " + (aiNoAi ? "translate-x-6" : "translate-x-1")} />
+                      </button>
+                      <div className="text-right flex-1">
+                        <div className="text-sm font-medium text-gray-700">דלג על AI</div>
+                        <div className="text-xs text-gray-400">הוסף פריטים ישירות, כל שורה כפריט, ללא זיהוי AI</div>
+                      </div>
                     </div>
 
-                    {[["anthropic", "Anthropic API Key", anthropicKey, setAnthropicKey, "sk-ant-..."],
-                      ["openai", "OpenAI API Key", openaiKey, setOpenaiKey, "sk-..."],
-                      ["gemini", "Google AI Studio API Key", geminiKey, setGeminiKey, "AIza..."]]
-                      .filter(function(row) { return row[0] === aiProvider; })
-                      .map(function(row) {
-                        var id = row[0], label = row[1], val = row[2], setter = row[3], ph = row[4];
-                        return (
-                          <div key={id} className="mb-3">
-                            <div className="flex items-center justify-between mb-1">
-                              <a href={API_KEY_LINKS[id]} target="_blank" rel="noopener noreferrer"
-                                className="text-xs font-semibold text-blue-500 bg-blue-50 border border-blue-100 rounded-lg px-2 py-1 whitespace-nowrap">
-                                🔑 קבל מפתח API ↗
-                              </a>
-                              <p className="text-xs text-gray-500 text-right">{label}</p>
-                            </div>
-                            <input value={val} onChange={function(e) { setter(e.target.value); }} placeholder={ph} type="password" dir="ltr"
-                              className="w-full border border-gray-200 rounded-xl px-4 py-3 text-left focus:outline-none focus:border-blue-400 text-sm" />
-                          </div>
-                        );
-                      })}
-
-                    <div className="mb-4">
-                      <p className="text-xs text-gray-500 mb-1 text-right">מודל</p>
-                      <input value={aiModel} onChange={function(e) { setAiModel(e.target.value); }} dir="ltr"
-                        className="w-full border border-gray-200 rounded-xl px-4 py-3 text-left focus:outline-none focus:border-blue-400 text-sm font-mono" />
-                    </div>
-
-                    <button onClick={function() { setPromptOpen(function(o) { return !o; }); }}
-                      className="w-full flex items-center justify-between px-3 py-2 bg-gray-50 rounded-xl text-xs text-gray-500 mb-2">
-                      <span>{promptOpen ? "▲ הסתר" : "▼ הצג"}</span>
-                      <span>פרומפט מותאם אישית</span>
-                    </button>
-                    {promptOpen && (
-                      <div className="mb-4">
-                        <div className="flex items-center justify-between mb-1">
-                          <button onClick={function() { setAiPrompt(DEFAULT_AI_PROMPT); }} className="text-xs text-blue-500">אפס</button>
-                          <p className="text-xs text-gray-500">פרומפט ({"{categories}"} = רשימת קטגוריות, {"{text}"} = הטקסט)</p>
+                    {!aiNoAi && (
+                      <div>
+                        <p className="text-xs text-gray-500 mb-2 text-right">ספק AI</p>
+                        <div className="grid grid-cols-3 gap-2 mb-4">
+                          {Object.entries(AI_PROVIDERS).map(function(entry) {
+                            var id = entry[0], p = entry[1];
+                            var hasKey = !!(id === "openai" ? openaiKey : id === "gemini" ? geminiKey : anthropicKey);
+                            var active = aiProvider === id;
+                            return (
+                              <button key={id} onClick={function() { switchProvider(id); }}
+                                className={"py-2 rounded-xl text-sm font-medium border transition flex flex-col items-center gap-0.5 " + (active ? "bg-blue-600 text-white border-blue-600" : "bg-white text-gray-600 border-gray-200")}>
+                                <span className="font-semibold">{p.name} {hasKey ? "✓" : ""}</span>
+                                <span className={"text-xs " + (active ? "text-blue-100" : "text-gray-400")}>{p.label}{p.free ? " · חינם" : ""}</span>
+                              </button>
+                            );
+                          })}
                         </div>
-                        <textarea value={aiPrompt} onChange={function(e) { setAiPrompt(e.target.value); }} rows={8} dir="rtl"
-                          className="w-full border border-gray-200 rounded-xl p-3 text-xs font-mono resize-none focus:outline-none focus:border-blue-400" />
+
+                        {[["anthropic", "Anthropic API Key", anthropicKey, setAnthropicKey, "sk-ant-..."],
+                          ["openai", "OpenAI API Key", openaiKey, setOpenaiKey, "sk-..."],
+                          ["gemini", "Google AI Studio API Key", geminiKey, setGeminiKey, "AIza..."]]
+                          .filter(function(row) { return row[0] === aiProvider; })
+                          .map(function(row) {
+                            var id = row[0], label = row[1], val = row[2], setter = row[3], ph = row[4];
+                            return (
+                              <div key={id} className="mb-3">
+                                <div className="flex items-center justify-between mb-1">
+                                  <a href={API_KEY_LINKS[id]} target="_blank" rel="noopener noreferrer"
+                                    className="text-xs font-semibold text-blue-500 bg-blue-50 border border-blue-100 rounded-lg px-2 py-1 whitespace-nowrap">
+                                    🔑 קבל מפתח API ↗
+                                  </a>
+                                  <p className="text-xs text-gray-500 text-right">{label}</p>
+                                </div>
+                                <input value={val} onChange={function(e) { setter(e.target.value); }} placeholder={ph} type="password" dir="ltr"
+                                  className="w-full border border-gray-200 rounded-xl px-4 py-3 text-left focus:outline-none focus:border-blue-400 text-sm" />
+                              </div>
+                            );
+                          })}
+
+                        <div className="mb-4">
+                          <p className="text-xs text-gray-500 mb-1 text-right">מודל</p>
+                          <input value={aiModel} onChange={function(e) { setAiModel(e.target.value); }} dir="ltr"
+                            className="w-full border border-gray-200 rounded-xl px-4 py-3 text-left focus:outline-none focus:border-blue-400 text-sm font-mono" />
+                        </div>
+
+                        <button onClick={function() { setPromptOpen(function(o) { return !o; }); }}
+                          className="w-full flex items-center justify-between px-3 py-2 bg-gray-50 rounded-xl text-xs text-gray-500 mb-2">
+                          <span>{promptOpen ? "▲ הסתר" : "▼ הצג"}</span>
+                          <span>פרומפט מותאם אישית</span>
+                        </button>
+                        {promptOpen && (
+                          <div className="mb-4">
+                            <div className="flex items-center justify-between mb-1">
+                              <button onClick={function() { setAiPrompt(DEFAULT_AI_PROMPT); }} className="text-xs text-blue-500">אפס</button>
+                              <p className="text-xs text-gray-500">פרומפט ({"{categories}"} = רשימת קטגוריות, {"{text}"} = הטקסט)</p>
+                            </div>
+                            <textarea value={aiPrompt} onChange={function(e) { setAiPrompt(e.target.value); }} rows={8} dir="rtl"
+                              className="w-full border border-gray-200 rounded-xl p-3 text-xs font-mono resize-none focus:outline-none focus:border-blue-400" />
+                          </div>
+                        )}
                       </div>
                     )}
                     <button onClick={saveAISettings} className="w-full bg-blue-600 text-white py-3 rounded-2xl font-semibold">שמור</button>
@@ -1127,6 +1154,10 @@
                                     <option value="user">User</option>
                                     <option value="admin">Admin</option>
                                   </select>
+                                  <button onClick={function() { handleToggleNoAi(u.email, !u.noAi); }} disabled={userBusy} title="דלג על AI עבור המשתמש הזה"
+                                    className={"text-xs border rounded-full px-2 py-1 disabled:opacity-40 " + (u.noAi ? "text-blue-500 border-blue-200 bg-blue-50" : "text-gray-400 border-gray-200")}>
+                                    🤖{u.noAi ? "🚫" : ""}
+                                  </button>
                                   <button onClick={function() { handleRemoveUser(u.email); }} disabled={userBusy}
                                     className="text-xs text-red-500 border border-red-200 rounded-full px-2 py-1 disabled:opacity-40">הסר</button>
                                 </div>
@@ -1724,6 +1755,17 @@
         }
       }
       return "📦";
+    }
+
+    // No-AI fallback: match an item name to one of the family's actual categories via the
+    // same keyword→emoji map used for category suggestions, instead of calling parseItems.
+    function guessCategoryForItem(name, categories) {
+      var emoji = guessEmoji(name);
+      var cats = categories && categories.length > 0 ? categories : DEFAULT_CATEGORIES;
+      var match = cats.find(function(c) { return c.emoji === emoji; });
+      if (match) return match;
+      var other = cats.find(function(c) { return c.label === "שונות"; });
+      return other || cats[cats.length - 1] || { label: "שונות", emoji: "🛍️" };
     }
 
     function resolveProfileOrder(categoryOrder, allCategories) {
@@ -2803,6 +2845,17 @@
         var catsSnapshot = categoriesRef.current.slice();
         db.ref("users/" + user.uid + "/ai").once("value").then(function(snap) {
           var ai = snap.val();
+          if (ai && ai.noAi) {
+            var items = t.split(/\n|,/).map(function(s) { return s.trim(); }).filter(function(s) { return s.length > 0; })
+              .map(function(name) {
+                var cat = guessCategoryForItem(name, catsSnapshot);
+                return { name: name, quantity: 1, unit: "יחידות", category: cat.label, note: "" };
+              });
+            setProcessing(false);
+            if (!items.length) { setError("לא הוזנו פריטים"); return null; }
+            saveItems(items, catsSnapshot);
+            return null;
+          }
           if (!ai || !ai.provider) {
             setError("יש להגדיר ספק AI תחילה — הגדרות ← הגדרות AI");
             setProcessing(false);

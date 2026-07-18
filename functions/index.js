@@ -244,8 +244,35 @@ exports.listAuthorizedUsers = onCall(
     requireAdmin(role);
     const snap = await db.ref('authorizedUsers').once('value');
     const val = snap.val() || {};
-    const users = Object.values(val).sort((a, b) => (a.email || '').localeCompare(b.email || ''));
+    const users = await Promise.all(Object.values(val).map(async (u) => {
+      const emailKey = (u.email || '').replace(/\./g, ',');
+      const uidSnap = await db.ref(`usersByEmail/${emailKey}`).once('value');
+      const uid = uidSnap.val();
+      let noAi = false;
+      if (uid) {
+        const noAiSnap = await db.ref(`users/${uid}/ai/noAi`).once('value');
+        noAi = !!noAiSnap.val();
+      }
+      return Object.assign({}, u, { noAi });
+    }));
+    users.sort((a, b) => (a.email || '').localeCompare(b.email || ''));
     return { owner: OWNER_EMAIL, users };
+  }
+);
+
+exports.setUserNoAi = onCall(
+  { timeoutSeconds: 30, memory: '128MiB', region: 'europe-west1' },
+  async (request) => {
+    const role = await requireAuthorized(request);
+    requireAdmin(role);
+    const { email: rawEmail, noAi } = request.data || {};
+    if (!rawEmail || typeof rawEmail !== 'string') throw new HttpsError('invalid-argument', 'email required');
+    const emailKey = rawEmail.trim().toLowerCase().replace(/\./g, ',');
+    const uidSnap = await db.ref(`usersByEmail/${emailKey}`).once('value');
+    const uid = uidSnap.val();
+    if (!uid) throw new HttpsError('not-found', 'That person has not signed in yet');
+    await db.ref(`users/${uid}/ai/noAi`).set(!!noAi);
+    return { ok: true };
   }
 );
 

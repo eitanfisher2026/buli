@@ -36,7 +36,7 @@
     firebase.initializeApp(FIREBASE_CONFIG);
     const auth = firebase.auth();
     const db   = firebase.database();
-    const fns  = firebase.functions();
+    const fns  = firebase.functions("europe-west1"); // must match functions region in functions/index.js
 
     // ── CATEGORIES HOOK ───────────────────────────────────────────────────────────
     function useCategories(userId) {

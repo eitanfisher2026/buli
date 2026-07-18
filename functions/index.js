@@ -248,12 +248,16 @@ exports.listAuthorizedUsers = onCall(
       const emailKey = (u.email || '').replace(/\./g, ',');
       const uidSnap = await db.ref(`usersByEmail/${emailKey}`).once('value');
       const uid = uidSnap.val();
-      let noAi = false;
+      let noAi = false, nickname = null;
       if (uid) {
-        const noAiSnap = await db.ref(`users/${uid}/ai/noAi`).once('value');
+        const [noAiSnap, nickSnap] = await Promise.all([
+          db.ref(`users/${uid}/ai/noAi`).once('value'),
+          db.ref(`users/${uid}/nickname`).once('value'),
+        ]);
         noAi = !!noAiSnap.val();
+        nickname = nickSnap.val() || null;
       }
-      return Object.assign({}, u, { noAi });
+      return Object.assign({}, u, { noAi, nickname });
     }));
     users.sort((a, b) => (a.email || '').localeCompare(b.email || ''));
     return { owner: OWNER_EMAIL, users };
@@ -276,6 +280,23 @@ exports.setUserNoAi = onCall(
   }
 );
 
+exports.setUserNickname = onCall(
+  { timeoutSeconds: 30, memory: '128MiB', region: 'europe-west1' },
+  async (request) => {
+    const role = await requireAuthorized(request);
+    requireAdmin(role);
+    const { email: rawEmail, nickname: rawNickname } = request.data || {};
+    if (!rawEmail || typeof rawEmail !== 'string') throw new HttpsError('invalid-argument', 'email required');
+    const emailKey = rawEmail.trim().toLowerCase().replace(/\./g, ',');
+    const uidSnap = await db.ref(`usersByEmail/${emailKey}`).once('value');
+    const uid = uidSnap.val();
+    if (!uid) throw new HttpsError('not-found', 'That person has not signed in yet');
+    const nickname = (typeof rawNickname === 'string' ? rawNickname.trim() : '').slice(0, 40);
+    await db.ref(`users/${uid}/nickname`).set(nickname || null);
+    return { ok: true };
+  }
+);
+
 // Unlike listAuthorizedUsers (admin-only), this is callable by any authorized user —
 // it's the "who can I share a list with" roster, not the access-management panel.
 exports.listTeamMembers = onCall(
@@ -291,8 +312,12 @@ exports.listTeamMembers = onCall(
       const uid = uidSnap.val();
       let name = email;
       if (uid) {
-        const nameSnap = await db.ref(`users/${uid}/name`).once('value');
+        const [nameSnap, nickSnap] = await Promise.all([
+          db.ref(`users/${uid}/name`).once('value'),
+          db.ref(`users/${uid}/nickname`).once('value'),
+        ]);
         if (nameSnap.exists() && nameSnap.val()) name = nameSnap.val();
+        if (nickSnap.exists() && nickSnap.val()) name = nickSnap.val();
       }
       return { uid: uid || null, email, name };
     }));

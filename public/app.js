@@ -1,6 +1,6 @@
     const { useState, useEffect, useRef } = React;
 
-    const VERSION = "v5.13";
+    const VERSION = "v5.14";
 
     // ── CONFIG ────────────────────────────────────────────────────────────────────
     const FIREBASE_CONFIG = {
@@ -236,6 +236,14 @@
       const [loading,     setLoading]     = useState(true);
       const [role,        setRole]        = useState(null);
       const [roleLoading, setRoleLoading] = useState(true);
+      const [simulateRegular, setSimulateRegular] = useState(function() {
+        return sessionStorage.getItem("buli_simulate_regular") === "true";
+      });
+      const toggleSimulate = function(next) {
+        setSimulateRegular(next);
+        if (next) sessionStorage.setItem("buli_simulate_regular", "true");
+        else sessionStorage.removeItem("buli_simulate_regular");
+      };
       const [screen,   setScreen]   = useState("home");
       const [listId,   setListId]   = useState(null);
       const [listType, setListType] = useState("shopping");
@@ -335,7 +343,13 @@
 
       return (
         <div className="max-w-md mx-auto min-h-screen relative">
-          {screen === "home"       && <HomeScreen       user={user} isAdmin={role === "admin"} onOpenList={goList} onCategories={() => go("categories")} onContacts={() => go("contacts")} showToast={setToast} onAddTask={() => goAdd("tasks_" + user.uid, "tasks")} onCreateShoppingList={(id, name) => goAdd(id, "shopping", name)} onCreateNotesList={(id, name) => goAdd(id, "notes", name)} />}
+          {simulateRegular && (
+            <button onClick={() => toggleSimulate(false)}
+              className="fixed top-2 left-1/2 -translate-x-1/2 z-50 bg-black/70 text-white text-xs font-medium px-3 py-1.5 rounded-full shadow-lg flex items-center gap-1.5">
+              <span>👁️ תצוגת משתמש רגיל</span><span className="opacity-70">· חזרה למנהל</span>
+            </button>
+          )}
+          {screen === "home"       && <HomeScreen       user={user} isAdmin={role === "admin" && !simulateRegular} isRealAdmin={role === "admin"} simulating={simulateRegular} onToggleSimulate={toggleSimulate} onOpenList={goList} onCategories={() => go("categories")} onContacts={() => go("contacts")} showToast={setToast} onAddTask={() => goAdd("tasks_" + user.uid, "tasks")} onCreateShoppingList={(id, name) => goAdd(id, "shopping", name)} onCreateNotesList={(id, name) => goAdd(id, "notes", name)} />}
           {screen === "list"       && <ListScreen       user={user} listId={listId} onBack={goBack} onAdd={(type, name) => goAdd(listId, type, name || listName)} showToast={setToast} />}
           {screen === "add"        && <AddScreen        user={user} listId={listId} listType={listType} listName={listName} onBack={goBack} showToast={setToast} showStickyToast={setStickyToast} />}
           {screen === "categories" && <CategoriesScreen user={user} onBack={goBack} showToast={setToast} />}
@@ -389,7 +403,7 @@
     }
 
     // ── HOME ──────────────────────────────────────────────────────────────────────
-    function HomeScreen({ user, isAdmin, onOpenList, onCategories, onContacts, showToast, onAddTask, onCreateShoppingList, onCreateNotesList }) {
+    function HomeScreen({ user, isAdmin, isRealAdmin, simulating, onToggleSimulate, onOpenList, onCategories, onContacts, showToast, onAddTask, onCreateShoppingList, onCreateNotesList }) {
       const tasksListId = "tasks_" + user.uid;
       const [lists,      setLists]      = useState(null);
       const [tasks,      setTasks]      = useState(null);
@@ -475,6 +489,13 @@
       const handleToggleNoAi = (email, nextNoAi) => {
         setUserBusy(true); setUserMsg("");
         fns.httpsCallable("setUserNoAi")({ email: email, noAi: nextNoAi }).then(function() {
+          setUserBusy(false);
+          loadAuthUsers();
+        }, function(e) { setUserMsg("⚠ " + e.message); setUserBusy(false); });
+      };
+      const handleSaveNickname = (email, nickname) => {
+        setUserBusy(true); setUserMsg("");
+        fns.httpsCallable("setUserNickname")({ email: email, nickname: nickname }).then(function() {
           setUserBusy(false);
           loadAuthUsers();
         }, function(e) { setUserMsg("⚠ " + e.message); setUserBusy(false); });
@@ -986,6 +1007,14 @@
                   </div>
                 )}
               </div>
+              {isRealAdmin && (
+                <button onClick={function() { setShowSettings(false); onToggleSimulate(!simulating); }}
+                  className="w-full text-right px-3 py-3 text-sm text-gray-700 hover:bg-gray-50 rounded-xl flex items-center gap-3 mb-2 bg-gray-50">
+                  <span className="text-lg w-7 text-center">👁️</span>
+                  <span className="flex-1">{simulating ? "חזרה לתצוגת מנהל" : "צפה כמשתמש רגיל"}</span>
+                  {simulating && <span className="text-xs text-blue-500 font-semibold">פעיל</span>}
+                </button>
+              )}
               <div className="space-y-1">
                 {canInstall && (
                   <button onClick={function() { setShowSettings(false); installApp(); }} className="w-full text-right px-3 py-3 text-sm text-gray-700 hover:bg-gray-50 rounded-xl flex items-center gap-3">
@@ -1145,21 +1174,27 @@
                             <p className="text-xs text-gray-400 px-3 py-2 mb-2">אין עדיין משתמשים נוספים</p>
                           ) : authUsers.map(function(u) {
                             return (
-                              <div key={u.email} className="flex items-center justify-between px-3 py-2 mb-1">
-                                <span className="text-sm text-gray-700 truncate">{u.email}</span>
-                                <div className="flex items-center gap-2 flex-shrink-0">
+                              <div key={u.email} className="bg-gray-50 rounded-xl px-3 py-2 mb-2">
+                                <div className="flex items-center justify-between mb-1.5">
+                                  <span className="text-sm text-gray-700 truncate">{u.email}</span>
+                                  <button onClick={function() { handleRemoveUser(u.email); }} disabled={userBusy}
+                                    className="text-xs text-red-500 border border-red-200 rounded-full px-2 py-1 disabled:opacity-40 flex-shrink-0">הסר</button>
+                                </div>
+                                <div className="flex items-center gap-2">
+                                  <input key={u.email + ":" + (u.nickname || "")} type="text" defaultValue={u.nickname || ""}
+                                    placeholder="כינוי (יוצג ברשימת שיתוף)" dir="rtl" disabled={userBusy}
+                                    onBlur={function(e) { var v = e.target.value.trim(); if (v !== (u.nickname || "")) handleSaveNickname(u.email, v); }}
+                                    className="flex-1 min-w-0 border border-gray-200 rounded-lg px-2 py-1 text-xs bg-white focus:outline-none focus:border-blue-400" />
                                   <select value={u.role} disabled={userBusy}
                                     onChange={function(e) { handleChangeRole(u.email, e.target.value); }}
-                                    className={"text-xs font-bold uppercase border rounded-lg px-1.5 py-1 bg-white " + (u.role === "admin" ? "text-blue-500 border-blue-200" : "text-gray-500 border-gray-200")}>
+                                    className={"text-xs font-bold uppercase border rounded-lg px-1.5 py-1 bg-white flex-shrink-0 " + (u.role === "admin" ? "text-blue-500 border-blue-200" : "text-gray-500 border-gray-200")}>
                                     <option value="user">User</option>
                                     <option value="admin">Admin</option>
                                   </select>
                                   <button onClick={function() { handleToggleNoAi(u.email, !u.noAi); }} disabled={userBusy} title="דלג על AI עבור המשתמש הזה"
-                                    className={"text-xs border rounded-full px-2 py-1 disabled:opacity-40 " + (u.noAi ? "text-blue-500 border-blue-200 bg-blue-50" : "text-gray-400 border-gray-200")}>
+                                    className={"text-xs border rounded-full px-2 py-1 disabled:opacity-40 flex-shrink-0 " + (u.noAi ? "text-blue-500 border-blue-200 bg-blue-50" : "text-gray-400 border-gray-200 bg-white")}>
                                     🤖{u.noAi ? "🚫" : ""}
                                   </button>
-                                  <button onClick={function() { handleRemoveUser(u.email); }} disabled={userBusy}
-                                    className="text-xs text-red-500 border border-red-200 rounded-full px-2 py-1 disabled:opacity-40">הסר</button>
                                 </div>
                               </div>
                             );

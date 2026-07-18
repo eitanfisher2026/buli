@@ -272,9 +272,19 @@ exports.addAuthorizedUser = onCall(
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) throw new HttpsError('invalid-argument', 'Invalid email address');
     if (email === OWNER_EMAIL) throw new HttpsError('invalid-argument', 'That email is already the owner');
     const finalRole = newRole === 'admin' ? 'admin' : 'user';
-    await db.ref(`authorizedUsers/${sanitizeEmailKey(email)}`).set({
-      email, role: finalRole, addedAt: new Date().toISOString(), addedBy: request.auth.token.email
-    });
+    const key = sanitizeEmailKey(email);
+    const existingSnap = await db.ref(`authorizedUsers/${key}`).once('value');
+    const existing = existingSnap.val();
+    const record = {
+      email, role: finalRole,
+      addedAt: existing?.addedAt || new Date().toISOString(),
+      addedBy: existing?.addedBy || request.auth.token.email,
+    };
+    if (existing && existing.role !== finalRole) {
+      record.updatedAt = new Date().toISOString();
+      record.updatedBy = request.auth.token.email;
+    }
+    await db.ref(`authorizedUsers/${key}`).set(record);
     await mirrorUserAccess(email, finalRole);
     return { ok: true };
   }

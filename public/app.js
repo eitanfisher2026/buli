@@ -454,6 +454,35 @@
           loadAuthUsers();
         }, function(e) { setUserMsg("⚠ " + e.message); setUserBusy(false); });
       };
+      const handleChangeRole = (email, newRole) => {
+        setUserBusy(true); setUserMsg("");
+        fns.httpsCallable("addAuthorizedUser")({ email: email, role: newRole }).then(function() {
+          setUserMsg("✓ התפקיד עודכן"); setUserBusy(false);
+          loadAuthUsers();
+        }, function(e) { setUserMsg("⚠ " + e.message); setUserBusy(false); });
+      };
+
+      // ── Usage & Costs ────────────────────────────────────────────────────────
+      const [showCosts,    setShowCosts]    = useState(false);
+      const [costsLoading, setCostsLoading] = useState(false);
+      const [myCosts,      setMyCosts]      = useState(null);
+      const [allCosts,     setAllCosts]     = useState(null);
+      const [costsMsg,     setCostsMsg]     = useState("");
+
+      const loadCosts = () => {
+        setCostsLoading(true); setCostsMsg("");
+        var call = isAdmin ? fns.httpsCallable("getCosts")({ scope: "all" }) : fns.httpsCallable("getCosts")();
+        call.then(function(res) {
+          if (isAdmin) setAllCosts(res.data.users || []); else setMyCosts(res.data.costs || {});
+          setCostsLoading(false);
+        }, function(e) { setCostsMsg("⚠ " + e.message); setCostsLoading(false); });
+      };
+      var userCostTotal = function(costs) {
+        return Object.values(costs || {}).reduce(function(sum, byProvider) {
+          return sum + Object.values(byProvider || {}).reduce(function(s, v) { return s + v; }, 0);
+        }, 0);
+      };
+      var formatUsd = function(n) { return "$" + (n || 0).toFixed(4); };
 
       const [confirmDialog, setConfirmDialog] = useState(null);
       const [autoOpenMajor, setAutoOpenMajorState] = useState(localStorage.getItem("buli_auto_open_major") === "true");
@@ -974,6 +1003,9 @@
                     <span className="text-lg w-7 text-center">🔑</span><span>ניהול משתמשים</span>
                   </button>
                 )}
+                <button onClick={function() { setShowSettings(false); setShowCosts(true); loadCosts(); }} className="w-full text-right px-3 py-3 text-sm text-gray-700 hover:bg-gray-50 rounded-xl flex items-center gap-3">
+                  <span className="text-lg w-7 text-center">💰</span><span>עלויות AI</span>
+                </button>
                 <div className="px-3 py-2.5 flex items-center gap-3">
                   <span className="text-lg w-7 text-center">📝</span>
                   <span className="flex-1 text-sm text-gray-700">מילת מעבר בתפריטים</span>
@@ -1200,7 +1232,12 @@
                       <div key={u.email} className="flex items-center justify-between px-3 py-2 mb-1">
                         <span className="text-sm text-gray-700 truncate">{u.email}</span>
                         <div className="flex items-center gap-2 flex-shrink-0">
-                          <span className={"text-xs font-bold uppercase " + (u.role === "admin" ? "text-blue-500" : "text-gray-400")}>{u.role}</span>
+                          <select value={u.role} disabled={userBusy}
+                            onChange={function(e) { handleChangeRole(u.email, e.target.value); }}
+                            className={"text-xs font-bold uppercase border rounded-lg px-1.5 py-1 bg-white " + (u.role === "admin" ? "text-blue-500 border-blue-200" : "text-gray-500 border-gray-200")}>
+                            <option value="user">User</option>
+                            <option value="admin">Admin</option>
+                          </select>
                           <button onClick={function() { handleRemoveUser(u.email); }} disabled={userBusy}
                             className="text-xs text-red-500 border border-red-200 rounded-full px-2 py-1 disabled:opacity-40">הסר</button>
                         </div>
@@ -1223,6 +1260,60 @@
                   {userMsg && <p className={"text-xs text-center mt-2 " + (userMsg.indexOf("✓") === 0 ? "text-green-500" : "text-red-500")}>{userMsg}</p>}
                 </div>
               )}
+            </Modal>
+          )}
+
+          {showCosts && (
+            <Modal onClose={function() { setShowCosts(false); }}>
+              <h3 className="text-lg font-bold text-center mb-5">עלויות AI 💰</h3>
+              {costsLoading ? (
+                <div className="flex justify-center py-6"><Spinner /></div>
+              ) : isAdmin ? (
+                (allCosts || []).length === 0 ? (
+                  <p className="text-xs text-gray-400 text-center py-4">אין עדיין נתוני שימוש</p>
+                ) : (
+                  <div>
+                    {[].concat(allCosts).sort(function(a, b) { return userCostTotal(b.costs) - userCostTotal(a.costs); }).map(function(u) {
+                      return (
+                        <div key={u.uid} className="bg-gray-50 rounded-xl px-3 py-2 mb-2">
+                          <div className="flex items-center justify-between mb-1">
+                            <span className="text-sm text-gray-700 truncate">{u.email || u.uid}</span>
+                            <span className="text-sm font-bold text-green-500 flex-shrink-0 ml-2">{formatUsd(userCostTotal(u.costs))}</span>
+                          </div>
+                          {Object.entries(u.costs || {}).sort(function(a, b) { return b[0].localeCompare(a[0]); }).map(function(entry) {
+                            var month = entry[0], byProvider = entry[1];
+                            return (
+                              <div key={month} className="flex items-center justify-between text-xs text-gray-400 border-t border-gray-200 pt-1 mt-1">
+                                <span>{month}</span>
+                                <span>{Object.entries(byProvider || {}).map(function(p) { return p[0] + ": " + formatUsd(p[1]); }).join(" · ")}</span>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      );
+                    })}
+                    <p className="text-xs text-gray-400 text-left mt-2">סה"כ: {formatUsd(allCosts.reduce(function(s, u) { return s + userCostTotal(u.costs); }, 0))}</p>
+                  </div>
+                )
+              ) : (
+                !myCosts || Object.keys(myCosts).length === 0 ? (
+                  <p className="text-xs text-gray-400 text-center py-4">אין עדיין נתוני שימוש</p>
+                ) : (
+                  <div className="bg-gray-50 rounded-xl px-3 py-2">
+                    {Object.entries(myCosts).sort(function(a, b) { return b[0].localeCompare(a[0]); }).map(function(entry) {
+                      var month = entry[0], byProvider = entry[1];
+                      return (
+                        <div key={month} className="flex items-center justify-between text-sm text-gray-700 border-t border-gray-200 first:border-t-0 py-1.5">
+                          <span>{month}</span>
+                          <span className="text-xs text-gray-400">{Object.entries(byProvider || {}).map(function(p) { return p[0] + ": " + formatUsd(p[1]); }).join(" · ")}</span>
+                        </div>
+                      );
+                    })}
+                    <p className="text-xs text-gray-400 text-left mt-2 pt-2 border-t border-gray-200">סה"כ: {formatUsd(userCostTotal(myCosts))}</p>
+                  </div>
+                )
+              )}
+              {costsMsg && <p className="text-xs text-red-500 text-center mt-2">{costsMsg}</p>}
             </Modal>
           )}
 

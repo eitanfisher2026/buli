@@ -713,13 +713,10 @@
         db.ref("lists/" + id).update({ isPrivate: nowPrivate });
         showToast(nowPrivate ? "הרשימה עכשיו פרטית 🔒" : "הרשימה עכשיו שיתופית 👥");
         if (!nowPrivate) {
-          db.ref("globalContacts").once("value").then(function(snap) {
-            snap.forEach(function(c) {
-              var contact = c.val();
-              if (!contact.alwaysShare) return;
-              db.ref("usersByEmail/" + encodeEmail(contact.email.toLowerCase())).once("value").then(function(us) {
-                if (us.exists()) db.ref("lists/" + id + "/sharedWith/" + us.val()).set("edit");
-              });
+          db.ref("shareDefaults").once("value").then(function(snap) {
+            var val = snap.val() || {};
+            Object.keys(val).forEach(function(uid) {
+              if (val[uid] && uid !== user.uid) db.ref("lists/" + id + "/sharedWith/" + uid).set("edit");
             });
           });
         }
@@ -1574,54 +1571,31 @@
 
     // ── CONTACTS SCREEN ───────────────────────────────────────────────────────────
     function ContactsScreen({ user, onBack, showToast }) {
-      const [contacts, setContacts] = useState(null);
-      const [addName,  setAddName]  = useState("");
-      const [addEmail, setAddEmail] = useState("");
-      const [adding,   setAdding]   = useState(false);
-      const [showAdd,  setShowAdd]  = useState(false);
-      const [confirmDialog, setConfirmDialog] = useState(null);
+      // Roster comes from authorized users (Settings → ניהול משתמשים) — nothing to add/remove
+      // here manually. This screen just sets who gets auto-shared into your new lists.
+      const [members,  setMembers]  = useState(null);
 
       useEffect(function() {
-        db.ref("globalContacts").once("value").then(function(snap) {
-          var arr = [];
-          snap.forEach(function(c) { arr.push(Object.assign({ id: c.key }, c.val())); });
-          arr.sort(function(a, b) { return (a.name || "").localeCompare(b.name || "", "he"); });
-          setContacts(arr);
-        });
+        fns.httpsCallable("listTeamMembers")().then(function(res) {
+          var others = (res.data.members || []).filter(function(m) { return m.uid !== user.uid; });
+          db.ref("shareDefaults").once("value").then(function(snap) {
+            var defaults = snap.val() || {};
+            others.sort(function(a, b) { return (a.name || "").localeCompare(b.name || "", "he"); });
+            setMembers(others.map(function(m) { return Object.assign({}, m, { alwaysShare: !!defaults[m.uid] }); }));
+          });
+        }, function() { setMembers([]); showToast("שגיאה בטעינת אנשי קשר"); });
       }, []);
 
-      const addContact = () => {
-        if (!addName.trim() || !addEmail.trim()) return;
-        setAdding(true);
-        var newContact = { name: addName.trim(), email: addEmail.trim().toLowerCase(), alwaysShare: false };
-        db.ref("globalContacts").push(newContact).then(function(ref) {
-          setContacts(function(prev) {
-            var arr = (prev || []).concat(Object.assign({ id: ref.key }, newContact));
-            arr.sort(function(a, b) { return (a.name || "").localeCompare(b.name || "", "he"); });
-            return arr;
+      const toggleAlways = (uid) => {
+        var next;
+        setMembers(function(prev) {
+          return prev.map(function(m) {
+            if (m.uid !== uid) return m;
+            next = !m.alwaysShare;
+            return Object.assign({}, m, { alwaysShare: next });
           });
-          setAddName(""); setAddEmail(""); setShowAdd(false); setAdding(false);
-          showToast("איש קשר נוסף!");
-        }, function() { showToast("שגיאה בהוספה"); setAdding(false); });
-      };
-
-      const toggleAlways = (id) => {
-        setContacts(function(prev) {
-          return prev.map(function(c) { return c.id === id ? Object.assign({}, c, { alwaysShare: !c.alwaysShare }) : c; });
         });
-        var contact = (contacts || []).find(function(c) { return c.id === id; });
-        if (contact) db.ref("globalContacts" + "/" + id + "/alwaysShare").set(!contact.alwaysShare);
-      };
-
-      const promptDeleteContact = (c) => {
-        setConfirmDialog({
-          message: "למחוק את " + c.name + "?",
-          onConfirm: function() {
-            setContacts(function(prev) { return prev.filter(function(x) { return x.id !== c.id; }); });
-            db.ref("globalContacts/" + c.id).remove();
-            showToast("איש קשר נמחק");
-          }
-        });
+        db.ref("shareDefaults/" + uid).set(next || null);
       };
 
       return (
@@ -1632,62 +1606,42 @@
                 <span className="text-lg leading-none">‹</span><span>חזרה</span>
               </button>
               <h1 className="flex-1 text-lg font-bold text-right">אנשי קשר</h1>
-              <button onClick={() => setShowAdd(true)} className="text-sm bg-white/20 px-3 py-1.5 rounded-full">+ הוסף</button>
             </div>
             <p className="text-white/60 text-xs mt-1 text-right">משתמשים שאתה משתף איתם בקביעות</p>
           </div>
 
           <div className="flex-1 overflow-y-auto p-4">
-            {contacts === null ? (
+            {members === null ? (
               <div className="flex justify-center py-20"><div className="spinner w-8 h-8 border-2 border-blue-600 border-t-transparent rounded-full" /></div>
-            ) : contacts.length === 0 ? (
+            ) : members.length === 0 ? (
               <div className="text-center py-20 text-gray-400">
                 <div className="text-5xl mb-3">👥</div>
-                <p className="font-medium">אין אנשי קשר</p>
-                <p className="text-sm mt-1">הוסף אנשי קשר לשיתוף מהיר</p>
+                <p className="font-medium">אין עדיין משתמשים נוספים</p>
+                <p className="text-sm mt-1">הוסף אנשים תחת הגדרות ← ניהול משתמשים</p>
               </div>
             ) : (
               <div className="space-y-3">
-                {contacts.map(function(c) {
+                {members.map(function(m) {
                   return (
-                    <div key={c.id} className="bg-white rounded-2xl border border-gray-100 shadow-sm px-4 py-3 flex items-center gap-3">
+                    <div key={m.uid} className="bg-white rounded-2xl border border-gray-100 shadow-sm px-4 py-3 flex items-center gap-3">
                       <div className="flex-1 min-w-0">
-                        <div className="font-medium text-gray-800">{c.name}</div>
-                        <div className="text-xs text-gray-400 truncate">{c.email}</div>
+                        <div className="font-medium text-gray-800">{m.name}</div>
+                        <div className="text-xs text-gray-400 truncate">{m.email}</div>
                       </div>
-                      <div className="flex items-center gap-3 flex-shrink-0">
-                        <div className="flex flex-col items-center gap-0.5">
-                          <button onClick={function() { toggleAlways(c.id); }}
-                            className={"relative inline-flex h-6 w-11 items-center rounded-full transition-colors " + (c.alwaysShare ? "bg-blue-600" : "bg-gray-200")}>
-                            <span className={"inline-block h-4 w-4 rounded-full bg-white shadow transition-transform " + (c.alwaysShare ? "translate-x-6" : "translate-x-1")} />
-                          </button>
-                          <span className="text-xs text-gray-400">תמיד</span>
-                        </div>
-                        <button onClick={function() { promptDeleteContact(c); }} className="text-gray-300 hover:text-red-400 text-lg">🗑️</button>
+                      <div className="flex flex-col items-center gap-0.5 flex-shrink-0">
+                        <button onClick={function() { toggleAlways(m.uid); }}
+                          className={"relative inline-flex h-6 w-11 items-center rounded-full transition-colors " + (m.alwaysShare ? "bg-blue-600" : "bg-gray-200")}>
+                          <span className={"inline-block h-4 w-4 rounded-full bg-white shadow transition-transform " + (m.alwaysShare ? "translate-x-6" : "translate-x-1")} />
+                        </button>
+                        <span className="text-xs text-gray-400">תמיד</span>
                       </div>
                     </div>
                   );
                 })}
-                <p className="text-xs text-gray-400 text-center pt-2">אנשי קשר עם "תמיד" יתווספו אוטומטית כשרשימה הופכת לשיתופית</p>
+                <p className="text-xs text-gray-400 text-center pt-2">אנשים עם "תמיד" יתווספו אוטומטית כשרשימה הופכת לשיתופית</p>
               </div>
             )}
           </div>
-
-          {showAdd && (
-            <Modal onClose={() => { setShowAdd(false); setAddName(""); setAddEmail(""); }}>
-              <h3 className="text-lg font-bold text-center mb-4">הוסף איש קשר</h3>
-              <input value={addName} onChange={e => setAddName(e.target.value)} placeholder="שם"
-                className="w-full border border-gray-200 rounded-xl px-4 py-3 text-right focus:outline-none focus:border-blue-400 mb-3" />
-              <input value={addEmail} onChange={e => setAddEmail(e.target.value)} type="email" placeholder="אימייל"
-                className="w-full border border-gray-200 rounded-xl px-4 py-3 text-right focus:outline-none focus:border-blue-400 mb-4" />
-              <button onClick={addContact} disabled={!addName.trim() || !addEmail.trim() || adding}
-                className="w-full bg-blue-600 text-white py-4 rounded-2xl font-semibold disabled:opacity-40 flex items-center justify-center gap-2">
-                {adding ? <Spinner /> : "הוסף"}
-              </button>
-            </Modal>
-          )}
-
-          {confirmDialog && <ConfirmDialog message={confirmDialog.message} onConfirm={confirmDialog.onConfirm} onClose={function() { setConfirmDialog(null); }} />}
         </div>
       );
     }
@@ -2051,12 +2005,14 @@
           tick();
         });
 
-        db.ref("globalContacts").once("value").then(function(snap) {
-          var arr = [];
-          snap.forEach(function(c) { arr.push(Object.assign({ id: c.key }, c.val())); });
-          arr.sort(function(a, b) { return (a.name || "").localeCompare(b.name || "", "he"); });
-          setContacts(arr);
-        });
+        fns.httpsCallable("listTeamMembers")().then(function(res) {
+          var others = (res.data.members || []).filter(function(m) { return m.uid !== user.uid; });
+          db.ref("shareDefaults").once("value").then(function(dsnap) {
+            var defaults = dsnap.val() || {};
+            others.sort(function(a, b) { return (a.name || "").localeCompare(b.name || "", "he"); });
+            setContacts(others.map(function(m) { return { id: m.uid, name: m.name, email: m.email, alwaysShare: !!defaults[m.uid] }; }));
+          });
+        }, function() { setContacts([]); });
 
         db.ref("globalProfiles").once("value").then(function(snap) {
           var arr = [];
@@ -2182,13 +2138,9 @@
             setSharing(false);
           }
         }
-        selectedContacts.forEach(function(cid) {
-          var contact = contacts.find(function(c) { return c.id === cid; });
-          if (!contact) { done(); return; }
-          db.ref("usersByEmail/" + encodeEmail(contact.email.toLowerCase())).once("value").then(function(snap) {
-            if (!snap.exists()) { done(); return; }
-            db.ref("lists/" + listId + "/sharedWith/" + snap.val()).set(shareRole).then(done, done);
-          }, done);
+        selectedContacts.forEach(function(uid) {
+          // contacts[].id is already the target's uid (from listTeamMembers) — no lookup needed
+          db.ref("lists/" + listId + "/sharedWith/" + uid).set(shareRole).then(done, done);
         });
         if (shareEmail.trim()) {
           db.ref("usersByEmail/" + encodeEmail(shareEmail.trim().toLowerCase())).once("value").then(function(snap) {

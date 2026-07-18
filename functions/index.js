@@ -249,6 +249,31 @@ exports.listAuthorizedUsers = onCall(
   }
 );
 
+// Unlike listAuthorizedUsers (admin-only), this is callable by any authorized user —
+// it's the "who can I share a list with" roster, not the access-management panel.
+exports.listTeamMembers = onCall(
+  { timeoutSeconds: 30, memory: '128MiB', region: 'europe-west1' },
+  async (request) => {
+    await requireAuthorized(request);
+    const snap = await db.ref('authorizedUsers').once('value');
+    const val = snap.val() || {};
+    const emails = [OWNER_EMAIL, ...Object.values(val).map(u => u.email)];
+    const members = await Promise.all(emails.map(async (email) => {
+      const emailKey = email.replace(/\./g, ',');
+      const uidSnap = await db.ref(`usersByEmail/${emailKey}`).once('value');
+      const uid = uidSnap.val();
+      let name = email;
+      if (uid) {
+        const nameSnap = await db.ref(`users/${uid}/name`).once('value');
+        if (nameSnap.exists() && nameSnap.val()) name = nameSnap.val();
+      }
+      return { uid: uid || null, email, name };
+    }));
+    // Only people who have actually signed in at least once can be shared with (sharing needs a uid)
+    return { members: members.filter(m => m.uid) };
+  }
+);
+
 async function mirrorUserAccess(email, role) {
   // Best-effort: if this email has already signed in before, we know its uid via
   // usersByEmail and can flip its access immediately instead of waiting for next login.

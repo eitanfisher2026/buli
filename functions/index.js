@@ -56,12 +56,13 @@ async function recordCost(request, ai, inputTokens, outputTokens) {
 const PRICING = {
   anthropic: {
     'claude-sonnet-4-6':          { in: 3, out: 15 },
-    'claude-haiku-4-5-20251001':  { in: 0.80, out: 4 },
+    'claude-haiku-4-5-20251001':  { in: 1, out: 5 },
   },
   gemini: {
+    'gemini-2.5-flash-lite':     { in: 0.10, out: 0.40 },
     'gemini-2.5-flash':          { in: 0.30, out: 2.50 },
     'gemini-2.5-pro':            { in: 1.25, out: 10.00 },
-    'gemini-3-flash-preview':    { in: 0.30, out: 2.50 },
+    'gemini-3.1-flash-lite':     { in: 0.25, out: 1.50 },
   },
   openai: {
     'gpt-4o-mini':  { in: 0.15, out: 0.60 },
@@ -76,8 +77,15 @@ function makeAI(data) {
   const { provider, geminiApiKey, geminiModel, openaiApiKey, openaiModel, anthropicApiKey, anthropicModel } = data || {};
 
   if (provider === 'gemini' && geminiApiKey) {
-    const DEPRECATED = { 'gemini-2.0-flash': 'gemini-2.5-flash', 'gemini-2.0-flash-lite': 'gemini-2.5-flash' };
-    const rawModel = geminiModel || 'gemini-2.5-flash';
+    // gemini-2.5-flash (no "-lite") stopped being issued to new API keys — auto-heal
+    // anyone whose saved settings still point at a retired/restricted model.
+    const DEPRECATED = {
+      'gemini-2.0-flash': 'gemini-2.5-flash-lite',
+      'gemini-2.0-flash-lite': 'gemini-2.5-flash-lite',
+      'gemini-2.5-flash': 'gemini-2.5-flash-lite',
+      'gemini-3-flash-preview': 'gemini-2.5-flash-lite',
+    };
+    const rawModel = geminiModel || 'gemini-2.5-flash-lite';
     const model = DEPRECATED[rawModel] || rawModel;
     return { type: 'gemini', client: new GoogleGenerativeAI(geminiApiKey), model };
   }
@@ -147,7 +155,7 @@ async function callAI(ai, prompt, maxTokens) {
 
 function calcCostUsd(ai, inputTokens, outputTokens) {
   if (ai.type === 'gemini') {
-    const p = PRICING.gemini[ai.model] || PRICING.gemini['gemini-2.5-flash'];
+    const p = PRICING.gemini[ai.model] || PRICING.gemini['gemini-2.5-flash-lite'];
     return (inputTokens * p.in + outputTokens * p.out) / 1_000_000;
   }
   if (ai.type === 'openai') {

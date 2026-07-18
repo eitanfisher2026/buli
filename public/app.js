@@ -1,6 +1,6 @@
     const { useState, useEffect, useRef } = React;
 
-    const VERSION = "v5.15";
+    const VERSION = "v5.16";
 
     // ── CONFIG ────────────────────────────────────────────────────────────────────
     const FIREBASE_CONFIG = {
@@ -26,7 +26,7 @@
     const AI_PROVIDERS = {
       anthropic: { name: "Claude", label: "Anthropic", defaultModel: "claude-haiku-4-5-20251001", keyHint: "sk-ant-...", free: false },
       openai:    { name: "ChatGPT", label: "OpenAI",   defaultModel: "gpt-4o-mini",               keyHint: "sk-...",     free: false },
-      gemini:    { name: "Gemini",  label: "Google",   defaultModel: "gemini-2.5-flash",           keyHint: "AIza...",    free: true  }
+      gemini:    { name: "Gemini",  label: "Google",   defaultModel: "gemini-2.5-flash-lite",      keyHint: "AIza...",    free: true  }
     };
     function getAIModel(p) {
       return AI_PROVIDERS[p].defaultModel;
@@ -582,7 +582,10 @@
           setOpenaiKey(s.openaiApiKey || "");
           setGeminiKey(s.geminiApiKey || "");
           setAnthropicKey(s.anthropicApiKey || "");
-          setAiModel(s[p + "Model"] || getAIModel(p));
+          var savedModel = s[p + "Model"];
+          var RETIRED_MODELS = ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-2.0-flash-lite", "gemini-3-flash-preview"];
+          if (savedModel && RETIRED_MODELS.indexOf(savedModel) !== -1) savedModel = null;
+          setAiModel(savedModel || getAIModel(p));
           setAiPrompt(s.prompt || DEFAULT_AI_PROMPT);
           setAiNoAi(!!s.noAi);
         });

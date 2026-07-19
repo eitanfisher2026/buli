@@ -1,6 +1,6 @@
     const { useState, useEffect, useRef } = React;
 
-    const VERSION = "v5.31";
+    const VERSION = "v5.33";
 
     // ── CONFIG ────────────────────────────────────────────────────────────────────
     const FIREBASE_CONFIG = {
@@ -539,6 +539,7 @@
       const [newProfileVendorInput, setNewProfileVendorInput] = useState("");
       const [newProfileBranchId, setNewProfileBranchId] = useState("");
       const [vendorRequestSent, setVendorRequestSent] = useState(false);
+      const [branchSearchQuery, setBranchSearchQuery] = useState("");
       const [showVendorRequests, setShowVendorRequests] = useState(false);
       const [vendorRequestsLoading, setVendorRequestsLoading] = useState(false);
       const [vendorRequestsList, setVendorRequestsList] = useState([]);
@@ -1411,7 +1412,7 @@
                           <div className="border-t border-gray-100 pt-3">
                             <div className="text-xs font-semibold text-gray-500 mb-1.5">הוסף סניף להשוואה</div>
                             <input list="vendor-name-suggestions" value={newProfileVendorInput}
-                              onChange={function(e) { setNewProfileVendorInput(e.target.value); setNewProfileBranchId(""); setVendorRequestSent(false); }}
+                              onChange={function(e) { setNewProfileVendorInput(e.target.value); setNewProfileBranchId(""); setVendorRequestSent(false); setBranchSearchQuery(""); }}
                               placeholder="הקלד שם רשת, למשל: רמי לוי" dir="rtl"
                               className="w-full border border-gray-200 rounded-xl px-3 py-2 text-sm bg-white mb-2" />
                             <datalist id="vendor-name-suggestions">
@@ -1419,33 +1420,47 @@
                             </datalist>
                             {(function() {
                               var trimmed = newProfileVendorInput.trim();
-                              if (!trimmed) return null;
                               var matched = VENDOR_LIST.find(function(v) { return v.label === trimmed; });
-                              if (matched) {
-                                return (
+                              var q = branchSearchQuery.trim().toLowerCase();
+                              var branchEntries = matched ? Object.entries(vendorBranchLists[matched.id] || {})
+                                .filter(function(entry) {
+                                  if (!q) return true;
+                                  var hay = ((entry[1].name || "") + " " + (entry[1].address || "") + " " + (entry[1].city || "") + " " + entry[0]).toLowerCase();
+                                  return hay.indexOf(q) !== -1;
+                                })
+                                .sort(function(a, b) { return (a[1].name||"").localeCompare(b[1].name||"", "he"); }) : [];
+                              return (
+                                <div>
+                                  {matched && (
+                                    <input value={branchSearchQuery} onChange={function(e) { setBranchSearchQuery(e.target.value); }}
+                                      placeholder="חפש סניף לפי שם או עיר..." dir="rtl"
+                                      className="w-full border border-gray-200 rounded-xl px-3 py-2 text-sm bg-white mb-2" />
+                                  )}
                                   <div className="flex gap-2">
-                                    <select value={newProfileBranchId} onChange={function(e) { setNewProfileBranchId(e.target.value); }}
-                                      className="flex-1 border border-gray-200 rounded-xl px-3 py-2 text-sm bg-white">
-                                      <option value="">בחר סניף...</option>
-                                      {Object.entries(vendorBranchLists[matched.id] || {}).sort(function(a, b) { return (a[1].name||"").localeCompare(b[1].name||"", "he"); }).map(function(entry) {
+                                    <select value={newProfileBranchId} disabled={!matched} onChange={function(e) { setNewProfileBranchId(e.target.value); }}
+                                      className="flex-1 border border-gray-200 rounded-xl px-3 py-2 text-sm bg-white disabled:bg-gray-50 disabled:text-gray-400">
+                                      <option value="">
+                                        {!matched ? "הקלד רשת קודם" : branchEntries.length > 0 ? "בחר סניף... (" + branchEntries.length + ")" : "לא נמצאו סניפים"}
+                                      </option>
+                                      {branchEntries.map(function(entry) {
                                         return <option key={entry[0]} value={entry[0]}>{entry[1].name} — {entry[1].address} (סניף {parseInt(entry[0], 10)})</option>;
                                       })}
                                     </select>
-                                    <button onClick={function() { addVendorProfile(matched.id, newProfileBranchId); }} disabled={!newProfileBranchId}
+                                    <button onClick={function() { addVendorProfile(matched.id, newProfileBranchId); }} disabled={!matched || !newProfileBranchId}
                                       className="bg-blue-600 text-white text-sm px-3 py-2 rounded-xl font-medium disabled:opacity-40 flex-shrink-0">+ הוסף</button>
                                   </div>
-                                );
-                              }
-                              return (
-                                <div className="bg-orange-50 border border-orange-100 rounded-xl p-3 text-xs text-orange-700 space-y-2">
-                                  <div>"{trimmed}" עדיין לא נתמכת בבולי.</div>
-                                  {vendorRequestSent ? (
-                                    <div className="text-green-600 font-medium">הבקשה נשלחה למנהל ✓</div>
-                                  ) : (
-                                    <button onClick={function() { requestVendorSupport(trimmed); }}
-                                      className="text-orange-700 font-medium border border-orange-200 bg-white rounded-lg px-3 py-1.5">
-                                      בקש מהמנהל להוסיף את הרשת
-                                    </button>
+                                  {trimmed && !matched && (
+                                    <div className="bg-orange-50 border border-orange-100 rounded-xl p-3 text-xs text-orange-700 space-y-2 mt-2">
+                                      <div>"{trimmed}" עדיין לא נתמכת בבולי.</div>
+                                      {vendorRequestSent ? (
+                                        <div className="text-green-600 font-medium">הבקשה נשלחה למנהל ✓</div>
+                                      ) : (
+                                        <button onClick={function() { requestVendorSupport(trimmed); }}
+                                          className="text-orange-700 font-medium border border-orange-200 bg-white rounded-lg px-3 py-1.5">
+                                          בקש מהמנהל להוסיף את הרשת
+                                        </button>
+                                      )}
+                                    </div>
                                   )}
                                 </div>
                               );

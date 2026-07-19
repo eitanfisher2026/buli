@@ -1,6 +1,6 @@
     const { useState, useEffect, useRef } = React;
 
-    const VERSION = "v5.40";
+    const VERSION = "v5.42";
 
     // ── CONFIG ────────────────────────────────────────────────────────────────────
     const FIREBASE_CONFIG = {
@@ -2469,9 +2469,12 @@
       const [items,      setItems]      = useState([]);
       const [loading,    setLoading]    = useState(true);
       const [profiles,         setProfiles]         = useState([]);
-      // Category order profile — now driven automatically by which shop is
-      // selected in the filter panel (see the effect below), not manually.
-      const [activeProfile,    setActiveProfile]    = useState("default");
+      // In pricing mode, category order is driven automatically by which
+      // shop is selected (see the effect below). Without pricing, there's no
+      // shop to derive it from, so it stays manually picked, same as before.
+      const [sortBy,     setSortBy]     = useState("category");
+      const [showProfilePicker,setShowProfilePicker]= useState(false);
+      const [activeProfile,    setActiveProfile]    = useState(function() { return localStorage.getItem("buli_profile") || "default"; });
       const [editItem,      setEditItem]      = useState(null);
       const [taskEdit,      setTaskEdit]      = useState(null);
       const [noteEdit,      setNoteEdit]      = useState(null);
@@ -2486,7 +2489,8 @@
       const [filterPerson, setFilterPerson] = useState(function() { return localStorage.getItem("buli_filter_person") || "all"; });
       // "all" | "noBarcode" | a profile id — which vendor branch an item must
       // actually be sold at (or "noBarcode" for still-unmatched items).
-      const [filterVendorProfile, setFilterVendorProfile] = useState("all");
+      const [filterVendorProfile, setFilterVendorProfile] = useState(function() { return localStorage.getItem("buli_filter_vendor") || "all"; });
+      useEffect(function() { localStorage.setItem("buli_filter_vendor", filterVendorProfile); }, [filterVendorProfile]);
       const [showFilters, setShowFilters] = useState(false);
       const [pricingEnabled, setPricingEnabled] = useState(false);
       // { [profileId]: { [barcode]: price } } — server-resolved, cap-enforced
@@ -2553,6 +2557,7 @@
       // with where you're actually shopping) — falls back to default when
       // no shop is selected or no matching profile exists.
       useEffect(function() {
+        if (!pricingEnabled) return; // manual picker (below) handles it instead
         if (filterVendorProfile === "all" || filterVendorProfile === "noBarcode") {
           setActiveProfile("default");
           return;
@@ -2562,7 +2567,7 @@
         var match = shopLabel ? profiles.find(function(p) { return p.name === shopLabel; }) : null;
         setActiveProfile(match ? match.id : "default");
         // eslint-disable-next-line react-hooks/exhaustive-deps
-      }, [filterVendorProfile, activeProfiles, profiles]);
+      }, [pricingEnabled, filterVendorProfile, activeProfiles, profiles]);
 
       // ─── Price comparison (any number of active vendor+branch profiles) —
       // no AI, plain lookups. item.barcodes is keyed by vendor CHAIN (a GTIN
@@ -2608,7 +2613,8 @@
       };
 
       const [pricesRefreshing, setPricesRefreshing] = useState(false);
-      const [viewMode, setViewMode] = useState("list"); // "list" | "table" — table is pricing-only
+      const [viewMode, setViewMode] = useState(function() { return localStorage.getItem("buli_view_mode") || "list"; }); // "list" | "table" — table is pricing-only
+      useEffect(function() { localStorage.setItem("buli_view_mode", viewMode); }, [viewMode]);
       const refreshAllPrices = () => {
         var barcodesByVendor = collectBarcodesByVendor(items.filter(itemHasAnyBarcode));
         if (Object.keys(barcodesByVendor).length === 0) { showToast("אין פריטים עם ברקוד לרענון"); return; }
@@ -2946,6 +2952,16 @@
       const orderByCategory = (arr) => groupByCategory(arr).flatMap(function(g) { return g.items; });
 
       const renderGroup = (arr) => {
+        if (!isTasks && !pricingEnabled && sortBy === "name") {
+          return (
+            <div className="space-y-2">
+              {[...arr].sort((a,b) => (a.name||"").localeCompare(b.name||"","he")).map(item =>
+                <ItemRow key={item.id} item={item} canEdit={canEditItem(item)} onToggle={toggle} onDelete={remove} onEdit={() => editFn(item)} onUpdateNote={updateNote} isTasks={false} currentUserId={user.uid}
+                  priceMap={priceMap} activeProfiles={activeProfiles} singleShopId={singleShopId} priceCandidates={candidatesByName[item.name]} onPickPrice={() => setPickerItem(item)} />
+              )}
+            </div>
+          );
+        }
         if (isTasks) {
           return (
             <div className="space-y-2">
@@ -2987,10 +3003,24 @@
               )}
             </div>
             <div className="flex items-center justify-between mt-2" dir="ltr">
-              {!isNotes && singleShopProfile ? (
+              {!isNotes && pricingEnabled && singleShopProfile ? (
                 <span className="text-xs font-semibold bg-white/20 px-3 py-1 rounded-full whitespace-nowrap">
                   🏪 {profileLabel(singleShopProfile, activeProfiles)}
                 </span>
+              ) : !isNotes && !pricingEnabled ? (
+                <div className="flex bg-white/15 rounded-full p-0.5">
+                  <button onClick={function() { setSortBy("name"); }}
+                    className={"text-xs px-3 py-1 rounded-full transition " + (sortBy==="name" ? "bg-white text-blue-600 font-semibold" : "text-white/70")}>שם</button>
+                  <button onClick={function() {
+                    setSortBy("category");
+                    if (profiles.length > 0) setShowProfilePicker(true);
+                  }} className={"text-xs px-3 py-1 rounded-full transition flex items-center gap-1 " + (sortBy==="category" ? "bg-white text-blue-600 font-semibold" : "text-white/70")}>
+                    {sortBy === "category" && activeProfile !== "default"
+                      ? ((profiles.find(function(p) { return p.id === activeProfile; }) || {}).name || "קטגוריה")
+                      : "קטגוריה"}
+                    {profiles.length > 0 && <span style={{fontSize:"9px"}}>▾</span>}
+                  </button>
+                </div>
               ) : <div />}
               <span className="text-white/50 text-xs flex items-center gap-2">
                 {isNotes ? (notesSorted.filter(i=>i.done).length + "/" + notesSorted.length) : (isFiltered ? filteredItems.length + "/" + items.length : doneCount + "/" + items.length)}
@@ -3015,21 +3045,37 @@
                       );
                     })}
                   </div>
-                  {pricingEnabled && !isTasks && (
-                    <button onClick={function() { setFilterVendorProfile(function(p) { return p === "noBarcode" ? "all" : "noBarcode"; }); }}
-                      className={"text-xs px-2 py-1 rounded-full transition whitespace-nowrap flex-shrink-0 " + (filterVendorProfile==="noBarcode" ? "bg-white text-orange-600 font-semibold" : "bg-white/15 text-white/70")}>
-                      ⚠ ללא ברקוד
-                    </button>
+                  {pricingEnabled ? (
+                    <React.Fragment>
+                      {!isTasks && (
+                        <button onClick={function() { setFilterVendorProfile(function(p) { return p === "noBarcode" ? "all" : "noBarcode"; }); }}
+                          className={"text-xs px-2 py-1 rounded-full transition whitespace-nowrap flex-shrink-0 " + (filterVendorProfile==="noBarcode" ? "bg-white text-orange-600 font-semibold" : "bg-white/15 text-white/70")}>
+                          ⚠ ללא ברקוד
+                        </button>
+                      )}
+                      <button onClick={function() { setShowFilters(function(p) { return !p; }); }}
+                        className={"text-xs px-2.5 py-1 rounded-full transition whitespace-nowrap flex-shrink-0 flex items-center gap-1 " + (showFilters ? "bg-white text-blue-600 font-semibold" : "bg-white/15 text-white/70")}>
+                        מסננים {(filterPerson !== "all" || singleShopId) && <span className="text-orange-300">●</span>}
+                      </button>
+                    </React.Fragment>
+                  ) : (
+                    <div className="flex bg-white/15 rounded-full p-0.5 gap-0.5">
+                      {[["all","כולם"],["mine","שלי"],["others","אחרים"]].map(function(entry) {
+                        var v = entry[0], l = entry[1];
+                        return (
+                          <button key={v} onClick={function() { applyPersonFilter(v); }}
+                            className={"text-xs px-2.5 py-1 rounded-full transition " + (filterPerson===v ? "bg-white text-blue-600 font-semibold" : "text-white/70")}>
+                            {l}
+                          </button>
+                        );
+                      })}
+                    </div>
                   )}
-                  <button onClick={function() { setShowFilters(function(p) { return !p; }); }}
-                    className={"text-xs px-2.5 py-1 rounded-full transition whitespace-nowrap flex-shrink-0 flex items-center gap-1 " + (showFilters ? "bg-white text-blue-600 font-semibold" : "bg-white/15 text-white/70")}>
-                    מסננים {(filterPerson !== "all" || singleShopId) && <span className="text-orange-300">●</span>}
-                  </button>
                   {isFiltered && (
                     <button onClick={clearAllFilters} className="text-white/60 hover:text-white text-xs flex-shrink-0" title="נקה פילטרים">✕</button>
                   )}
                 </div>
-                {showFilters && (
+                {pricingEnabled && showFilters && (
                   <div className="mt-2 bg-white/10 rounded-2xl p-2.5 space-y-2.5">
                     <div>
                       <div className="text-white/50 text-xs mb-1">מי הוסיף</div>
@@ -3045,7 +3091,7 @@
                         })}
                       </div>
                     </div>
-                    {pricingEnabled && !isTasks && activeProfiles.length > 0 && (
+                    {!isTasks && activeProfiles.length > 0 && (
                       <div>
                         <div className="text-white/50 text-xs mb-1">הצג פריטים לחנות</div>
                         <div className="flex flex-wrap gap-1">
@@ -3144,6 +3190,39 @@
           {noteEdit && <NoteEditModal item={noteEdit} onSave={saveNoteEdit} onClose={function() { setNoteEdit(null); }} />}
           {taskEdit && <TaskEditModal item={taskEdit} onChange={setTaskEdit} onSave={saveTaskEdit} onDelete={deleteTask} onClose={() => setTaskEdit(null)} />}
           {confirmDialog && <ConfirmDialog message={confirmDialog.message} confirmLabel={confirmDialog.confirmLabel} onConfirm={confirmDialog.onConfirm} onClose={function() { setConfirmDialog(null); }} />}
+
+          {showProfilePicker && (
+            <Modal onClose={function() { setShowProfilePicker(false); }}>
+              <h3 className="text-lg font-bold text-center mb-4">סדר קטגוריות לפי חנות</h3>
+              <div className="space-y-2">
+                <button onClick={function() {
+                  setActiveProfile("default");
+                  localStorage.setItem("buli_profile", "default");
+                  setShowProfilePicker(false);
+                }} className={"w-full flex items-center gap-3 px-4 py-3 rounded-xl border text-right transition " + (activeProfile === "default" ? "bg-blue-50 border-blue-400" : "bg-white border-gray-200")}>
+                  <div className={"w-5 h-5 rounded-full border-2 flex-shrink-0 flex items-center justify-center text-xs " + (activeProfile === "default" ? "bg-blue-600 border-blue-600 text-white" : "border-gray-300")}>
+                    {activeProfile === "default" ? "✓" : ""}
+                  </div>
+                  <span className="font-medium text-gray-800">ברירת מחדל</span>
+                </button>
+                {profiles.map(function(p) {
+                  var sel = activeProfile === p.id;
+                  return (
+                    <button key={p.id} onClick={function() {
+                      setActiveProfile(p.id);
+                      localStorage.setItem("buli_profile", p.id);
+                      setShowProfilePicker(false);
+                    }} className={"w-full flex items-center gap-3 px-4 py-3 rounded-xl border text-right transition " + (sel ? "bg-blue-50 border-blue-400" : "bg-white border-gray-200")}>
+                      <div className={"w-5 h-5 rounded-full border-2 flex-shrink-0 flex items-center justify-center text-xs " + (sel ? "bg-blue-600 border-blue-600 text-white" : "border-gray-300")}>
+                        {sel ? "✓" : ""}
+                      </div>
+                      <span className="font-medium text-gray-800">{p.name}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            </Modal>
+          )}
 
           {pickerItem && (
             <Modal onClose={() => setPickerItem(null)}>

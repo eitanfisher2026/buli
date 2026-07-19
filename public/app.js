@@ -1,6 +1,6 @@
     const { useState, useEffect, useRef } = React;
 
-    const VERSION = "v5.47";
+    const VERSION = "v5.48";
 
     // ── CONFIG ────────────────────────────────────────────────────────────────────
     const FIREBASE_CONFIG = {
@@ -399,7 +399,7 @@
               setRole(null);
               setRoleLoading(false);
             });
-            db.ref("users/" + u.uid).update({ name: u.displayName, email: u.email, photo: u.photoURL });
+            db.ref("users/" + u.uid).update({ name: u.displayName, email: u.email, photo: u.photoURL, lastLogin: Date.now() });
             db.ref("users/" + u.uid + "/color").once("value").then(function(snap) {
               if (snap.exists()) localStorage.setItem("buli_user_color_" + u.uid, snap.val());
             });
@@ -648,6 +648,7 @@
       const [ownerEmail,  setOwnerEmail]  = useState("");
       const [ownerPricingEnabled, setOwnerPricingEnabled] = useState(false);
       const [ownerNickname, setOwnerNickname] = useState("");
+      const [ownerLastLogin, setOwnerLastLogin] = useState(null);
       const [newUserEmail, setNewUserEmail] = useState("");
       const [newUserRole,  setNewUserRole]  = useState("user");
       const [userBusy,    setUserBusy]    = useState(false);
@@ -659,6 +660,7 @@
           setOwnerEmail(res.data.owner || "");
           setOwnerPricingEnabled(!!res.data.ownerPricingEnabled);
           setOwnerNickname(res.data.ownerNickname || "");
+          setOwnerLastLogin(res.data.ownerLastLogin || null);
           setAuthUsers(res.data.users || []);
           setUsersLoading(false);
         }, function(e) {
@@ -1597,6 +1599,9 @@
                               <span className="text-sm text-gray-700 truncate">{ownerEmail}</span>
                               <span className="text-xs font-bold text-green-500 uppercase flex-shrink-0">בעלים</span>
                             </div>
+                            <div className="text-xs text-gray-400 mb-1.5">
+                              {ownerLastLogin ? "התחבר לאחרונה: " + formatRefreshTime(ownerLastLogin) : "מעולם לא התחבר"}
+                            </div>
                             <div className="flex items-center gap-2">
                               <input key={"owner:" + ownerNickname} type="text" defaultValue={ownerNickname}
                                 placeholder="כינוי (יוצג ברשימת שיתוף)" dir="rtl" disabled={userBusy}
@@ -1617,6 +1622,9 @@
                                   <span className="text-sm text-gray-700 truncate">{u.email}</span>
                                   <button onClick={function() { handleRemoveUser(u.email); }} disabled={userBusy}
                                     className="text-xs text-red-500 border border-red-200 rounded-full px-2 py-1 disabled:opacity-40 flex-shrink-0">הסר</button>
+                                </div>
+                                <div className="text-xs text-gray-400 mb-1.5">
+                                  {u.lastLogin ? "התחבר לאחרונה: " + formatRefreshTime(u.lastLogin) : "מעולם לא התחבר"}
                                 </div>
                                 <div className="flex items-center gap-2">
                                   <input key={u.email + ":" + (u.nickname || "")} type="text" defaultValue={u.nickname || ""}

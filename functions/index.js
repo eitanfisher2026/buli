@@ -369,16 +369,18 @@ exports.listAuthorizedUsers = onCall(
     const val = snap.val() || {};
     const resolveExtra = async (email) => {
       const uid = await resolveUidByEmail(email);
-      let nickname = null, pricingEnabled = false;
+      let nickname = null, pricingEnabled = false, lastLogin = null;
       if (uid) {
-        const [nickSnap, pricingSnap] = await Promise.all([
+        const [nickSnap, pricingSnap, lastLoginSnap] = await Promise.all([
           db.ref(`users/${uid}/nickname`).once('value'),
           db.ref(`users/${uid}/pricingEnabled`).once('value'),
+          db.ref(`users/${uid}/lastLogin`).once('value'),
         ]);
         nickname = nickSnap.val() || null;
         pricingEnabled = !!pricingSnap.val();
+        lastLogin = lastLoginSnap.val() || null;
       }
-      return { nickname, pricingEnabled };
+      return { nickname, pricingEnabled, lastLogin };
     };
     const users = await Promise.all(Object.values(val).map(async (u) => {
       return Object.assign({}, u, await resolveExtra(u.email));
@@ -387,7 +389,7 @@ exports.listAuthorizedUsers = onCall(
     const ownerExtra = await resolveExtra(OWNER_EMAIL);
     return {
       owner: OWNER_EMAIL, ownerNickname: ownerExtra.nickname,
-      ownerPricingEnabled: ownerExtra.pricingEnabled, users,
+      ownerPricingEnabled: ownerExtra.pricingEnabled, ownerLastLogin: ownerExtra.lastLogin, users,
     };
   }
 );

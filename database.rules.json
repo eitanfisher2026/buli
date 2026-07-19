@@ -19,6 +19,10 @@
       ".read": false,
       ".write": false
     },
+    "vendorCatalogIndex": {
+      ".read": false,
+      ".write": false
+    },
     "itemBarcodes": {
       ".read": false,
       ".write": false

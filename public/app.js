@@ -1,6 +1,6 @@
     const { useState, useEffect, useRef } = React;
 
-    const VERSION = "v5.42";
+    const VERSION = "v5.43";
 
     // ── CONFIG ────────────────────────────────────────────────────────────────────
     const FIREBASE_CONFIG = {
@@ -713,6 +713,22 @@
         if (n < 1024) return n + " B";
         if (n < 1024 * 1024) return (n / 1024).toFixed(1) + " KB";
         return (n / (1024 * 1024)).toFixed(2) + " MB";
+      };
+
+      // ── Loaded vendor catalogs (pricing feature) — admin only, view + prune ────
+      const [showVendorCatalogs, setShowVendorCatalogs] = useState(false);
+      const [vendorCatalogsLoading, setVendorCatalogsLoading] = useState(false);
+      const [vendorCatalogsList, setVendorCatalogsList] = useState([]);
+      const loadVendorCatalogs = () => {
+        setVendorCatalogsLoading(true);
+        fns.httpsCallable("listVendorCatalogs")().then(function(res) {
+          setVendorCatalogsList((res.data && res.data.entries) || []);
+          setVendorCatalogsLoading(false);
+        }, function() { setVendorCatalogsLoading(false); });
+      };
+      const deleteVendorCatalogEntry = function(vendor, branchId) {
+        setVendorCatalogsList(function(prev) { return prev.filter(function(e) { return !(e.vendor === vendor && e.branchId === branchId); }); });
+        fns.httpsCallable("deleteVendorCatalog")({ vendor: vendor, branchId: branchId }).catch(function() { showToast("שגיאה במחיקה"); });
       };
 
       // ── Firebase usage (pricing feature) — admin only, own estimate ────────────
@@ -1676,6 +1692,53 @@
                           <p className="text-xs text-gray-400 text-center mt-1">
                             הערכה בלבד, מבוססת על נפח הנתונים בפועל — לא שאילתה מול חשבון החיוב של Google
                           </p>
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* ── Loaded vendor catalogs (pricing feature, admin only) ─────────── */}
+              {isAdmin && (
+                <div className="mt-3 mb-2">
+                  <button onClick={function() { setShowVendorCatalogs(function(o) { if (!o) loadVendorCatalogs(); return !o; }); }}
+                    className={"w-full flex items-center justify-between px-3 py-3 rounded-xl border transition " + (showVendorCatalogs ? "bg-white border-blue-200" : "bg-gray-50 border-transparent hover:bg-gray-100")}>
+                    <div className="flex items-center gap-3">
+                      <span className="text-lg w-7 text-center">📦</span>
+                      <div className="text-right">
+                        <div className="text-sm font-semibold text-gray-700">סניפים שנטענו (מנהל)</div>
+                        <div className="text-xs text-gray-400">צפייה ומחיקה של קטלוגים שמורים</div>
+                      </div>
+                    </div>
+                    <span className="text-gray-400 text-xs flex-shrink-0">{showVendorCatalogs ? "▲ הסתר" : "▼ הצג"}</span>
+                  </button>
+                  {showVendorCatalogs && (
+                    <div className="mt-2 bg-white border border-gray-100 rounded-2xl p-4">
+                      {vendorCatalogsLoading ? (
+                        <div className="flex justify-center py-6"><Spinner /></div>
+                      ) : vendorCatalogsList.length === 0 ? (
+                        <p className="text-xs text-gray-400 text-center py-4">אין עדיין סניפים טעונים</p>
+                      ) : (
+                        <div className="space-y-1.5">
+                          {vendorCatalogsList.map(function(e) {
+                            var meta = VENDOR_LIST.find(function(v) { return v.id === e.vendor; });
+                            return (
+                              <div key={e.vendor + ":" + e.branchId} className="flex items-center justify-between bg-gray-50 rounded-xl px-3 py-2">
+                                <div className="text-xs text-gray-700 flex-1 text-right">
+                                  <span className="font-semibold">{meta ? meta.label : e.vendor}</span>
+                                  {" — "}{e.name || ("סניף " + parseInt(e.branchId, 10))}
+                                  <div className="text-gray-400 mt-0.5">
+                                    {formatBytes(e.sizeBytes)} · {e.itemCount} מוצרים · עודכן: {e.updatedAt ? formatRefreshTime(e.updatedAt) : "?"}
+                                  </div>
+                                </div>
+                                <button onClick={function() {
+                                  if (!window.confirm("למחוק את הקטלוג של " + (meta ? meta.label : e.vendor) + " — " + (e.name || e.branchId) + "?")) return;
+                                  deleteVendorCatalogEntry(e.vendor, e.branchId);
+                                }} className="text-gray-300 hover:text-red-500 text-sm px-1 flex-shrink-0">🗑️</button>
+                              </div>
+                            );
+                          })}
                         </div>
                       )}
                     </div>

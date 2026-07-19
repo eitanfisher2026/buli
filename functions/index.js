@@ -298,6 +298,59 @@ exports.getPricingUsage = onCall(
   }
 );
 
+// Reads only the small vendorCatalogIndex mirror (updatedAt/sizeBytes/
+// itemCount per branch) plus the small vendorBranches name lists — never the
+// multi-MB item blobs themselves — so admins can see and prune every branch
+// ever ingested without that visibility itself costing real data transfer.
+exports.listVendorCatalogs = onCall(
+  { timeoutSeconds: 30, memory: '128MiB', region: 'europe-west1' },
+  async (request) => {
+    const role = await requireAuthorized(request);
+    requireAdmin(role);
+    const [indexSnap, ...branchSnaps] = await Promise.all([
+      db.ref('vendorCatalogIndex').once('value'),
+      ...VENDOR_IDS.map((v) => db.ref(`vendorBranches/${v}`).once('value')),
+    ]);
+    const index = indexSnap.val() || {};
+    const branchNames = {};
+    VENDOR_IDS.forEach((v, i) => { branchNames[v] = branchSnaps[i].val() || {}; });
+
+    const entries = [];
+    for (const vendor of Object.keys(index)) {
+      for (const [branchId, meta] of Object.entries(index[vendor] || {})) {
+        const info = (branchNames[vendor] || {})[branchId] || {};
+        entries.push({
+          vendor, branchId,
+          name: info.name || null,
+          address: info.address || null,
+          updatedAt: meta.updatedAt || null,
+          sizeBytes: meta.sizeBytes || 0,
+          itemCount: meta.itemCount || 0,
+        });
+      }
+    }
+    entries.sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
+    return { entries };
+  }
+);
+
+// Deletes one branch's catalog (real data + its index mirror) — an explicit
+// admin prune action, not tied to any automatic staleness/cleanup policy.
+exports.deleteVendorCatalog = onCall(
+  { timeoutSeconds: 30, memory: '128MiB', region: 'europe-west1' },
+  async (request) => {
+    const role = await requireAuthorized(request);
+    requireAdmin(role);
+    const { vendor, branchId } = request.data || {};
+    if (!VENDORS[vendor] || !branchId) throw new HttpsError('invalid-argument', 'vendor and branchId required');
+    await db.ref().update({
+      [`vendorCatalog/${vendor}/${branchId}`]: null,
+      [`vendorCatalogIndex/${vendor}/${branchId}`]: null,
+    });
+    return { ok: true };
+  }
+);
+
 exports.listAuthorizedUsers = onCall(
   { timeoutSeconds: 30, memory: '128MiB', region: 'europe-west1' },
   async (request) => {
@@ -559,9 +612,17 @@ async function ingestVendorCatalog(vendor, branchId) {
         unit: String(item.UnitOfMeasure ?? item.UnitQty ?? '').trim(),
       };
     }
-    const payload = { items, updatedAt: Date.now() };
-    await db.ref(`vendorCatalog/${vendor}/${branchId}`).set(payload);
-    await recordPricingUsage({ catalogWriteBytes: Buffer.byteLength(JSON.stringify(payload)), catalogRefreshCount: 1 });
+    const sizeBytes = Buffer.byteLength(JSON.stringify(items));
+    const updatedAt = Date.now();
+    const payload = { items, updatedAt, sizeBytes };
+    // A tiny sibling index (metadata only, never the item blobs) so the
+    // admin "loaded branches" panel can list every branch ever ingested
+    // without paying to read any of the real (multi-MB) catalog data.
+    await db.ref().update({
+      [`vendorCatalog/${vendor}/${branchId}`]: payload,
+      [`vendorCatalogIndex/${vendor}/${branchId}`]: { updatedAt, sizeBytes, itemCount: Object.keys(items).length },
+    });
+    await recordPricingUsage({ catalogWriteBytes: sizeBytes, catalogRefreshCount: 1 });
     return items;
   } finally {
     client.close();

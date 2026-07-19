@@ -1,6 +1,6 @@
     const { useState, useEffect, useRef } = React;
 
-    const VERSION = "v5.28";
+    const VERSION = "v5.29";
 
     // ── CONFIG ────────────────────────────────────────────────────────────────────
     const FIREBASE_CONFIG = {
@@ -151,6 +151,7 @@
     const VENDOR_LIST = [
       { id: "ramiLevy", label: "רמי לוי" },
       { id: "osherAd", label: "אושר עד" },
+      { id: "keshet", label: "קשת טעמים" },
     ];
     const VENDOR_IDS = VENDOR_LIST.map(function(v) { return v.id; });
 
@@ -527,9 +528,8 @@
       // has ever added, not just the active ones (that's server-enforced).
       const [vendorProfiles, setVendorProfiles] = useState({});
       const [maxActiveVendors, setMaxActiveVendors] = useState(3);
-      const [newProfileBranch, setNewProfileBranch] = useState(function() {
-        var o = {}; VENDOR_IDS.forEach(function(v) { o[v] = ""; }); return o;
-      });
+      const [newProfileVendor, setNewProfileVendor] = useState("");
+      const [newProfileBranchId, setNewProfileBranchId] = useState("");
 
       useEffect(function() {
         db.ref("users/" + user.uid + "/pricingEnabled").once("value").then(function(snap) { setMyPricingEnabled(!!snap.val()); });
@@ -555,12 +555,12 @@
           }, function() { setPricingBranchesLoading(false); });
       };
 
-      const addVendorProfile = function(vendor) {
-        var branchId = newProfileBranch[vendor];
-        if (!branchId) return;
+      const addVendorProfile = function(vendor, branchId) {
+        if (!vendor || !branchId) return;
         var alreadySaved = Object.values(vendorProfiles).some(function(p) { return p && p.vendor === vendor && String(p.branchId) === String(branchId); });
         if (alreadySaved) { showToast("הסניף כבר ברשימה שלך"); return; }
         db.ref("users/" + user.uid + "/vendorProfiles").push({ vendor: vendor, branchId: branchId, active: false, addedAt: Date.now() });
+        setNewProfileVendor(""); setNewProfileBranchId("");
       };
 
       const removeVendorProfile = function(profileId) {
@@ -1351,48 +1351,51 @@
                           <div className="text-xs text-gray-400 text-center">
                             פעילים להשוואה: {activeVendorProfileCount} / {maxActiveVendors}
                           </div>
-                          {VENDOR_LIST.map(function(v) {
-                            var branchOptions = vendorBranchLists[v.id] || {};
-                            var savedProfiles = Object.entries(vendorProfiles).filter(function(e) { return e[1] && e[1].vendor === v.id; });
-                            return (
-                              <div key={v.id}>
-                                <div className="text-xs font-semibold text-gray-500 mb-1.5">{v.label}</div>
-                                {savedProfiles.length > 0 && (
-                                  <div className="space-y-1.5 mb-2">
-                                    {savedProfiles.map(function(entry) {
-                                      var pid = entry[0], p = entry[1];
-                                      var info = branchOptions[p.branchId] || {};
-                                      return (
-                                        <div key={pid} className={"flex items-center justify-between rounded-xl px-3 py-2 border " + (p.active ? "bg-green-50 border-green-200" : "bg-gray-50 border-transparent")}>
-                                          <div className="text-xs text-gray-700 flex-1 text-right">
-                                            {info.name || ("סניף " + parseInt(p.branchId, 10))}{info.address ? " — " + info.address : ""}
-                                          </div>
-                                          <div className="flex items-center gap-2 flex-shrink-0">
-                                            <button onClick={function() { toggleVendorProfileActive(pid); }}
-                                              className={"text-xs border rounded-full px-2 py-0.5 " + (p.active ? "text-green-600 border-green-200 bg-white" : "text-gray-400 border-gray-200 bg-white")}>
-                                              {p.active ? "פעיל" : "כבוי"}
-                                            </button>
-                                            <button onClick={function() { removeVendorProfile(pid); }} className="text-gray-300 hover:text-red-500 text-sm px-1">✕</button>
-                                          </div>
-                                        </div>
-                                      );
-                                    })}
+                          {Object.entries(vendorProfiles).length > 0 && (
+                            <div className="space-y-1.5">
+                              {Object.entries(vendorProfiles).map(function(entry) {
+                                var pid = entry[0], p = entry[1];
+                                var meta = VENDOR_LIST.find(function(x) { return x.id === p.vendor; });
+                                var info = (vendorBranchLists[p.vendor] || {})[p.branchId] || {};
+                                return (
+                                  <div key={pid} className={"flex items-center justify-between rounded-xl px-3 py-2 border " + (p.active ? "bg-green-50 border-green-200" : "bg-gray-50 border-transparent")}>
+                                    <div className="text-xs text-gray-700 flex-1 text-right">
+                                      <span className="font-semibold">{meta ? meta.label : p.vendor}</span>
+                                      {" — "}{info.name || ("סניף " + parseInt(p.branchId, 10))}{info.address ? " — " + info.address : ""}
+                                    </div>
+                                    <div className="flex items-center gap-2 flex-shrink-0">
+                                      <button onClick={function() { toggleVendorProfileActive(pid); }}
+                                        className={"text-xs border rounded-full px-2 py-0.5 " + (p.active ? "text-green-600 border-green-200 bg-white" : "text-gray-400 border-gray-200 bg-white")}>
+                                        {p.active ? "פעיל" : "כבוי"}
+                                      </button>
+                                      <button onClick={function() { removeVendorProfile(pid); }} className="text-gray-300 hover:text-red-500 text-sm px-1">✕</button>
+                                    </div>
                                   </div>
-                                )}
-                                <div className="flex gap-2">
-                                  <select value={newProfileBranch[v.id]} onChange={function(e) { setNewProfileBranch(function(prev) { var n = Object.assign({}, prev); n[v.id] = e.target.value; return n; }); }}
-                                    className="flex-1 border border-gray-200 rounded-xl px-3 py-2 text-sm bg-white">
-                                    <option value="">בחר סניף להוספה...</option>
-                                    {Object.entries(branchOptions).sort(function(a, b) { return (a[1].name||"").localeCompare(b[1].name||"", "he"); }).map(function(entry) {
-                                      return <option key={entry[0]} value={entry[0]}>{entry[1].name} — {entry[1].address} (סניף {parseInt(entry[0], 10)})</option>;
-                                    })}
-                                  </select>
-                                  <button onClick={function() { addVendorProfile(v.id); }} disabled={!newProfileBranch[v.id]}
-                                    className="bg-blue-600 text-white text-sm px-3 py-2 rounded-xl font-medium disabled:opacity-40 flex-shrink-0">+ הוסף</button>
-                                </div>
+                                );
+                              })}
+                            </div>
+                          )}
+                          <div className="border-t border-gray-100 pt-3">
+                            <div className="text-xs font-semibold text-gray-500 mb-1.5">הוסף סניף להשוואה</div>
+                            <select value={newProfileVendor} onChange={function(e) { setNewProfileVendor(e.target.value); setNewProfileBranchId(""); }}
+                              className="w-full border border-gray-200 rounded-xl px-3 py-2 text-sm bg-white mb-2">
+                              <option value="">בחר רשת...</option>
+                              {VENDOR_LIST.map(function(v) { return <option key={v.id} value={v.id}>{v.label}</option>; })}
+                            </select>
+                            {newProfileVendor && (
+                              <div className="flex gap-2">
+                                <select value={newProfileBranchId} onChange={function(e) { setNewProfileBranchId(e.target.value); }}
+                                  className="flex-1 border border-gray-200 rounded-xl px-3 py-2 text-sm bg-white">
+                                  <option value="">בחר סניף...</option>
+                                  {Object.entries(vendorBranchLists[newProfileVendor] || {}).sort(function(a, b) { return (a[1].name||"").localeCompare(b[1].name||"", "he"); }).map(function(entry) {
+                                    return <option key={entry[0]} value={entry[0]}>{entry[1].name} — {entry[1].address} (סניף {parseInt(entry[0], 10)})</option>;
+                                  })}
+                                </select>
+                                <button onClick={function() { addVendorProfile(newProfileVendor, newProfileBranchId); }} disabled={!newProfileBranchId}
+                                  className="bg-blue-600 text-white text-sm px-3 py-2 rounded-xl font-medium disabled:opacity-40 flex-shrink-0">+ הוסף</button>
                               </div>
-                            );
-                          })}
+                            )}
+                          </div>
                           {isAdmin && (
                             <div className="pt-3 border-t border-gray-100 flex items-center justify-between">
                               <div className="text-xs font-semibold text-gray-500">מגבלת סניפים פעילים (מנהל)</div>

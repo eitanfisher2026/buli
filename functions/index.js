@@ -461,8 +461,13 @@ exports.removeAuthorizedUser = onCall(
 const VENDORS = {
   ramiLevy: { ftpUser: 'RamiLevi' },
   osherAd: { ftpUser: 'osherad' },
+  keshet: { ftpUser: 'Keshet' }, // קשת טעמים — same Cerberus platform, verified 2026-07-19
 };
 const FTP_HOST = 'url.retail.publishedprices.co.il';
+// Only vendors a brand-new user should start with pre-seeded (matches the
+// two branches this app originally shipped with). A vendor added later
+// (like Keshet) is opt-in only — everyone must explicitly add it via the
+// vendor-profile picker, never silently becomes "active" for existing users.
 const DEFAULT_BRANCH = { ramiLevy: '055', osherAd: '011' }; // Ramat HaHayal / Bnei Brak
 const CATALOG_STALENESS_MS = 18 * 60 * 60 * 1000; // 18h — matches the feed's own refresh cadence
 
@@ -627,9 +632,11 @@ async function getUserActiveProfiles(uid) {
   let entries = Object.entries(all)
     .filter(([, p]) => p && p.active && VENDOR_IDS.includes(p.vendor) && p.branchId);
   if (entries.length === 0) {
-    // Nobody has picked profiles yet — fall back to the original two
-    // defaults so existing users keep working without a migration step.
-    return VENDOR_IDS.map(v => ({ id: `default-${v}`, vendor: v, branchId: DEFAULT_BRANCH[v] })).slice(0, cap);
+    // Nobody has picked profiles yet — fall back to the original seeded
+    // defaults only (not every integrated vendor), so existing users keep
+    // working without a migration step, and a newly-added vendor never
+    // silently becomes "active" for people who haven't chosen it.
+    return Object.keys(DEFAULT_BRANCH).map(v => ({ id: `default-${v}`, vendor: v, branchId: DEFAULT_BRANCH[v] })).slice(0, cap);
   }
   entries.sort((a, b) => (a[1].addedAt || 0) - (b[1].addedAt || 0));
   return entries.slice(0, cap).map(([id, p]) => ({ id, vendor: p.vendor, branchId: String(p.branchId) }));

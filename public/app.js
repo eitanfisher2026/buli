@@ -1,6 +1,6 @@
     const { useState, useEffect, useRef } = React;
 
-    const VERSION = "v5.33";
+    const VERSION = "v5.34";
 
     // ── CONFIG ────────────────────────────────────────────────────────────────────
     const FIREBASE_CONFIG = {
@@ -1438,7 +1438,7 @@
                                   )}
                                   <div className="flex gap-2">
                                     <select value={newProfileBranchId} disabled={!matched} onChange={function(e) { setNewProfileBranchId(e.target.value); }}
-                                      className="flex-1 border border-gray-200 rounded-xl px-3 py-2 text-sm bg-white disabled:bg-gray-50 disabled:text-gray-400">
+                                      className="flex-1 min-w-0 border border-gray-200 rounded-xl px-3 py-2 text-sm bg-white disabled:bg-gray-50 disabled:text-gray-400">
                                       <option value="">
                                         {!matched ? "הקלד רשת קודם" : branchEntries.length > 0 ? "בחר סניף... (" + branchEntries.length + ")" : "לא נמצאו סניפים"}
                                       </option>
@@ -3454,13 +3454,26 @@
                 {item.originalName && (
                   <div className="text-xs text-gray-500">השם שהזנת במקור: <span className="font-medium text-gray-700">{item.originalName}</span></div>
                 )}
-                {VENDOR_LIST.map(function(v) {
-                  var bc = itemVendorBarcode(item, v.id);
-                  if (!bc) return null;
-                  return (
-                    <div key={v.id} className="text-xs text-gray-500" dir="ltr">{v.label} — ברקוד: <span className="font-mono text-gray-700">{bc}</span></div>
-                  );
-                })}
+                {(function() {
+                  // Group vendors that share the exact same barcode into one
+                  // line instead of repeating it once per vendor — the common
+                  // case for packaged goods, since a real GTIN doesn't change
+                  // by chain. Only genuinely different barcodes (butcher/deli
+                  // items priced by weight) get their own line.
+                  var byBarcode = {};
+                  VENDOR_LIST.forEach(function(v) {
+                    var bc = itemVendorBarcode(item, v.id);
+                    if (!bc) return;
+                    if (!byBarcode[bc]) byBarcode[bc] = [];
+                    byBarcode[bc].push(v.label);
+                  });
+                  return Object.entries(byBarcode).map(function(entry) {
+                    var bc = entry[0], labels = entry[1];
+                    return (
+                      <div key={bc} className="text-xs text-gray-500" dir="ltr">{labels.join(", ")} — ברקוד: <span className="font-mono text-gray-700">{bc}</span></div>
+                    );
+                  });
+                })()}
                 <button onClick={() => onResetMatch(item)}
                   className="text-xs text-blue-600 font-medium">🔄 חפש התאמת פריט מחדש</button>
               </div>

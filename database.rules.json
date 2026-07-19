@@ -31,6 +31,10 @@
       ".read": "auth != null && (root.child('userAccess').child(auth.uid).child('authorized').val() === true || auth.token.email === 'eitanfisher100@gmail.com')",
       ".write": false
     },
+    "vendorRequests": {
+      ".read": "auth != null && (root.child('userAccess').child(auth.uid).child('authorized').val() === true || auth.token.email === 'eitanfisher100@gmail.com')",
+      ".write": false
+    },
     "userAccess": {
       "$uid": {
         ".read": "auth != null && auth.uid === $uid",

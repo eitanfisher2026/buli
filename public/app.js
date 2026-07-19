@@ -1,6 +1,6 @@
     const { useState, useEffect, useRef } = React;
 
-    const VERSION = "v5.29";
+    const VERSION = "v5.30";
 
     // ── CONFIG ────────────────────────────────────────────────────────────────────
     const FIREBASE_CONFIG = {
@@ -154,6 +154,14 @@
       { id: "keshet", label: "קשת טעמים" },
     ];
     const VENDOR_IDS = VENDOR_LIST.map(function(v) { return v.id; });
+    // Autocomplete suggestions only — real, common Israeli chains, most of
+    // which aren't actually wired up yet. Typing/picking one of these that
+    // isn't in VENDOR_LIST above just surfaces the "ask the admin" request
+    // flow; it's never a claim that the chain works.
+    const VENDOR_NAME_SUGGESTIONS = VENDOR_LIST.map(function(v) { return v.label; }).concat([
+      "שופרסל", "יינות ביתן", "ויקטורי", "טיב טעם", "מגה", "יוחננוף",
+      "סופר פארם", "גוד פארם", "חצי חינם", "זול ובגדול", "מחסני השוק", "סופר יודה",
+    ]);
 
     // A vendor's own barcode for an item, preferring the new per-vendor map
     // over the legacy single shared `barcode` field (pre-existing items that
@@ -528,8 +536,9 @@
       // has ever added, not just the active ones (that's server-enforced).
       const [vendorProfiles, setVendorProfiles] = useState({});
       const [maxActiveVendors, setMaxActiveVendors] = useState(3);
-      const [newProfileVendor, setNewProfileVendor] = useState("");
+      const [newProfileVendorInput, setNewProfileVendorInput] = useState("");
       const [newProfileBranchId, setNewProfileBranchId] = useState("");
+      const [vendorRequestSent, setVendorRequestSent] = useState(false);
 
       useEffect(function() {
         db.ref("users/" + user.uid + "/pricingEnabled").once("value").then(function(snap) { setMyPricingEnabled(!!snap.val()); });
@@ -555,12 +564,20 @@
           }, function() { setPricingBranchesLoading(false); });
       };
 
+      const requestVendorSupport = function(name) {
+        fns.httpsCallable("requestVendor")({ name: name }).then(function() {
+          setVendorRequestSent(true);
+          showToast("הבקשה נשלחה למנהל");
+        }).catch(function() { showToast("שגיאה בשליחת הבקשה"); });
+      };
+
       const addVendorProfile = function(vendor, branchId) {
         if (!vendor || !branchId) return;
         var alreadySaved = Object.values(vendorProfiles).some(function(p) { return p && p.vendor === vendor && String(p.branchId) === String(branchId); });
         if (alreadySaved) { showToast("הסניף כבר ברשימה שלך"); return; }
         db.ref("users/" + user.uid + "/vendorProfiles").push({ vendor: vendor, branchId: branchId, active: false, addedAt: Date.now() });
-        setNewProfileVendor(""); setNewProfileBranchId("");
+        setNewProfileVendorInput(""); setVendorRequestSent(false);
+        setNewProfileBranchId("");
       };
 
       const removeVendorProfile = function(profileId) {
@@ -1377,24 +1394,46 @@
                           )}
                           <div className="border-t border-gray-100 pt-3">
                             <div className="text-xs font-semibold text-gray-500 mb-1.5">הוסף סניף להשוואה</div>
-                            <select value={newProfileVendor} onChange={function(e) { setNewProfileVendor(e.target.value); setNewProfileBranchId(""); }}
-                              className="w-full border border-gray-200 rounded-xl px-3 py-2 text-sm bg-white mb-2">
-                              <option value="">בחר רשת...</option>
-                              {VENDOR_LIST.map(function(v) { return <option key={v.id} value={v.id}>{v.label}</option>; })}
-                            </select>
-                            {newProfileVendor && (
-                              <div className="flex gap-2">
-                                <select value={newProfileBranchId} onChange={function(e) { setNewProfileBranchId(e.target.value); }}
-                                  className="flex-1 border border-gray-200 rounded-xl px-3 py-2 text-sm bg-white">
-                                  <option value="">בחר סניף...</option>
-                                  {Object.entries(vendorBranchLists[newProfileVendor] || {}).sort(function(a, b) { return (a[1].name||"").localeCompare(b[1].name||"", "he"); }).map(function(entry) {
-                                    return <option key={entry[0]} value={entry[0]}>{entry[1].name} — {entry[1].address} (סניף {parseInt(entry[0], 10)})</option>;
-                                  })}
-                                </select>
-                                <button onClick={function() { addVendorProfile(newProfileVendor, newProfileBranchId); }} disabled={!newProfileBranchId}
-                                  className="bg-blue-600 text-white text-sm px-3 py-2 rounded-xl font-medium disabled:opacity-40 flex-shrink-0">+ הוסף</button>
-                              </div>
-                            )}
+                            <input list="vendor-name-suggestions" value={newProfileVendorInput}
+                              onChange={function(e) { setNewProfileVendorInput(e.target.value); setNewProfileBranchId(""); setVendorRequestSent(false); }}
+                              placeholder="הקלד שם רשת, למשל: רמי לוי" dir="rtl"
+                              className="w-full border border-gray-200 rounded-xl px-3 py-2 text-sm bg-white mb-2" />
+                            <datalist id="vendor-name-suggestions">
+                              {VENDOR_NAME_SUGGESTIONS.map(function(name) { return <option key={name} value={name} />; })}
+                            </datalist>
+                            {(function() {
+                              var trimmed = newProfileVendorInput.trim();
+                              if (!trimmed) return null;
+                              var matched = VENDOR_LIST.find(function(v) { return v.label === trimmed; });
+                              if (matched) {
+                                return (
+                                  <div className="flex gap-2">
+                                    <select value={newProfileBranchId} onChange={function(e) { setNewProfileBranchId(e.target.value); }}
+                                      className="flex-1 border border-gray-200 rounded-xl px-3 py-2 text-sm bg-white">
+                                      <option value="">בחר סניף...</option>
+                                      {Object.entries(vendorBranchLists[matched.id] || {}).sort(function(a, b) { return (a[1].name||"").localeCompare(b[1].name||"", "he"); }).map(function(entry) {
+                                        return <option key={entry[0]} value={entry[0]}>{entry[1].name} — {entry[1].address} (סניף {parseInt(entry[0], 10)})</option>;
+                                      })}
+                                    </select>
+                                    <button onClick={function() { addVendorProfile(matched.id, newProfileBranchId); }} disabled={!newProfileBranchId}
+                                      className="bg-blue-600 text-white text-sm px-3 py-2 rounded-xl font-medium disabled:opacity-40 flex-shrink-0">+ הוסף</button>
+                                  </div>
+                                );
+                              }
+                              return (
+                                <div className="bg-orange-50 border border-orange-100 rounded-xl p-3 text-xs text-orange-700 space-y-2">
+                                  <div>"{trimmed}" עדיין לא נתמכת בבולי.</div>
+                                  {vendorRequestSent ? (
+                                    <div className="text-green-600 font-medium">הבקשה נשלחה למנהל ✓</div>
+                                  ) : (
+                                    <button onClick={function() { requestVendorSupport(trimmed); }}
+                                      className="text-orange-700 font-medium border border-orange-200 bg-white rounded-lg px-3 py-1.5">
+                                      בקש מהמנהל להוסיף את הרשת
+                                    </button>
+                                  )}
+                                </div>
+                              );
+                            })()}
                           </div>
                           {isAdmin && (
                             <div className="pt-3 border-t border-gray-100 flex items-center justify-between">

@@ -747,6 +747,24 @@ exports.getVendorBranches = onCall(
   }
 );
 
+// Logs a request for a chain that isn't wired up yet — "supported" is never
+// cached as a flag anywhere; it's always just "does VENDORS contain this
+// vendor right now", so a chain we can't do today is never permanently
+// blocked from being added in a future version. This just gives the admin
+// visibility into what people are asking for.
+exports.requestVendor = onCall(
+  { timeoutSeconds: 30, memory: '128MiB', region: 'europe-west1' },
+  async (request) => {
+    await requireAuthorized(request);
+    const name = String((request.data || {}).name || '').trim();
+    if (!name) throw new HttpsError('invalid-argument', 'name required');
+    await db.ref(`vendorRequests/${itemNameKey(name)}`).set({
+      name, requestedBy: request.auth.token.email, requestedAt: Date.now(),
+    });
+    return { ok: true };
+  }
+);
+
 // Returns, per item name: whichever vendors are already resolved (from the
 // global itemBarcodes cache) plus fuzzy-match candidates for whichever
 // vendors are still missing. A "vendor" here is never hardcoded to exactly

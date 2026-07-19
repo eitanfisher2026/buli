@@ -1,6 +1,6 @@
     const { useState, useEffect, useRef } = React;
 
-    const VERSION = "v5.48";
+    const VERSION = "v5.49";
 
     // ── CONFIG ────────────────────────────────────────────────────────────────────
     const FIREBASE_CONFIG = {
@@ -180,8 +180,13 @@
     function itemVendorBarcode(item, vendorId) {
       return (item.barcodes && item.barcodes[vendorId]) || item.barcode || null;
     }
-    function itemMissingVendors(item) {
-      return VENDOR_IDS.filter(function(v) { return !itemVendorBarcode(item, v); });
+    // relevantVendorIds should be the distinct vendor chains among the
+    // user's currently ACTIVE profiles — a vendor that's configured but
+    // switched off (or never added) is irrelevant to "does this item still
+    // need matching", so it must never count as "missing" just because the
+    // app happens to support that chain in general.
+    function itemMissingVendors(item, relevantVendorIds) {
+      return (relevantVendorIds || VENDOR_IDS).filter(function(v) { return !itemVendorBarcode(item, v); });
     }
     function itemHasAnyBarcode(item) {
       return !!(item.barcode || (item.barcodes && Object.keys(item.barcodes).length > 0));
@@ -2804,10 +2809,15 @@
         });
       };
 
+      // Only chains among the user's currently active profiles count as
+      // "relevant" for missing-vendor checks — a saved-but-inactive (or
+      // never-added) chain must never make an item look permanently unmatched.
+      var activeVendorIds = activeProfiles.reduce(function(acc, p) { if (acc.indexOf(p.vendor) === -1) acc.push(p.vendor); return acc; }, []);
+
       // Renaming an item (e.g. via EditItemModal) doesn't change items.length,
       // so it wouldn't otherwise re-trigger a re-resolve for a still-unmatched
       // item — this signature changes whenever any unresolved item's name does.
-      var unresolvedSignature = items.filter(function(i) { return itemMissingVendors(i).length > 0; })
+      var unresolvedSignature = items.filter(function(i) { return itemMissingVendors(i, activeVendorIds).length > 0; })
         .map(function(i) { return i.id + ":" + (i.name || ""); }).join("|");
 
       useEffect(function() {
@@ -2822,7 +2832,7 @@
           }
         }
 
-        var unresolved = items.filter(function(i) { return itemMissingVendors(i).length > 0 && i.name && i.name.trim(); });
+        var unresolved = items.filter(function(i) { return itemMissingVendors(i, activeVendorIds).length > 0 && i.name && i.name.trim(); });
         if (unresolved.length === 0) return;
         fns.httpsCallable("resolveItemBarcodes")({ items: unresolved.map(function(i) { return i.name; }) }).then(function(res) {
           var results = res.data.results || {};
@@ -3096,7 +3106,7 @@
         if (filterPerson === "others" && item.addedBy === user.uid) return false;
         if (filterStatus === "done"    && !item.done) return false;
         if (filterStatus === "pending" &&  item.done) return false;
-        if (filterVendorProfile === "noBarcode" && itemMissingVendors(item).length === 0) return false;
+        if (filterVendorProfile === "noBarcode" && itemMissingVendors(item, activeVendorIds).length === 0) return false;
         if (filterVendorProfile !== "all" && filterVendorProfile !== "noBarcode") {
           var prof = activeProfiles.find(function(p) { return p.id === filterVendorProfile; });
           if (prof) {

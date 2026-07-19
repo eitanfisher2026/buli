@@ -1,6 +1,6 @@
     const { useState, useEffect, useRef } = React;
 
-    const VERSION = "v5.45";
+    const VERSION = "v5.46";
 
     // ── CONFIG ────────────────────────────────────────────────────────────────────
     const FIREBASE_CONFIG = {
@@ -155,6 +155,11 @@
       { id: "yohananof", label: "יוחננוף" },
     ];
     const VENDOR_IDS = VENDOR_LIST.map(function(v) { return v.id; });
+    // Module-level (not component state) so it survives ListScreen mounting
+    // and unmounting as the user navigates in and out of a list — see the
+    // comment where it's read in ListScreen for why that matters.
+    // { [listId]: { priceMap, activeProfiles } }
+    var priceCacheByList = {};
     // Autocomplete suggestions only — real, common Israeli chains, most of
     // which aren't actually wired up yet. Typing/picking one of these that
     // isn't in VENDOR_LIST above just surfaces the "ask the admin" request
@@ -547,14 +552,20 @@
       const [vendorRequestsList, setVendorRequestsList] = useState([]);
 
       useEffect(function() {
-        db.ref("users/" + user.uid + "/pricingEnabled").once("value").then(function(snap) { setMyPricingEnabled(!!snap.val()); });
-        var profilesRef = db.ref("users/" + user.uid + "/vendorProfiles");
-        var onProfiles = function(snap) { setVendorProfiles(snap.val() || {}); };
-        profilesRef.on("value", onProfiles);
-        fns.httpsCallable("getPricingSettings")().then(function(res) {
-          setMaxActiveVendors((res.data && res.data.maxActiveVendors) || 3);
-        }).catch(function() {});
-        return function() { profilesRef.off("value", onProfiles); };
+        var profilesRef = null;
+        var onProfiles = null;
+        db.ref("users/" + user.uid + "/pricingEnabled").once("value").then(function(snap) {
+          var enabled = !!snap.val();
+          setMyPricingEnabled(enabled);
+          if (!enabled) return; // no pricing for this user — skip the vendor-profile listener and settings call entirely
+          profilesRef = db.ref("users/" + user.uid + "/vendorProfiles");
+          onProfiles = function(snap2) { setVendorProfiles(snap2.val() || {}); };
+          profilesRef.on("value", onProfiles);
+          fns.httpsCallable("getPricingSettings")().then(function(res) {
+            setMaxActiveVendors((res.data && res.data.maxActiveVendors) || 3);
+          }).catch(function() {});
+        });
+        return function() { if (profilesRef && onProfiles) profilesRef.off("value", onProfiles); };
       }, [user.uid]);
 
       const activeVendorProfileCount = Object.values(vendorProfiles).filter(function(p) { return p && p.active; }).length;
@@ -2602,10 +2613,18 @@
       useEffect(function() { localStorage.setItem("buli_filter_vendor", filterVendorProfile); }, [filterVendorProfile]);
       const [showFilters, setShowFilters] = useState(false);
       const [pricingEnabled, setPricingEnabled] = useState(false);
+      // Survives ListScreen unmounting (leaving the list, adding items, etc.) —
+      // without this, every re-entry into the same list re-fetched every
+      // price from scratch even seconds after you'd just seen them, since
+      // React resets component state on remount. Real vendor prices don't
+      // change faster than once a day server-side anyway, so caching here
+      // for the life of the tab loses nothing; "🔄 רענן מחירים" (force
+      // refresh) always bypasses it and re-populates it with fresh data.
+      const priceCacheEntry = priceCacheByList[listId];
       // { [profileId]: { [barcode]: price } } — server-resolved, cap-enforced
       // active vendor+branch profiles (see getBasketPrices' `profiles` field).
-      const [activeProfiles, setActiveProfiles] = useState([]);
-      const [priceMap,       setPriceMap]       = useState({});
+      const [activeProfiles, setActiveProfiles] = useState(function() { return (priceCacheEntry && priceCacheEntry.activeProfiles) || []; });
+      const [priceMap,       setPriceMap]       = useState(function() { return (priceCacheEntry && priceCacheEntry.priceMap) || {}; });
       // { [itemName]: { vendors: [chainIds searched], list: [candidates] } }
       const [candidatesByName, setCandidatesByName] = useState({});
       const [pickerItem,      setPickerItem]      = useState(null);
@@ -2694,6 +2713,29 @@
         });
         return out;
       }
+      // Same as collectBarcodesByVendor, but skips any (barcode, active
+      // profile) pair the cache already has a price for — so reopening a
+      // list only ever fetches what's actually new (an added item, a newly
+      // activated shop), not everything again. Falls back to fetching
+      // everything when we don't yet know which profiles are active (first
+      // load ever, nothing cached) since there's nothing to compare against.
+      function missingBarcodesByVendor(itemList, knownProfiles, knownPriceMap) {
+        if (!knownProfiles || knownProfiles.length === 0) return collectBarcodesByVendor(itemList);
+        var out = {};
+        itemList.forEach(function(item) {
+          VENDOR_IDS.forEach(function(v) {
+            var bc = itemVendorBarcode(item, v);
+            if (!bc) return;
+            var relevant = knownProfiles.filter(function(p) { return p.vendor === v; });
+            if (relevant.length === 0) return;
+            var allKnown = relevant.every(function(p) { return knownPriceMap[p.id] && (bc in knownPriceMap[p.id]); });
+            if (allKnown) return;
+            if (!out[v]) out[v] = [];
+            if (out[v].indexOf(bc) === -1) out[v].push(bc);
+          });
+        });
+        return out;
+      }
       const applyItemMatch = (item, vendorBarcodes, matchedName) => {
         var nextBarcodes = Object.assign({}, item.barcodes, vendorBarcodes);
         var updates = { barcodes: nextBarcodes };
@@ -2709,9 +2751,11 @@
         if (!hasAny) return Promise.resolve();
         return fns.httpsCallable("getBasketPrices")({ barcodesByVendor: barcodesByVendor, force: !!force }).then(function(res) {
           var byProfile = res.data.prices || {};
+          var nextProfiles = res.data.profiles || activeProfiles;
           setPriceMap(function(prev) {
             var next = Object.assign({}, prev);
             Object.keys(byProfile).forEach(function(pid) { next[pid] = Object.assign({}, next[pid], byProfile[pid]); });
+            priceCacheByList[listId] = { priceMap: next, activeProfiles: nextProfiles };
             return next;
           });
           if (res.data.profiles) setActiveProfiles(res.data.profiles);
@@ -2745,8 +2789,12 @@
         if (!pricingEnabled || items.length === 0) return;
         var barcoded = items.filter(itemHasAnyBarcode);
         if (barcoded.length > 0) {
-          setPricesLoading(true);
-          fetchPrices(collectBarcodesByVendor(barcoded)).then(function() { setPricesLoading(false); });
+          var missing = missingBarcodesByVendor(barcoded, activeProfiles, priceMap);
+          var hasMissing = Object.keys(missing).some(function(v) { return missing[v] && missing[v].length > 0; });
+          if (hasMissing) {
+            setPricesLoading(true);
+            fetchPrices(missing).then(function() { setPricesLoading(false); });
+          }
         }
 
         var unresolved = items.filter(function(i) { return itemMissingVendors(i).length > 0 && i.name && i.name.trim(); });

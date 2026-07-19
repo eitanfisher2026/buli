@@ -1,6 +1,6 @@
     const { useState, useEffect, useRef } = React;
 
-    const VERSION = "v5.46";
+    const VERSION = "v5.47";
 
     // ── CONFIG ────────────────────────────────────────────────────────────────────
     const FIREBASE_CONFIG = {
@@ -160,6 +160,11 @@
     // comment where it's read in ListScreen for why that matters.
     // { [listId]: { priceMap, activeProfiles } }
     var priceCacheByList = {};
+    // Same idea for HomeScreen's own list-of-lists — it also unmounts every
+    // time you go into a list or another screen, so without this, every
+    // "back to menu" tap re-triggers the full lists+tasks load (and its
+    // spinner) even a second after you were just looking at it.
+    var homeDataCache = null; // { lists, tasks }
     // Autocomplete suggestions only — real, common Israeli chains, most of
     // which aren't actually wired up yet. Typing/picking one of these that
     // isn't in VENDOR_LIST above just surfaces the "ask the admin" request
@@ -501,8 +506,8 @@
     // ── HOME ──────────────────────────────────────────────────────────────────────
     function HomeScreen({ user, isAdmin, isRealAdmin, simulating, onToggleSimulate, onOpenList, onCategories, onContacts, showToast, onAddTask, onCreateShoppingList, onCreateNotesList }) {
       const tasksListId = "tasks_" + user.uid;
-      const [lists,      setLists]      = useState(null);
-      const [tasks,      setTasks]      = useState(null);
+      const [lists,      setLists]      = useState(function() { return homeDataCache ? homeDataCache.lists : null; });
+      const [tasks,      setTasks]      = useState(function() { return homeDataCache ? homeDataCache.tasks : null; });
       const [editTask,   setEditTask]   = useState(null);
       const [menuId,     setMenuId]     = useState(null);
       const [showDone,   setShowDone]   = useState(false);
@@ -855,20 +860,26 @@
         // own index, and marks themselves migrated so every load after that
         // uses the cheap indexed path instead.
         function loadMyLists() {
-          return db.ref("listsMigrated/" + user.uid).once("value").then(function(migSnap) {
-            if (migSnap.val()) {
-              return db.ref("listsByUser/" + user.uid).once("value").then(function(idxSnap) {
-                var ids = Object.keys(idxSnap.val() || {});
-                if (ids.length === 0) return [];
-                return Promise.all(ids.map(function(id) { return db.ref("lists/" + id).once("value"); })).then(function(snaps) {
-                  var arr = [];
-                  snaps.forEach(function(s, i) {
-                    if (!s.exists()) return;
-                    var l = Object.assign({ id: ids[i] }, s.val());
-                    if (l.type !== "tasks") arr.push(l);
-                  });
-                  return arr;
+          // migrated-check and the index read don't depend on each other, so
+          // fire both at once instead of chaining them — cuts a full
+          // round-trip off the common (already-migrated) case.
+          return Promise.all([
+            db.ref("listsMigrated/" + user.uid).once("value"),
+            db.ref("listsByUser/" + user.uid).once("value"),
+          ]).then(function(results) {
+            var migrated = results[0].val();
+            var idxSnap = results[1];
+            if (migrated) {
+              var ids = Object.keys(idxSnap.val() || {});
+              if (ids.length === 0) return [];
+              return Promise.all(ids.map(function(id) { return db.ref("lists/" + id).once("value"); })).then(function(snaps) {
+                var arr = [];
+                snaps.forEach(function(s, i) {
+                  if (!s.exists()) return;
+                  var l = Object.assign({ id: ids[i] }, s.val());
+                  if (l.type !== "tasks") arr.push(l);
                 });
+                return arr;
               });
             }
             return db.ref("lists").once("value").then(function(snap) {
@@ -885,9 +896,14 @@
             });
           });
         }
+        // If a cached view already exists (returning from a list/other screen
+        // within the same session), keep showing it instantly — no spinner —
+        // while this quietly refreshes in the background to pick up anything
+        // that changed elsewhere (e.g. someone else shared a new list).
         loadMyLists().then(function(arr) {
           arr.sort(function(a, b) { return b.createdAt - a.createdAt; });
           setLists(arr);
+          homeDataCache = Object.assign({}, homeDataCache, { lists: arr });
           // Auto-set major if there's only one active shopping list and none is set
           var active = arr.filter(function(l) { return !l.done && l.type !== "notes"; });
           if (active.length === 1) {
@@ -907,6 +923,7 @@
             return ad > bd ? 1 : ad < bd ? -1 : 0;
           });
           setTasks(arr);
+          homeDataCache = Object.assign({}, homeDataCache, { tasks: arr });
         });
       }, []);
 

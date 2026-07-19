@@ -1,6 +1,6 @@
     const { useState, useEffect, useRef } = React;
 
-    const VERSION = "v5.36";
+    const VERSION = "v5.37";
 
     // ── CONFIG ────────────────────────────────────────────────────────────────────
     const FIREBASE_CONFIG = {
@@ -521,7 +521,6 @@
       const [anthropicKey, setAnthropicKey] = useState("");
       const [aiModel,      setAiModel]      = useState(getAIModel("anthropic"));
       const [aiPrompt,     setAiPrompt]     = useState(DEFAULT_AI_PROMPT);
-      const [aiNoAi,       setAiNoAi]       = useState(false);
       const switchProvider = (p) => { setAiProvider(p); setAiModel(getAIModel(p)); };
       const [promptOpen, setPromptOpen] = useState(false);
 
@@ -629,7 +628,6 @@
       const [usersLoading, setUsersLoading] = useState(false);
       const [authUsers,   setAuthUsers]   = useState([]);
       const [ownerEmail,  setOwnerEmail]  = useState("");
-      const [ownerNoAi,    setOwnerNoAi]    = useState(false);
       const [ownerPricingEnabled, setOwnerPricingEnabled] = useState(false);
       const [ownerNickname, setOwnerNickname] = useState("");
       const [newUserEmail, setNewUserEmail] = useState("");
@@ -641,7 +639,6 @@
         setUsersLoading(true);
         fns.httpsCallable("listAuthorizedUsers")().then(function(res) {
           setOwnerEmail(res.data.owner || "");
-          setOwnerNoAi(!!res.data.ownerNoAi);
           setOwnerPricingEnabled(!!res.data.ownerPricingEnabled);
           setOwnerNickname(res.data.ownerNickname || "");
           setAuthUsers(res.data.users || []);
@@ -672,13 +669,6 @@
         setUserBusy(true); setUserMsg("");
         fns.httpsCallable("addAuthorizedUser")({ email: email, role: newRole }).then(function() {
           setUserMsg("✓ התפקיד עודכן"); setUserBusy(false);
-          loadAuthUsers();
-        }, function(e) { setUserMsg("⚠ " + e.message); setUserBusy(false); });
-      };
-      const handleToggleNoAi = (email, nextNoAi) => {
-        setUserBusy(true); setUserMsg("");
-        fns.httpsCallable("setUserNoAi")({ email: email, noAi: nextNoAi }).then(function() {
-          setUserBusy(false);
           loadAuthUsers();
         }, function(e) { setUserMsg("⚠ " + e.message); setUserBusy(false); });
       };
@@ -760,15 +750,12 @@
       // users/{uid}/ai and is only ever sent to the parseItems Cloud Function, never to a
       // third-party API directly from the browser.
       const saveAISettings = () => {
-        if (!aiNoAi) {
-          if (aiProvider === "openai"    && !openaiKey.trim())    { showToast("נדרש מפתח OpenAI — הזן מפתח או בחר ספק אחר"); return; }
-          if (aiProvider === "gemini"    && !geminiKey.trim())    { showToast("נדרש מפתח Gemini — הזן מפתח או בחר ספק אחר"); return; }
-          if (aiProvider === "anthropic" && !anthropicKey.trim()) { showToast("נדרש מפתח Claude — הזן מפתח או בחר ספק אחר"); return; }
-        }
+        if (aiProvider === "openai"    && !openaiKey.trim())    { showToast("נדרש מפתח OpenAI — הזן מפתח או בחר ספק אחר"); return; }
+        if (aiProvider === "gemini"    && !geminiKey.trim())    { showToast("נדרש מפתח Gemini — הזן מפתח או בחר ספק אחר"); return; }
+        if (aiProvider === "anthropic" && !anthropicKey.trim()) { showToast("נדרש מפתח Claude — הזן מפתח או בחר ספק אחר"); return; }
         var model = aiModel.trim() || AI_PROVIDERS[aiProvider].defaultModel;
         var settings = {
           provider: aiProvider,
-          noAi:            !!aiNoAi,
           openaiApiKey:    openaiKey.trim(),
           openaiModel:     aiProvider === "openai"    ? model : AI_PROVIDERS.openai.defaultModel,
           geminiApiKey:    geminiKey.trim(),
@@ -797,7 +784,6 @@
           if (savedModel && RETIRED_MODELS.indexOf(savedModel) !== -1) savedModel = null;
           setAiModel(savedModel || getAIModel(p));
           setAiPrompt(s.prompt || DEFAULT_AI_PROMPT);
-          setAiNoAi(!!s.noAi);
         });
       }, [user.uid]);
 
@@ -1278,26 +1264,14 @@
                     <span className="text-lg w-7 text-center">🤖</span>
                     <div className="text-right">
                       <div className="text-sm font-semibold text-gray-700">הגדרות AI</div>
-                      <div className="text-xs text-gray-400">{aiNoAi ? "ללא AI" : AI_PROVIDERS[aiProvider].name}</div>
+                      <div className="text-xs text-gray-400">{AI_PROVIDERS[aiProvider].name}</div>
                     </div>
                   </div>
                   <span className="text-gray-400 text-xs flex-shrink-0">{showAISettings ? "▲ הסתר" : "▼ הצג"}</span>
                 </button>
                 {showAISettings && (
                   <div className="mt-2 bg-white border border-gray-100 rounded-2xl p-4">
-                    <div className="flex items-center gap-3 bg-gray-50 rounded-xl px-3 py-2.5 mb-4">
-                      <button onClick={function() { setAiNoAi(function(v) { return !v; }); }}
-                        className={"relative inline-flex h-6 w-11 items-center rounded-full transition-colors flex-shrink-0 " + (aiNoAi ? "bg-blue-600" : "bg-gray-200")}>
-                        <span className={"inline-block h-4 w-4 rounded-full bg-white shadow transition-transform " + (aiNoAi ? "translate-x-6" : "translate-x-1")} />
-                      </button>
-                      <div className="text-right flex-1">
-                        <div className="text-sm font-medium text-gray-700">דלג על AI</div>
-                        <div className="text-xs text-gray-400">הוסף פריטים ישירות, כל שורה כפריט, ללא זיהוי AI</div>
-                      </div>
-                    </div>
-
-                    {!aiNoAi && (
-                      <div>
+                    <div>
                         <p className="text-xs text-gray-500 mb-2 text-right">ספק AI</p>
                         <div className="grid grid-cols-3 gap-2 mb-4">
                           {Object.entries(AI_PROVIDERS).map(function(entry) {
@@ -1356,8 +1330,7 @@
                               className="w-full border border-gray-200 rounded-xl p-3 text-xs font-mono resize-none focus:outline-none focus:border-blue-400" />
                           </div>
                         )}
-                      </div>
-                    )}
+                    </div>
                     <button onClick={saveAISettings} className="w-full bg-blue-600 text-white py-3 rounded-2xl font-semibold">שמור</button>
                   </div>
                 )}
@@ -1540,10 +1513,6 @@
                                 placeholder="כינוי (יוצג ברשימת שיתוף)" dir="rtl" disabled={userBusy}
                                 onBlur={function(e) { var v = e.target.value.trim(); if (v !== ownerNickname) handleSaveNickname(ownerEmail, v); }}
                                 className="flex-1 min-w-0 border border-gray-200 rounded-lg px-2 py-1 text-xs bg-white focus:outline-none focus:border-blue-400" />
-                              <button onClick={function() { handleToggleNoAi(ownerEmail, !ownerNoAi); }} disabled={userBusy} title="דלג על AI"
-                                className={"text-xs border rounded-full px-2 py-1 disabled:opacity-40 flex-shrink-0 " + (ownerNoAi ? "text-blue-500 border-blue-200 bg-blue-50" : "text-gray-400 border-gray-200 bg-white")}>
-                                🤖{ownerNoAi ? "🚫" : ""}
-                              </button>
                               <button onClick={function() { handleTogglePricing(ownerEmail, !ownerPricingEnabled); }} disabled={userBusy} title="השוואת מחירים"
                                 className={"text-xs border rounded-full px-2 py-1 disabled:opacity-40 flex-shrink-0 " + (ownerPricingEnabled ? "text-green-600 border-green-200 bg-green-50" : "text-gray-400 border-gray-200 bg-white")}>
                                 💰{ownerPricingEnabled ? "" : "🚫"}
@@ -1571,10 +1540,6 @@
                                     <option value="user">User</option>
                                     <option value="admin">Admin</option>
                                   </select>
-                                  <button onClick={function() { handleToggleNoAi(u.email, !u.noAi); }} disabled={userBusy} title="דלג על AI עבור המשתמש הזה"
-                                    className={"text-xs border rounded-full px-2 py-1 disabled:opacity-40 flex-shrink-0 " + (u.noAi ? "text-blue-500 border-blue-200 bg-blue-50" : "text-gray-400 border-gray-200 bg-white")}>
-                                    🤖{u.noAi ? "🚫" : ""}
-                                  </button>
                                   <button onClick={function() { handleTogglePricing(u.email, !u.pricingEnabled); }} disabled={userBusy} title="השוואת מחירים עבור המשתמש הזה"
                                     className={"text-xs border rounded-full px-2 py-1 disabled:opacity-40 flex-shrink-0 " + (u.pricingEnabled ? "text-green-600 border-green-200 bg-green-50" : "text-gray-400 border-gray-200 bg-white")}>
                                     💰{u.pricingEnabled ? "" : "🚫"}
@@ -2225,15 +2190,6 @@
 
     // No-AI fallback: match an item name to one of the family's actual categories via the
     // same keyword→emoji map used for category suggestions, instead of calling parseItems.
-    function guessCategoryForItem(name, categories) {
-      var emoji = guessEmoji(name);
-      var cats = categories && categories.length > 0 ? categories : DEFAULT_CATEGORIES;
-      var match = cats.find(function(c) { return c.emoji === emoji; });
-      if (match) return match;
-      var other = cats.find(function(c) { return c.label === "שונות"; });
-      return other || cats[cats.length - 1] || { label: "שונות", emoji: "🛍️" };
-    }
-
     function resolveProfileOrder(categoryOrder, allCategories) {
       var labels = allCategories.map(function(c) { return c.label; });
       var order = (categoryOrder || []).filter(function(l) { return labels.indexOf(l) !== -1; });
@@ -3715,17 +3671,6 @@
         var catsSnapshot = categoriesRef.current.slice();
         db.ref("users/" + user.uid + "/ai").once("value").then(function(snap) {
           var ai = snap.val();
-          if (ai && ai.noAi) {
-            var items = t.split(/\n|,/).map(function(s) { return s.trim(); }).filter(function(s) { return s.length > 0; })
-              .map(function(name) {
-                var cat = guessCategoryForItem(name, catsSnapshot);
-                return { name: name, quantity: 1, unit: "יחידות", category: cat.label, note: "" };
-              });
-            setProcessing(false);
-            if (!items.length) { setError("לא הוזנו פריטים"); return null; }
-            saveItems(items, catsSnapshot);
-            return null;
-          }
           if (!ai || !ai.provider) {
             setError("יש להגדיר ספק AI תחילה — הגדרות ← הגדרות AI");
             setProcessing(false);

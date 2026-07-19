@@ -309,18 +309,16 @@ exports.listAuthorizedUsers = onCall(
       const emailKey = (email || '').replace(/\./g, ',');
       const uidSnap = await db.ref(`usersByEmail/${emailKey}`).once('value');
       const uid = uidSnap.val();
-      let noAi = false, nickname = null, pricingEnabled = false;
+      let nickname = null, pricingEnabled = false;
       if (uid) {
-        const [noAiSnap, nickSnap, pricingSnap] = await Promise.all([
-          db.ref(`users/${uid}/ai/noAi`).once('value'),
+        const [nickSnap, pricingSnap] = await Promise.all([
           db.ref(`users/${uid}/nickname`).once('value'),
           db.ref(`users/${uid}/pricingEnabled`).once('value'),
         ]);
-        noAi = !!noAiSnap.val();
         nickname = nickSnap.val() || null;
         pricingEnabled = !!pricingSnap.val();
       }
-      return { noAi, nickname, pricingEnabled };
+      return { nickname, pricingEnabled };
     };
     const users = await Promise.all(Object.values(val).map(async (u) => {
       return Object.assign({}, u, await resolveExtra(u.email));
@@ -328,25 +326,9 @@ exports.listAuthorizedUsers = onCall(
     users.sort((a, b) => (a.email || '').localeCompare(b.email || ''));
     const ownerExtra = await resolveExtra(OWNER_EMAIL);
     return {
-      owner: OWNER_EMAIL, ownerNoAi: ownerExtra.noAi, ownerNickname: ownerExtra.nickname,
+      owner: OWNER_EMAIL, ownerNickname: ownerExtra.nickname,
       ownerPricingEnabled: ownerExtra.pricingEnabled, users,
     };
-  }
-);
-
-exports.setUserNoAi = onCall(
-  { timeoutSeconds: 30, memory: '128MiB', region: 'europe-west1' },
-  async (request) => {
-    const role = await requireAuthorized(request);
-    requireAdmin(role);
-    const { email: rawEmail, noAi } = request.data || {};
-    if (!rawEmail || typeof rawEmail !== 'string') throw new HttpsError('invalid-argument', 'email required');
-    const emailKey = rawEmail.trim().toLowerCase().replace(/\./g, ',');
-    const uidSnap = await db.ref(`usersByEmail/${emailKey}`).once('value');
-    const uid = uidSnap.val();
-    if (!uid) throw new HttpsError('not-found', 'That person has not signed in yet');
-    await db.ref(`users/${uid}/ai/noAi`).set(!!noAi);
-    return { ok: true };
   }
 );
 

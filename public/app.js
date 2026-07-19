@@ -1,6 +1,6 @@
     const { useState, useEffect, useRef } = React;
 
-    const VERSION = "v5.16";
+    const VERSION = "v5.27";
 
     // ── CONFIG ────────────────────────────────────────────────────────────────────
     const FIREBASE_CONFIG = {
@@ -129,6 +129,30 @@
       if (!dateStr) return "";
       var p = dateStr.split("-");
       return p[2] + "/" + p[1] + "/" + p[0];
+    }
+
+    function formatRefreshTime(ts) {
+      if (!ts) return "";
+      var d = new Date(ts);
+      var pad = function(n) { return String(n).padStart(2, "0"); };
+      return pad(d.getDate()) + "/" + pad(d.getMonth() + 1) + " " + pad(d.getHours()) + ":" + pad(d.getMinutes());
+    }
+
+    // Three visually distinct states for a price badge: strictly cheaper
+    // (green — the actual winner), available-but-not-cheapest (legible
+    // neutral gray — includes ties, since equal prices have no winner),
+    // and not sold there at all (dimmed gray — genuinely different from
+    // "sold but pricier", which "not showing the winner in green" alone
+    // doesn't communicate).
+    function priceBadgeClass(mine, other) {
+      if (mine == null) return "bg-gray-50 text-gray-400";
+      if (other == null || mine < other) return "bg-green-100 text-green-700";
+      return "bg-gray-100 text-gray-700";
+    }
+    function priceTextClass(mine, other) {
+      if (mine == null) return "text-gray-400";
+      if (other == null || mine < other) return "text-green-600";
+      return "text-gray-700";
     }
 
     const USER_COLORS = ["#ef4444","#f97316","#22c55e","#14b8a6","#8b5cf6","#ec4899","#6366f1","#f59e0b"];
@@ -435,6 +459,37 @@
       const [aiNoAi,       setAiNoAi]       = useState(false);
       const switchProvider = (p) => { setAiProvider(p); setAiModel(getAIModel(p)); };
       const [promptOpen, setPromptOpen] = useState(false);
+
+      // ── Price comparison branches (own preference, admin controls the on/off flag) ──
+      const [myPricingEnabled, setMyPricingEnabled] = useState(false);
+      const [showPricingSettings, setShowPricingSettings] = useState(false);
+      const [pricingBranchesLoading, setPricingBranchesLoading] = useState(false);
+      const [activeBranch, setActiveBranch] = useState({ ramiLevy: "055", osherAd: "011" });
+      const [vendorBranchLists, setVendorBranchLists] = useState({ ramiLevy: null, osherAd: null });
+
+      useEffect(function() {
+        db.ref("users/" + user.uid + "/pricingEnabled").once("value").then(function(snap) { setMyPricingEnabled(!!snap.val()); });
+        db.ref("users/" + user.uid + "/activeBranch").once("value").then(function(snap) {
+          var v = snap.val() || {};
+          setActiveBranch({ ramiLevy: v.ramiLevy || "055", osherAd: v.osherAd || "011" });
+        });
+      }, [user.uid]);
+
+      const loadVendorBranches = function() {
+        setPricingBranchesLoading(true);
+        Promise.all([
+          fns.httpsCallable("getVendorBranches")({ vendor: "ramiLevy" }),
+          fns.httpsCallable("getVendorBranches")({ vendor: "osherAd" }),
+        ]).then(function(results) {
+          setVendorBranchLists({ ramiLevy: results[0].data.branches || {}, osherAd: results[1].data.branches || {} });
+          setPricingBranchesLoading(false);
+        }, function() { setPricingBranchesLoading(false); });
+      };
+
+      const saveActiveBranch = function(vendor, branchId) {
+        setActiveBranch(function(prev) { var next = Object.assign({}, prev); next[vendor] = branchId; return next; });
+        db.ref("users/" + user.uid + "/activeBranch/" + vendor).set(branchId);
+      };
       const API_KEY_LINKS = {
         anthropic: "https://console.anthropic.com/settings/keys",
         openai:    "https://platform.openai.com/api-keys",
@@ -447,6 +502,7 @@
       const [authUsers,   setAuthUsers]   = useState([]);
       const [ownerEmail,  setOwnerEmail]  = useState("");
       const [ownerNoAi,    setOwnerNoAi]    = useState(false);
+      const [ownerPricingEnabled, setOwnerPricingEnabled] = useState(false);
       const [ownerNickname, setOwnerNickname] = useState("");
       const [newUserEmail, setNewUserEmail] = useState("");
       const [newUserRole,  setNewUserRole]  = useState("user");
@@ -458,6 +514,7 @@
         fns.httpsCallable("listAuthorizedUsers")().then(function(res) {
           setOwnerEmail(res.data.owner || "");
           setOwnerNoAi(!!res.data.ownerNoAi);
+          setOwnerPricingEnabled(!!res.data.ownerPricingEnabled);
           setOwnerNickname(res.data.ownerNickname || "");
           setAuthUsers(res.data.users || []);
           setUsersLoading(false);
@@ -497,6 +554,13 @@
           loadAuthUsers();
         }, function(e) { setUserMsg("⚠ " + e.message); setUserBusy(false); });
       };
+      const handleTogglePricing = (email, nextEnabled) => {
+        setUserBusy(true); setUserMsg("");
+        fns.httpsCallable("setUserPricingEnabled")({ email: email, enabled: nextEnabled }).then(function() {
+          setUserBusy(false);
+          loadAuthUsers();
+        }, function(e) { setUserMsg("⚠ " + e.message); setUserBusy(false); });
+      };
       const handleSaveNickname = (email, nickname) => {
         setUserBusy(true); setUserMsg("");
         fns.httpsCallable("setUserNickname")({ email: email, nickname: nickname }).then(function() {
@@ -526,6 +590,24 @@
         }, 0);
       };
       var formatUsd = function(n) { return "$" + (n || 0).toFixed(4); };
+      var formatBytes = function(n) {
+        n = n || 0;
+        if (n < 1024) return n + " B";
+        if (n < 1024 * 1024) return (n / 1024).toFixed(1) + " KB";
+        return (n / (1024 * 1024)).toFixed(2) + " MB";
+      };
+
+      // ── Firebase usage (pricing feature) — admin only, own estimate ────────────
+      const [showFirebaseUsage, setShowFirebaseUsage] = useState(false);
+      const [firebaseUsageLoading, setFirebaseUsageLoading] = useState(false);
+      const [firebaseUsageMonths, setFirebaseUsageMonths] = useState(null);
+      const loadFirebaseUsage = () => {
+        setFirebaseUsageLoading(true);
+        fns.httpsCallable("getPricingUsage")().then(function(res) {
+          setFirebaseUsageMonths(res.data.months || []);
+          setFirebaseUsageLoading(false);
+        }, function() { setFirebaseUsageLoading(false); });
+      };
 
       const [confirmDialog, setConfirmDialog] = useState(null);
       const [autoOpenMajor, setAutoOpenMajorState] = useState(localStorage.getItem("buli_auto_open_major") === "true");
@@ -546,7 +628,7 @@
         showToast(next ? "הרשימה הראשית תיפתח אוטומטית 🚀" : "הפעלה אוטומטית כבויה");
       };
 
-      // AI settings are per-person now (Roy News pattern) — each person's own key lives at
+      // AI settings are per-person — each person's own key lives at
       // users/{uid}/ai and is only ever sent to the parseItems Cloud Function, never to a
       // third-party API directly from the browser.
       const saveAISettings = () => {
@@ -1153,6 +1235,53 @@
                 )}
               </div>
 
+              {/* ── Price comparison branches ───────────────────────────────────── */}
+              {myPricingEnabled && (
+                <div className="mt-4">
+                  <button onClick={function() { setShowPricingSettings(function(o) { if (!o && !vendorBranchLists.ramiLevy) loadVendorBranches(); return !o; }); }}
+                    className={"w-full flex items-center justify-between px-3 py-3 rounded-xl border transition " + (showPricingSettings ? "bg-white border-blue-200" : "bg-gray-50 border-transparent hover:bg-gray-100")}>
+                    <div className="flex items-center gap-3">
+                      <span className="text-lg w-7 text-center">💰</span>
+                      <div className="text-right">
+                        <div className="text-sm font-semibold text-gray-700">השוואת מחירים</div>
+                        <div className="text-xs text-gray-400">הסניפים שלי</div>
+                      </div>
+                    </div>
+                    <span className="text-gray-400 text-xs flex-shrink-0">{showPricingSettings ? "▲ הסתר" : "▼ הצג"}</span>
+                  </button>
+                  {showPricingSettings && (
+                    <div className="mt-2 bg-white border border-gray-100 rounded-2xl p-4">
+                      {pricingBranchesLoading ? (
+                        <div className="flex justify-center py-6"><Spinner /></div>
+                      ) : (
+                        <div className="space-y-4">
+                          <div>
+                            <div className="text-xs font-semibold text-gray-500 mb-1.5">רמי לוי — הסניף שלי</div>
+                            <select value={activeBranch.ramiLevy} onChange={function(e) { saveActiveBranch("ramiLevy", e.target.value); }}
+                              className="w-full border border-gray-200 rounded-xl px-3 py-2.5 text-sm bg-white">
+                              {Object.entries(vendorBranchLists.ramiLevy || {}).sort(function(a, b) { return (a[1].name||"").localeCompare(b[1].name||"", "he"); }).map(function(entry) {
+                                return <option key={entry[0]} value={entry[0]}>{entry[1].name} — {entry[1].address} (סניף {parseInt(entry[0], 10)})</option>;
+                              })}
+                            </select>
+                            <div className="text-xs text-gray-400 mt-1">מספר סניף נוכחי: {parseInt(activeBranch.ramiLevy, 10)}</div>
+                          </div>
+                          <div>
+                            <div className="text-xs font-semibold text-gray-500 mb-1.5">אושר עד — הסניף שלי</div>
+                            <select value={activeBranch.osherAd} onChange={function(e) { saveActiveBranch("osherAd", e.target.value); }}
+                              className="w-full border border-gray-200 rounded-xl px-3 py-2.5 text-sm bg-white">
+                              {Object.entries(vendorBranchLists.osherAd || {}).sort(function(a, b) { return (a[1].name||"").localeCompare(b[1].name||"", "he"); }).map(function(entry) {
+                                return <option key={entry[0]} value={entry[0]}>{entry[1].name} — {entry[1].address} (סניף {parseInt(entry[0], 10)})</option>;
+                              })}
+                            </select>
+                            <div className="text-xs text-gray-400 mt-1">מספר סניף נוכחי: {parseInt(activeBranch.osherAd, 10)}</div>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              )}
+
               {/* ── Manage Users (admin only) ───────────────────────────────────── */}
               {isAdmin && (
                 <div className="mt-3">
@@ -1187,6 +1316,10 @@
                                 className={"text-xs border rounded-full px-2 py-1 disabled:opacity-40 flex-shrink-0 " + (ownerNoAi ? "text-blue-500 border-blue-200 bg-blue-50" : "text-gray-400 border-gray-200 bg-white")}>
                                 🤖{ownerNoAi ? "🚫" : ""}
                               </button>
+                              <button onClick={function() { handleTogglePricing(ownerEmail, !ownerPricingEnabled); }} disabled={userBusy} title="השוואת מחירים"
+                                className={"text-xs border rounded-full px-2 py-1 disabled:opacity-40 flex-shrink-0 " + (ownerPricingEnabled ? "text-green-600 border-green-200 bg-green-50" : "text-gray-400 border-gray-200 bg-white")}>
+                                💰{ownerPricingEnabled ? "" : "🚫"}
+                              </button>
                             </div>
                           </div>
                           {authUsers.length === 0 ? (
@@ -1213,6 +1346,10 @@
                                   <button onClick={function() { handleToggleNoAi(u.email, !u.noAi); }} disabled={userBusy} title="דלג על AI עבור המשתמש הזה"
                                     className={"text-xs border rounded-full px-2 py-1 disabled:opacity-40 flex-shrink-0 " + (u.noAi ? "text-blue-500 border-blue-200 bg-blue-50" : "text-gray-400 border-gray-200 bg-white")}>
                                     🤖{u.noAi ? "🚫" : ""}
+                                  </button>
+                                  <button onClick={function() { handleTogglePricing(u.email, !u.pricingEnabled); }} disabled={userBusy} title="השוואת מחירים עבור המשתמש הזה"
+                                    className={"text-xs border rounded-full px-2 py-1 disabled:opacity-40 flex-shrink-0 " + (u.pricingEnabled ? "text-green-600 border-green-200 bg-green-50" : "text-gray-400 border-gray-200 bg-white")}>
+                                    💰{u.pricingEnabled ? "" : "🚫"}
                                   </button>
                                 </div>
                               </div>
@@ -1305,6 +1442,53 @@
                   </div>
                 )}
               </div>
+
+              {/* ── Firebase usage (pricing feature, admin only) ─────────────────── */}
+              {isAdmin && (
+                <div className="mt-3 mb-2">
+                  <button onClick={function() { setShowFirebaseUsage(function(o) { if (!o) loadFirebaseUsage(); return !o; }); }}
+                    className={"w-full flex items-center justify-between px-3 py-3 rounded-xl border transition " + (showFirebaseUsage ? "bg-white border-blue-200" : "bg-gray-50 border-transparent hover:bg-gray-100")}>
+                    <div className="flex items-center gap-3">
+                      <span className="text-lg w-7 text-center">🔥</span>
+                      <div className="text-right">
+                        <div className="text-sm font-semibold text-gray-700">שימוש ב-Firebase (השוואת מחירים)</div>
+                        <div className="text-xs text-gray-400">הערכה גסה, לא החיוב המדויק</div>
+                      </div>
+                    </div>
+                    <span className="text-gray-400 text-xs flex-shrink-0">{showFirebaseUsage ? "▲ הסתר" : "▼ הצג"}</span>
+                  </button>
+                  {showFirebaseUsage && (
+                    <div className="mt-2 bg-white border border-gray-100 rounded-2xl p-4">
+                      {firebaseUsageLoading ? (
+                        <div className="flex justify-center py-6"><Spinner /></div>
+                      ) : !firebaseUsageMonths || firebaseUsageMonths.length === 0 ? (
+                        <p className="text-xs text-gray-400 text-center py-4">אין עדיין נתוני שימוש</p>
+                      ) : (
+                        <div>
+                          {firebaseUsageMonths.map(function(m) {
+                            return (
+                              <div key={m.month} className="bg-gray-50 rounded-xl px-3 py-2 mb-2">
+                                <div className="flex items-center justify-between mb-1">
+                                  <span className="text-sm text-gray-700">{m.month}</span>
+                                  <span className="text-sm font-bold text-green-500">≈${m.estimatedUsd.toFixed(3)}</span>
+                                </div>
+                                <div className="text-xs text-gray-400 space-y-0.5">
+                                  <div>רענוני קטלוג מלאים: {m.catalogRefreshCount} ({formatBytes(m.catalogWriteBytes)} נכתבו)</div>
+                                  <div>חיפושי מוצר חדש: {m.catalogReadCount} ({formatBytes(m.catalogReadBytes)} נקראו)</div>
+                                  <div>בדיקות מחיר לפריט קיים: {m.pointReadCount} (זניח)</div>
+                                </div>
+                              </div>
+                            );
+                          })}
+                          <p className="text-xs text-gray-400 text-center mt-1">
+                            הערכה בלבד, מבוססת על נפח הנתונים בפועל — לא שאילתה מול חשבון החיוב של Google
+                          </p>
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              )}
 
               <div className="border-t border-gray-100 my-2" />
               <button onClick={function() { auth.signOut(); }} className="w-full text-right px-3 py-3 text-sm text-red-500 hover:bg-red-50 rounded-xl flex items-center gap-3">
@@ -2116,8 +2300,16 @@
       const [sharing,          setSharing]          = useState(false);
       const [filterStatus, setFilterStatus] = useState(function() { return localStorage.getItem("buli_filter_status") || "all"; });
       const [filterPerson, setFilterPerson] = useState(function() { return localStorage.getItem("buli_filter_person") || "all"; });
+      const [filterNoBarcode, setFilterNoBarcode] = useState(false);
       const [showSearch,   setShowSearch]   = useState(false);
       const [searchQuery,  setSearchQuery]  = useState("");
+      const [pricingEnabled, setPricingEnabled] = useState(false);
+      const [priceMap,       setPriceMap]       = useState({});
+      const [candidatesByName, setCandidatesByName] = useState({});
+      const [pickerItem,      setPickerItem]      = useState(null);
+      const [pickerQuery,     setPickerQuery]      = useState("");
+      const [pickerSearching, setPickerSearching]  = useState(false);
+      const [resolveBusy,     setResolveBusy]     = useState(false);
 
       // Load everything once — optimistic updates for all mutations
       useEffect(function() {
@@ -2161,7 +2353,77 @@
           snap.forEach(function(c) { arr.push(Object.assign({ id: c.key }, c.val())); });
           setProfiles(arr);
         });
+
+        db.ref("users/" + user.uid + "/pricingEnabled").once("value").then(function(snap) {
+          setPricingEnabled(!!snap.val());
+        });
       }, []);
+
+      // ─── Price comparison (Rami Levy / Osher Ad) — no AI, plain lookups ───────
+      const applyItemMatch = (item, barcode, matchedName) => {
+        var updates = { barcode: barcode };
+        if (matchedName && matchedName !== item.name) {
+          updates.originalName = item.originalName || item.name;
+          updates.name = matchedName;
+        }
+        setItems(function(prev) { return prev.map(function(i) { return i.id === item.id ? Object.assign({}, i, updates) : i; }); });
+        db.ref("items/" + listId + "/" + item.id).update(updates);
+      };
+      const fetchPrices = (barcodes, force) => {
+        if (!barcodes || barcodes.length === 0) return Promise.resolve();
+        return fns.httpsCallable("getBasketPrices")({ barcodes: barcodes, force: !!force }).then(function(res) {
+          setPriceMap(function(prev) { return Object.assign({}, prev, res.data.prices || {}); });
+          var now = Date.now();
+          setList(function(prev) { return prev ? Object.assign({}, prev, { pricesRefreshedAt: now }) : prev; });
+          db.ref("lists/" + listId + "/pricesRefreshedAt").set(now);
+        }).catch(function() {});
+      };
+
+      const [pricesRefreshing, setPricesRefreshing] = useState(false);
+      const refreshAllPrices = () => {
+        var barcodes = items.filter(function(i) { return i.barcode; }).map(function(i) { return i.barcode; });
+        if (barcodes.length === 0) { showToast("אין פריטים עם ברקוד לרענון"); return; }
+        setPricesRefreshing(true);
+        fetchPrices(barcodes, true).then(function() {
+          setPricesRefreshing(false);
+          showToast("המחירים עודכנו");
+        });
+      };
+
+      useEffect(function() {
+        if (!pricingEnabled || items.length === 0) return;
+        var withBarcode = items.filter(function(i) { return i.barcode; }).map(function(i) { return i.barcode; });
+        fetchPrices(withBarcode);
+
+        var withoutBarcode = items.filter(function(i) { return !i.barcode && i.name && i.name.trim(); });
+        if (withoutBarcode.length === 0) return;
+        fns.httpsCallable("resolveItemBarcodes")({ items: withoutBarcode.map(function(i) { return i.name; }) }).then(function(res) {
+          var results = res.data.results || {};
+          var newBarcodes = [];
+          var newCandidates = {};
+          withoutBarcode.forEach(function(item) {
+            var r = results[item.name];
+            if (r && r.cached && r.barcode) {
+              applyItemMatch(item, r.barcode, r.matchedName);
+              newBarcodes.push(r.barcode);
+            } else if (r && !r.cached) {
+              // Store even when empty — an empty array means "searched, found
+              // nothing" (show a manual-search prompt), distinct from
+              // undefined, which means "not searched yet" (show nothing).
+              newCandidates[item.name] = r.candidates || [];
+            }
+          });
+          if (newBarcodes.length > 0) fetchPrices(newBarcodes);
+          if (Object.keys(newCandidates).length > 0) {
+            setCandidatesByName(function(prev) { return Object.assign({}, prev, newCandidates); });
+          }
+        }).catch(function() {});
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+      }, [pricingEnabled, items.length]);
+
+      useEffect(function() {
+        if (pickerItem) setPickerQuery(pickerItem.name);
+      }, [pickerItem]);
 
       if (loading || !list) return (
         <div className="bg-gray-50 flex flex-col items-center justify-center" style={{height:"100dvh"}}>
@@ -2221,7 +2483,8 @@
         setEditItem(null);
         db.ref("items/" + listId + "/" + updated.id).update({
           name: updated.name, quantity: updated.quantity !== "" && updated.quantity != null ? Number(updated.quantity) || 1 : null,
-          unit: updated.unit, category: updated.category, note: updated.note || ""
+          unit: updated.unit, category: updated.category, note: updated.note || "",
+          barcode: updated.barcode || null, originalName: updated.originalName || null
         }).then(function() { showToast("פריט עודכן"); }, function(err) { showToast("שגיאה: " + (err && err.message || "?")); });
       };
 
@@ -2251,6 +2514,51 @@
       const updateNote = (id, note) => {
         setItems(function(prev) { return prev.map(function(i) { return i.id === id ? Object.assign({}, i, { note: note }) : i; }); });
         db.ref("items/" + listId + "/" + id + "/note").set(note);
+      };
+
+      const pickPriceCandidate = (item, candidate) => {
+        setResolveBusy(true);
+        fns.httpsCallable("confirmItemBarcode")({ name: item.name, barcode: candidate.barcode, matchedName: candidate.name }).then(function() {
+          applyItemMatch(item, candidate.barcode, candidate.name);
+          // The candidate already carries both vendors' prices (search was
+          // merged by barcode across both catalogs) — no follow-up fetch needed.
+          setPriceMap(function(prev) {
+            var next = Object.assign({}, prev);
+            next[candidate.barcode] = { ramiLevy: candidate.ramiLevy, osherAd: candidate.osherAd };
+            return next;
+          });
+          setCandidatesByName(function(prev) { var next = Object.assign({}, prev); delete next[item.name]; return next; });
+          setPickerItem(null);
+          setResolveBusy(false);
+        }, function() { setResolveBusy(false); });
+      };
+
+      const handleResetMatch = (item) => {
+        var revertedName = item.originalName || item.name;
+        var cleared = { barcode: null, originalName: null, name: revertedName };
+        setItems(function(prev) { return prev.map(function(i) { return i.id === item.id ? Object.assign({}, i, cleared) : i; }); });
+        db.ref("items/" + listId + "/" + item.id).update(cleared);
+        setEditItem(null);
+        fns.httpsCallable("resolveItemBarcodes")({ items: [revertedName], force: true }).then(function(res) {
+          var r = (res.data.results || {})[revertedName];
+          if (r && r.candidates && r.candidates.length > 0) {
+            setCandidatesByName(function(prev) { var next = Object.assign({}, prev); next[revertedName] = r.candidates; return next; });
+            setPickerItem(Object.assign({}, item, cleared));
+          } else {
+            showToast("לא נמצאו התאמות נוספות");
+          }
+        }, function() { showToast("שגיאה בחיפוש"); });
+      };
+
+      const refineSearch = () => {
+        var q = pickerQuery.trim();
+        if (!q || pickerSearching) return;
+        setPickerSearching(true);
+        fns.httpsCallable("resolveItemBarcodes")({ items: [q], force: true }).then(function(res) {
+          var r = (res.data.results || {})[q];
+          setCandidatesByName(function(prev) { var next = Object.assign({}, prev); next[pickerItem.name] = (r && r.candidates) || []; return next; });
+          setPickerSearching(false);
+        }, function() { showToast("שגיאה בחיפוש"); setPickerSearching(false); });
       };
 
       const shareList = () => {
@@ -2324,13 +2632,14 @@
 
       const applyStatusFilter = function(v) { setFilterStatus(v); localStorage.setItem("buli_filter_status", v); };
       const applyPersonFilter = function(v) { setFilterPerson(v); localStorage.setItem("buli_filter_person", v); };
-      const clearAllFilters   = function() { applyStatusFilter("all"); applyPersonFilter("all"); setSearchQuery(""); setShowSearch(false); };
+      const clearAllFilters   = function() { applyStatusFilter("all"); applyPersonFilter("all"); setFilterNoBarcode(false); setSearchQuery(""); setShowSearch(false); };
 
       const filteredItems = items.filter(function(item) {
         if (filterPerson === "mine"   && item.addedBy !== user.uid) return false;
         if (filterPerson === "others" && item.addedBy === user.uid) return false;
         if (filterStatus === "done"    && !item.done) return false;
         if (filterStatus === "pending" &&  item.done) return false;
+        if (filterNoBarcode && item.barcode) return false;
         if (searchQuery.trim()) {
           var q = searchQuery.trim().toLowerCase();
           if ((item.name || "").toLowerCase().indexOf(q) === -1) return false;
@@ -2347,7 +2656,8 @@
           return (
             <div className="space-y-2">
               {[...arr].sort((a,b) => (a.name||"").localeCompare(b.name||"","he")).map(item =>
-                <ItemRow key={item.id} item={item} canEdit={canEditItem(item)} onToggle={toggle} onDelete={remove} onEdit={() => editFn(item)} onUpdateNote={updateNote} isTasks={false} currentUserId={user.uid} />
+                <ItemRow key={item.id} item={item} canEdit={canEditItem(item)} onToggle={toggle} onDelete={remove} onEdit={() => editFn(item)} onUpdateNote={updateNote} isTasks={false} currentUserId={user.uid}
+                  priceInfo={priceMap[item.barcode]} priceCandidates={candidatesByName[item.name]} onPickPrice={() => setPickerItem(item)} />
               )}
             </div>
           );
@@ -2382,14 +2692,28 @@
               <span>{group.emoji}</span><span>{group.label}</span>
             </div>
             <div className="space-y-2">
-              {group.items.map(item => <ItemRow key={item.id} item={item} canEdit={canEditItem(item)} onToggle={toggle} onDelete={remove} onEdit={() => editFn(item)} onUpdateNote={updateNote} isTasks={false} currentUserId={user.uid} />)}
+              {group.items.map(item => <ItemRow key={item.id} item={item} canEdit={canEditItem(item)} onToggle={toggle} onDelete={remove} onEdit={() => editFn(item)} onUpdateNote={updateNote} isTasks={false} currentUserId={user.uid}
+                  priceInfo={priceMap[item.barcode]} priceCandidates={candidatesByName[item.name]} onPickPrice={() => setPickerItem(item)} />)}
             </div>
           </div>
         ));
       };
 
       const doneCount  = filteredItems.filter(i => i.done).length;
-      const isFiltered = filterStatus !== "all" || filterPerson !== "all" || searchQuery.trim().length > 0;
+      const isFiltered = filterStatus !== "all" || filterPerson !== "all" || filterNoBarcode || searchQuery.trim().length > 0;
+
+      var priceTotals = null;
+      if (pricingEnabled && !isTasks && !isNotes) {
+        var totals = { ramiLevy: 0, osherAd: 0, ramiLevyCount: 0, osherAdCount: 0 };
+        filteredItems.filter(function(i) { return !i.done; }).forEach(function(i) {
+          var p = priceMap[i.barcode];
+          if (!p) return;
+          var qty = i.quantity || 1;
+          if (p.ramiLevy != null) { totals.ramiLevy += p.ramiLevy * qty; totals.ramiLevyCount++; }
+          if (p.osherAd != null) { totals.osherAd += p.osherAd * qty; totals.osherAdCount++; }
+        });
+        if (totals.ramiLevyCount > 0 || totals.osherAdCount > 0) priceTotals = totals;
+      }
 
       return (
         <div className="bg-gray-50 flex flex-col" style={{height:"100dvh"}}>
@@ -2456,6 +2780,12 @@
                   className={"w-7 h-7 flex-shrink-0 flex items-center justify-center rounded-full text-sm transition " + (showSearch ? "bg-white text-blue-600" : "bg-white/15 text-white/80")}>
                   🔍
                 </button>
+                {pricingEnabled && !isTasks && (
+                  <button onClick={function() { setFilterNoBarcode(function(p) { return !p; }); }}
+                    className={"text-xs px-2 py-1 rounded-full transition whitespace-nowrap flex-shrink-0 " + (filterNoBarcode ? "bg-white text-orange-600 font-semibold" : "bg-white/15 text-white/70")}>
+                    ⚠ ללא ברקוד
+                  </button>
+                )}
                 {isFiltered && (
                   <button onClick={clearAllFilters} className="text-white/60 hover:text-white text-xs flex-shrink-0" title="נקה פילטרים">✕</button>
                 )}
@@ -2469,6 +2799,29 @@
               </div>
             )}
           </div>
+
+          {pricingEnabled && !isTasks && !isNotes && (
+            <div className="flex items-center justify-between bg-white border-b border-gray-100 px-4 py-1.5 flex-shrink-0">
+              <button onClick={refreshAllPrices} disabled={pricesRefreshing}
+                className="text-xs text-blue-600 font-medium flex items-center gap-1 disabled:opacity-50">
+                {pricesRefreshing ? <Spinner /> : "🔄"} רענן מחירים
+              </button>
+              {list.pricesRefreshedAt && (
+                <span className="text-xs text-gray-400">עודכן: {formatRefreshTime(list.pricesRefreshedAt)}</span>
+              )}
+            </div>
+          )}
+
+          {priceTotals && (
+            <div className="flex items-center justify-around bg-white border-b border-gray-100 px-4 py-2 flex-shrink-0">
+              <div className={"text-sm font-bold " + priceTextClass(priceTotals.ramiLevy, priceTotals.osherAd)}>
+                רמי לוי: ₪{priceTotals.ramiLevy.toFixed(2)}
+              </div>
+              <div className={"text-sm font-bold " + priceTextClass(priceTotals.osherAd, priceTotals.ramiLevy)}>
+                אושר עד: ₪{priceTotals.osherAd.toFixed(2)}
+              </div>
+            </div>
+          )}
 
           <div className="flex-1 overflow-y-auto p-4 pb-28">
             {isNotes ? (
@@ -2520,10 +2873,50 @@
             </button>
           )}
 
-          {editItem && <EditItemModal item={editItem} categories={categories} onChange={setEditItem} onSave={saveEdit} onClose={() => setEditItem(null)} />}
+          {editItem && <EditItemModal item={editItem} categories={categories} onChange={setEditItem} onSave={saveEdit} onResetMatch={handleResetMatch} pricingEnabled={pricingEnabled} onClose={() => setEditItem(null)} />}
           {noteEdit && <NoteEditModal item={noteEdit} onSave={saveNoteEdit} onClose={function() { setNoteEdit(null); }} />}
           {taskEdit && <TaskEditModal item={taskEdit} onChange={setTaskEdit} onSave={saveTaskEdit} onDelete={deleteTask} onClose={() => setTaskEdit(null)} />}
           {confirmDialog && <ConfirmDialog message={confirmDialog.message} confirmLabel={confirmDialog.confirmLabel} onConfirm={confirmDialog.onConfirm} onClose={function() { setConfirmDialog(null); }} />}
+
+          {pickerItem && (
+            <Modal onClose={() => setPickerItem(null)}>
+              <h3 className="text-lg font-bold text-center mb-1">בחר מוצר עבור "{pickerItem.name}"</h3>
+              <p className="text-xs text-gray-400 text-center mb-3">בחר את ההתאמה המדויקת כדי לראות מחיר</p>
+              <div className="flex gap-2 mb-3">
+                <input value={pickerQuery} onChange={function(e) { setPickerQuery(e.target.value); }}
+                  onKeyDown={function(e) { if (e.key === "Enter") refineSearch(); }}
+                  placeholder="חדד את החיפוש, למשל: חלב 3%" dir="rtl"
+                  className="flex-1 border border-gray-200 rounded-xl px-3 py-2 text-sm text-right focus:outline-none focus:border-blue-400" />
+                <button onClick={refineSearch} disabled={!pickerQuery.trim() || pickerSearching}
+                  className="bg-blue-600 text-white text-sm px-4 py-2 rounded-xl font-medium disabled:opacity-40 flex-shrink-0">
+                  {pickerSearching ? <Spinner /> : "חפש"}
+                </button>
+              </div>
+              <div className="space-y-2 max-h-80 overflow-y-auto">
+                {(candidatesByName[pickerItem.name] || []).map(function(c) {
+                  var both = c.ramiLevy != null && c.osherAd != null;
+                  return (
+                    <button key={c.barcode} onClick={() => pickPriceCandidate(pickerItem, c)} disabled={resolveBusy}
+                      className={"w-full text-right rounded-xl px-3 py-2.5 disabled:opacity-50 " + (both ? "bg-green-50 hover:bg-green-100 border border-green-200" : "bg-gray-50 hover:bg-gray-100")}>
+                      <div className="text-sm font-medium text-gray-800">{c.name}</div>
+                      <div className="text-xs text-gray-400 mb-1">{c.unit}</div>
+                      <div className="flex items-center gap-1.5">
+                        <span className={"text-xs font-semibold px-1.5 py-0.5 rounded " + priceBadgeClass(c.ramiLevy, c.osherAd)}>
+                          רמי לוי: {c.ramiLevy != null ? "₪" + Number(c.ramiLevy).toFixed(2) : "לא נמכר כאן"}
+                        </span>
+                        <span className={"text-xs font-semibold px-1.5 py-0.5 rounded " + priceBadgeClass(c.osherAd, c.ramiLevy)}>
+                          אושר עד: {c.osherAd != null ? "₪" + Number(c.osherAd).toFixed(2) : "לא נמכר כאן"}
+                        </span>
+                      </div>
+                    </button>
+                  );
+                })}
+                {(candidatesByName[pickerItem.name] || []).length === 0 && !pickerSearching && (
+                  <p className="text-center text-gray-400 text-sm py-4">לא נמצאו התאמות — נסה חיפוש מדויק יותר</p>
+                )}
+              </div>
+            </Modal>
+          )}
 
           {showShare && (
             <Modal onClose={() => setShowShare(false)}>
@@ -2611,7 +3004,7 @@
       try { var p = dateStr.split("-"); return p[2] + "/" + p[1] + "/" + p[0]; } catch(e) { return dateStr; }
     }
 
-    function ItemRow({ item, canEdit, onToggle, onDelete, onEdit, onUpdateNote, isTasks, currentUserId }) {
+    function ItemRow({ item, canEdit, onToggle, onDelete, onEdit, onUpdateNote, isTasks, currentUserId, priceInfo, priceCandidates, onPickPrice }) {
       const [editingNote, setEditingNote] = useState(false);
       const [noteVal,     setNoteVal]     = useState(item.note || "");
 
@@ -2647,6 +3040,28 @@
                   <span>💬</span><span>הוסף הערה</span>
                 </button>
               ) : null}
+              {!isTasks && priceInfo && (
+                <div className="flex items-center gap-1.5 mt-1">
+                  <span className={"text-xs font-semibold px-1.5 py-0.5 rounded " + priceBadgeClass(priceInfo.ramiLevy, priceInfo.osherAd)}>
+                    רמי לוי: {priceInfo.ramiLevy != null ? "₪" + priceInfo.ramiLevy.toFixed(2) : "לא נמכר כאן"}
+                  </span>
+                  <span className={"text-xs font-semibold px-1.5 py-0.5 rounded " + priceBadgeClass(priceInfo.osherAd, priceInfo.ramiLevy)}>
+                    אושר עד: {priceInfo.osherAd != null ? "₪" + priceInfo.osherAd.toFixed(2) : "לא נמכר כאן"}
+                  </span>
+                </div>
+              )}
+              {!isTasks && !priceInfo && priceCandidates && priceCandidates.length > 0 && (
+                <button onClick={function(e) { e.stopPropagation(); onPickPrice(); }}
+                  className="text-xs text-blue-500 border border-blue-200 bg-blue-50 rounded-full px-2 py-0.5 mt-1">
+                  💰 התאם פריט
+                </button>
+              )}
+              {!isTasks && !priceInfo && priceCandidates && priceCandidates.length === 0 && (
+                <button onClick={function(e) { e.stopPropagation(); onPickPrice(); }}
+                  className="text-xs text-orange-600 border border-orange-200 bg-orange-50 rounded-full px-2 py-0.5 mt-1">
+                  ⚠ לא נמצא ברקוד — חפש ידנית
+                </button>
+              )}
             </div>
             {!isTasks && qty ? (
               <span className="text-xs font-medium text-gray-500 bg-gray-100 px-2 py-0.5 rounded-full flex-shrink-0 min-w-12 text-center">{qty}</span>
@@ -2709,7 +3124,7 @@
       );
     }
 
-    function EditItemModal({ item, categories, onChange, onSave, onClose }) {
+    function EditItemModal({ item, categories, onChange, onSave, onResetMatch, pricingEnabled, onClose }) {
       return (
         <Modal onClose={onClose}>
           <h3 className="text-lg font-bold text-center mb-4">עריכת פריט</h3>
@@ -2719,6 +3134,18 @@
               <input value={item.name || ""} onChange={e => onChange({...item, name: e.target.value})}
                 className="w-full border border-gray-200 rounded-xl px-4 py-3 text-right focus:outline-none focus:border-blue-400" />
             </div>
+            {pricingEnabled && (item.barcode || item.originalName) && (
+              <div className="bg-blue-50 border border-blue-100 rounded-xl p-3 space-y-1">
+                {item.originalName && (
+                  <div className="text-xs text-gray-500">השם שהזנת במקור: <span className="font-medium text-gray-700">{item.originalName}</span></div>
+                )}
+                {item.barcode && (
+                  <div className="text-xs text-gray-500" dir="ltr">ברקוד מזוהה: <span className="font-mono text-gray-700">{item.barcode}</span></div>
+                )}
+                <button onClick={() => onResetMatch(item)}
+                  className="text-xs text-blue-600 font-medium">🔄 חפש התאמת פריט מחדש</button>
+              </div>
+            )}
             <div className="grid grid-cols-2 gap-2">
               <div>
                 <label className="text-xs text-gray-500 block mb-1">כמות</label>

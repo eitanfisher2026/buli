@@ -11,6 +11,22 @@
       ".read": false,
       ".write": false
     },
+    "vendorBranches": {
+      ".read": false,
+      ".write": false
+    },
+    "vendorCatalog": {
+      ".read": false,
+      ".write": false
+    },
+    "itemBarcodes": {
+      ".read": false,
+      ".write": false
+    },
+    "pricingUsage": {
+      ".read": false,
+      ".write": false
+    },
     "userAccess": {
       "$uid": {
         ".read": "auth != null && auth.uid === $uid",

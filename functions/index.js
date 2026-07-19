@@ -765,6 +765,33 @@ exports.requestVendor = onCall(
   }
 );
 
+exports.listVendorRequests = onCall(
+  { timeoutSeconds: 30, memory: '128MiB', region: 'europe-west1' },
+  async (request) => {
+    const role = await requireAuthorized(request);
+    requireAdmin(role);
+    const snap = await db.ref('vendorRequests').once('value');
+    const val = snap.val() || {};
+    const requests = Object.entries(val).map(([id, r]) => ({ id, ...r }));
+    requests.sort((a, b) => (b.requestedAt || 0) - (a.requestedAt || 0));
+    return { requests };
+  }
+);
+
+// Admin dismisses a request once handled (chain added, or decided against) —
+// this only clears the log entry, it never writes any "unsupported" marker.
+exports.dismissVendorRequest = onCall(
+  { timeoutSeconds: 30, memory: '128MiB', region: 'europe-west1' },
+  async (request) => {
+    const role = await requireAuthorized(request);
+    requireAdmin(role);
+    const { id } = request.data || {};
+    if (!id) throw new HttpsError('invalid-argument', 'id required');
+    await db.ref(`vendorRequests/${id}`).remove();
+    return { ok: true };
+  }
+);
+
 // Returns, per item name: whichever vendors are already resolved (from the
 // global itemBarcodes cache) plus fuzzy-match candidates for whichever
 // vendors are still missing. A "vendor" here is never hardcoded to exactly

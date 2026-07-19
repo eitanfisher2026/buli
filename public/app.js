@@ -1,6 +1,6 @@
     const { useState, useEffect, useRef } = React;
 
-    const VERSION = "v5.30";
+    const VERSION = "v5.31";
 
     // ── CONFIG ────────────────────────────────────────────────────────────────────
     const FIREBASE_CONFIG = {
@@ -539,6 +539,9 @@
       const [newProfileVendorInput, setNewProfileVendorInput] = useState("");
       const [newProfileBranchId, setNewProfileBranchId] = useState("");
       const [vendorRequestSent, setVendorRequestSent] = useState(false);
+      const [showVendorRequests, setShowVendorRequests] = useState(false);
+      const [vendorRequestsLoading, setVendorRequestsLoading] = useState(false);
+      const [vendorRequestsList, setVendorRequestsList] = useState([]);
 
       useEffect(function() {
         db.ref("users/" + user.uid + "/pricingEnabled").once("value").then(function(snap) { setMyPricingEnabled(!!snap.val()); });
@@ -569,6 +572,19 @@
           setVendorRequestSent(true);
           showToast("הבקשה נשלחה למנהל");
         }).catch(function() { showToast("שגיאה בשליחת הבקשה"); });
+      };
+
+      const loadVendorRequests = function() {
+        setVendorRequestsLoading(true);
+        fns.httpsCallable("listVendorRequests")().then(function(res) {
+          setVendorRequestsList((res.data && res.data.requests) || []);
+          setVendorRequestsLoading(false);
+        }, function() { setVendorRequestsLoading(false); });
+      };
+
+      const dismissVendorRequest = function(id) {
+        setVendorRequestsList(function(prev) { return prev.filter(function(r) { return r.id !== id; }); });
+        fns.httpsCallable("dismissVendorRequest")({ id: id }).catch(function() { showToast("שגיאה במחיקת הבקשה"); });
       };
 
       const addVendorProfile = function(vendor, branchId) {
@@ -1441,6 +1457,34 @@
                               <input type="number" min="1" max="10" value={maxActiveVendors}
                                 onChange={function(e) { saveMaxActiveVendors(e.target.value); }}
                                 className="w-16 border border-gray-200 rounded-xl px-2 py-1.5 text-sm text-center" />
+                            </div>
+                          )}
+                          {isAdmin && (
+                            <div className="pt-3 border-t border-gray-100">
+                              <button onClick={function() { setShowVendorRequests(function(o) { if (!o) loadVendorRequests(); return !o; }); }}
+                                className="w-full flex items-center justify-between text-xs font-semibold text-gray-500">
+                                <span>בקשות לרשתות חדשות (מנהל)</span>
+                                <span className="text-gray-400">{showVendorRequests ? "▲ הסתר" : "▼ הצג"}</span>
+                              </button>
+                              {showVendorRequests && (
+                                <div className="mt-2 space-y-1.5">
+                                  {vendorRequestsLoading ? (
+                                    <div className="flex justify-center py-4"><Spinner /></div>
+                                  ) : vendorRequestsList.length === 0 ? (
+                                    <p className="text-center text-gray-400 text-xs py-2">אין בקשות פתוחות</p>
+                                  ) : vendorRequestsList.map(function(r) {
+                                    return (
+                                      <div key={r.id} className="flex items-center justify-between bg-gray-50 rounded-xl px-3 py-2">
+                                        <div className="text-xs text-gray-700 flex-1 text-right">
+                                          <span className="font-semibold">{r.name}</span>
+                                          <div className="text-gray-400 mt-0.5">{r.requestedBy} · {formatRefreshTime(r.requestedAt)}</div>
+                                        </div>
+                                        <button onClick={function() { dismissVendorRequest(r.id); }} className="text-gray-300 hover:text-red-500 text-sm px-1 flex-shrink-0">✕</button>
+                                      </div>
+                                    );
+                                  })}
+                                </div>
+                              )}
                             </div>
                           )}
                         </div>

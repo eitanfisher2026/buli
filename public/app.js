@@ -1,6 +1,6 @@
     const { useState, useEffect, useRef } = React;
 
-    const VERSION = "v5.27";
+    const VERSION = "v5.28";
 
     // ── CONFIG ────────────────────────────────────────────────────────────────────
     const FIREBASE_CONFIG = {
@@ -144,15 +144,70 @@
     // and not sold there at all (dimmed gray — genuinely different from
     // "sold but pricier", which "not showing the winner in green" alone
     // doesn't communicate).
-    function priceBadgeClass(mine, other) {
+    // Vendor list drives every price-comparison UI element (badges, branch
+    // pickers, totals) — adding a third chain later is just another entry
+    // here plus the matching VENDORS/DEFAULT_BRANCH entry server-side, no
+    // further UI rewiring.
+    const VENDOR_LIST = [
+      { id: "ramiLevy", label: "רמי לוי" },
+      { id: "osherAd", label: "אושר עד" },
+    ];
+    const VENDOR_IDS = VENDOR_LIST.map(function(v) { return v.id; });
+
+    // A vendor's own barcode for an item, preferring the new per-vendor map
+    // over the legacy single shared `barcode` field (pre-existing items that
+    // haven't been re-matched since chains got independent barcodes).
+    function itemVendorBarcode(item, vendorId) {
+      return (item.barcodes && item.barcodes[vendorId]) || item.barcode || null;
+    }
+    function itemMissingVendors(item) {
+      return VENDOR_IDS.filter(function(v) { return !itemVendorBarcode(item, v); });
+    }
+    function itemHasAnyBarcode(item) {
+      return !!(item.barcode || (item.barcodes && Object.keys(item.barcodes).length > 0));
+    }
+
+    // "mine" wins (green) only if it's strictly cheaper than every other
+    // known price — a tie has no winner. "others" is the list of the other
+    // vendors' values (nulls allowed, filtered out) so this scales to any
+    // number of vendors, not just a pairwise comparison.
+    function cheapestBadgeClass(mine, others) {
       if (mine == null) return "bg-gray-50 text-gray-400";
-      if (other == null || mine < other) return "bg-green-100 text-green-700";
+      var known = others.filter(function(o) { return o != null; });
+      if (known.length === 0 || known.every(function(o) { return mine < o; })) return "bg-green-100 text-green-700";
       return "bg-gray-100 text-gray-700";
     }
-    function priceTextClass(mine, other) {
+    function cheapestTextClass(mine, others) {
       if (mine == null) return "text-gray-400";
-      if (other == null || mine < other) return "text-green-600";
+      var known = others.filter(function(o) { return o != null; });
+      if (known.length === 0 || known.every(function(o) { return mine < o; })) return "text-green-600";
       return "text-gray-700";
+    }
+
+    // Plain vendor label ("רמי לוי"), disambiguated with the branch number
+    // only when the user has more than one active profile on the same
+    // chain — the common case (one branch per chain) stays uncluttered.
+    function profileLabel(profile, allProfiles) {
+      var meta = VENDOR_LIST.find(function(v) { return v.id === profile.vendor; });
+      var label = meta ? meta.label : profile.vendor;
+      var sameChainCount = allProfiles.filter(function(p) { return p.vendor === profile.vendor; }).length;
+      if (sameChainCount > 1) label += " (סניף " + parseInt(profile.branchId, 10) + ")";
+      return label;
+    }
+    // Resolves an item's price at every active profile it has a (chain-wide)
+    // barcode for. Skips profiles whose price hasn't been fetched yet rather
+    // than showing a misleading "not sold here" before the real answer
+    // arrives.
+    function itemProfilePrices(item, activeProfiles, priceMap) {
+      var out = [];
+      activeProfiles.forEach(function(p) {
+        var bc = itemVendorBarcode(item, p.vendor);
+        if (!bc) return;
+        var vendorPrices = priceMap[p.id];
+        if (!vendorPrices || !(bc in vendorPrices)) return;
+        out.push({ profile: p, price: vendorPrices[bc] });
+      });
+      return out;
     }
 
     const USER_COLORS = ["#ef4444","#f97316","#22c55e","#14b8a6","#8b5cf6","#ec4899","#6366f1","#f59e0b"];
@@ -460,35 +515,73 @@
       const switchProvider = (p) => { setAiProvider(p); setAiModel(getAIModel(p)); };
       const [promptOpen, setPromptOpen] = useState(false);
 
-      // ── Price comparison branches (own preference, admin controls the on/off flag) ──
+      // ── Price comparison vendor profiles (own preference, admin controls
+      // the on/off flag and the max-active-at-once cap) ──
       const [myPricingEnabled, setMyPricingEnabled] = useState(false);
       const [showPricingSettings, setShowPricingSettings] = useState(false);
       const [pricingBranchesLoading, setPricingBranchesLoading] = useState(false);
-      const [activeBranch, setActiveBranch] = useState({ ramiLevy: "055", osherAd: "011" });
-      const [vendorBranchLists, setVendorBranchLists] = useState({ ramiLevy: null, osherAd: null });
+      const [vendorBranchLists, setVendorBranchLists] = useState(function() {
+        var o = {}; VENDOR_IDS.forEach(function(v) { o[v] = null; }); return o;
+      });
+      // { [profileId]: { vendor, branchId, active } } — every branch the user
+      // has ever added, not just the active ones (that's server-enforced).
+      const [vendorProfiles, setVendorProfiles] = useState({});
+      const [maxActiveVendors, setMaxActiveVendors] = useState(3);
+      const [newProfileBranch, setNewProfileBranch] = useState(function() {
+        var o = {}; VENDOR_IDS.forEach(function(v) { o[v] = ""; }); return o;
+      });
 
       useEffect(function() {
         db.ref("users/" + user.uid + "/pricingEnabled").once("value").then(function(snap) { setMyPricingEnabled(!!snap.val()); });
-        db.ref("users/" + user.uid + "/activeBranch").once("value").then(function(snap) {
-          var v = snap.val() || {};
-          setActiveBranch({ ramiLevy: v.ramiLevy || "055", osherAd: v.osherAd || "011" });
-        });
+        var profilesRef = db.ref("users/" + user.uid + "/vendorProfiles");
+        var onProfiles = function(snap) { setVendorProfiles(snap.val() || {}); };
+        profilesRef.on("value", onProfiles);
+        fns.httpsCallable("getPricingSettings")().then(function(res) {
+          setMaxActiveVendors((res.data && res.data.maxActiveVendors) || 3);
+        }).catch(function() {});
+        return function() { profilesRef.off("value", onProfiles); };
       }, [user.uid]);
+
+      const activeVendorProfileCount = Object.values(vendorProfiles).filter(function(p) { return p && p.active; }).length;
 
       const loadVendorBranches = function() {
         setPricingBranchesLoading(true);
-        Promise.all([
-          fns.httpsCallable("getVendorBranches")({ vendor: "ramiLevy" }),
-          fns.httpsCallable("getVendorBranches")({ vendor: "osherAd" }),
-        ]).then(function(results) {
-          setVendorBranchLists({ ramiLevy: results[0].data.branches || {}, osherAd: results[1].data.branches || {} });
-          setPricingBranchesLoading(false);
-        }, function() { setPricingBranchesLoading(false); });
+        Promise.all(VENDOR_IDS.map(function(id) { return fns.httpsCallable("getVendorBranches")({ vendor: id }); }))
+          .then(function(results) {
+            var next = {};
+            VENDOR_IDS.forEach(function(id, i) { next[id] = results[i].data.branches || {}; });
+            setVendorBranchLists(next);
+            setPricingBranchesLoading(false);
+          }, function() { setPricingBranchesLoading(false); });
       };
 
-      const saveActiveBranch = function(vendor, branchId) {
-        setActiveBranch(function(prev) { var next = Object.assign({}, prev); next[vendor] = branchId; return next; });
-        db.ref("users/" + user.uid + "/activeBranch/" + vendor).set(branchId);
+      const addVendorProfile = function(vendor) {
+        var branchId = newProfileBranch[vendor];
+        if (!branchId) return;
+        var alreadySaved = Object.values(vendorProfiles).some(function(p) { return p && p.vendor === vendor && String(p.branchId) === String(branchId); });
+        if (alreadySaved) { showToast("הסניף כבר ברשימה שלך"); return; }
+        db.ref("users/" + user.uid + "/vendorProfiles").push({ vendor: vendor, branchId: branchId, active: false, addedAt: Date.now() });
+      };
+
+      const removeVendorProfile = function(profileId) {
+        db.ref("users/" + user.uid + "/vendorProfiles/" + profileId).remove();
+      };
+
+      const toggleVendorProfileActive = function(profileId) {
+        var p = vendorProfiles[profileId];
+        if (!p) return;
+        if (!p.active && activeVendorProfileCount >= maxActiveVendors) {
+          showToast("ניתן להשוות עד " + maxActiveVendors + " סניפים בו-זמנית");
+          return;
+        }
+        db.ref("users/" + user.uid + "/vendorProfiles/" + profileId + "/active").set(!p.active);
+      };
+
+      const saveMaxActiveVendors = function(value) {
+        var n = parseInt(value, 10);
+        if (!Number.isFinite(n) || n < 1 || n > 10) return;
+        setMaxActiveVendors(n);
+        fns.httpsCallable("setMaxActiveVendors")({ value: n }).catch(function() { showToast("שגיאה בשמירת המגבלה"); });
       };
       const API_KEY_LINKS = {
         anthropic: "https://console.anthropic.com/settings/keys",
@@ -1254,27 +1347,60 @@
                       {pricingBranchesLoading ? (
                         <div className="flex justify-center py-6"><Spinner /></div>
                       ) : (
-                        <div className="space-y-4">
-                          <div>
-                            <div className="text-xs font-semibold text-gray-500 mb-1.5">רמי לוי — הסניף שלי</div>
-                            <select value={activeBranch.ramiLevy} onChange={function(e) { saveActiveBranch("ramiLevy", e.target.value); }}
-                              className="w-full border border-gray-200 rounded-xl px-3 py-2.5 text-sm bg-white">
-                              {Object.entries(vendorBranchLists.ramiLevy || {}).sort(function(a, b) { return (a[1].name||"").localeCompare(b[1].name||"", "he"); }).map(function(entry) {
-                                return <option key={entry[0]} value={entry[0]}>{entry[1].name} — {entry[1].address} (סניף {parseInt(entry[0], 10)})</option>;
-                              })}
-                            </select>
-                            <div className="text-xs text-gray-400 mt-1">מספר סניף נוכחי: {parseInt(activeBranch.ramiLevy, 10)}</div>
+                        <div className="space-y-5">
+                          <div className="text-xs text-gray-400 text-center">
+                            פעילים להשוואה: {activeVendorProfileCount} / {maxActiveVendors}
                           </div>
-                          <div>
-                            <div className="text-xs font-semibold text-gray-500 mb-1.5">אושר עד — הסניף שלי</div>
-                            <select value={activeBranch.osherAd} onChange={function(e) { saveActiveBranch("osherAd", e.target.value); }}
-                              className="w-full border border-gray-200 rounded-xl px-3 py-2.5 text-sm bg-white">
-                              {Object.entries(vendorBranchLists.osherAd || {}).sort(function(a, b) { return (a[1].name||"").localeCompare(b[1].name||"", "he"); }).map(function(entry) {
-                                return <option key={entry[0]} value={entry[0]}>{entry[1].name} — {entry[1].address} (סניף {parseInt(entry[0], 10)})</option>;
-                              })}
-                            </select>
-                            <div className="text-xs text-gray-400 mt-1">מספר סניף נוכחי: {parseInt(activeBranch.osherAd, 10)}</div>
-                          </div>
+                          {VENDOR_LIST.map(function(v) {
+                            var branchOptions = vendorBranchLists[v.id] || {};
+                            var savedProfiles = Object.entries(vendorProfiles).filter(function(e) { return e[1] && e[1].vendor === v.id; });
+                            return (
+                              <div key={v.id}>
+                                <div className="text-xs font-semibold text-gray-500 mb-1.5">{v.label}</div>
+                                {savedProfiles.length > 0 && (
+                                  <div className="space-y-1.5 mb-2">
+                                    {savedProfiles.map(function(entry) {
+                                      var pid = entry[0], p = entry[1];
+                                      var info = branchOptions[p.branchId] || {};
+                                      return (
+                                        <div key={pid} className={"flex items-center justify-between rounded-xl px-3 py-2 border " + (p.active ? "bg-green-50 border-green-200" : "bg-gray-50 border-transparent")}>
+                                          <div className="text-xs text-gray-700 flex-1 text-right">
+                                            {info.name || ("סניף " + parseInt(p.branchId, 10))}{info.address ? " — " + info.address : ""}
+                                          </div>
+                                          <div className="flex items-center gap-2 flex-shrink-0">
+                                            <button onClick={function() { toggleVendorProfileActive(pid); }}
+                                              className={"text-xs border rounded-full px-2 py-0.5 " + (p.active ? "text-green-600 border-green-200 bg-white" : "text-gray-400 border-gray-200 bg-white")}>
+                                              {p.active ? "פעיל" : "כבוי"}
+                                            </button>
+                                            <button onClick={function() { removeVendorProfile(pid); }} className="text-gray-300 hover:text-red-500 text-sm px-1">✕</button>
+                                          </div>
+                                        </div>
+                                      );
+                                    })}
+                                  </div>
+                                )}
+                                <div className="flex gap-2">
+                                  <select value={newProfileBranch[v.id]} onChange={function(e) { setNewProfileBranch(function(prev) { var n = Object.assign({}, prev); n[v.id] = e.target.value; return n; }); }}
+                                    className="flex-1 border border-gray-200 rounded-xl px-3 py-2 text-sm bg-white">
+                                    <option value="">בחר סניף להוספה...</option>
+                                    {Object.entries(branchOptions).sort(function(a, b) { return (a[1].name||"").localeCompare(b[1].name||"", "he"); }).map(function(entry) {
+                                      return <option key={entry[0]} value={entry[0]}>{entry[1].name} — {entry[1].address} (סניף {parseInt(entry[0], 10)})</option>;
+                                    })}
+                                  </select>
+                                  <button onClick={function() { addVendorProfile(v.id); }} disabled={!newProfileBranch[v.id]}
+                                    className="bg-blue-600 text-white text-sm px-3 py-2 rounded-xl font-medium disabled:opacity-40 flex-shrink-0">+ הוסף</button>
+                                </div>
+                              </div>
+                            );
+                          })}
+                          {isAdmin && (
+                            <div className="pt-3 border-t border-gray-100 flex items-center justify-between">
+                              <div className="text-xs font-semibold text-gray-500">מגבלת סניפים פעילים (מנהל)</div>
+                              <input type="number" min="1" max="10" value={maxActiveVendors}
+                                onChange={function(e) { saveMaxActiveVendors(e.target.value); }}
+                                className="w-16 border border-gray-200 rounded-xl px-2 py-1.5 text-sm text-center" />
+                            </div>
+                          )}
                         </div>
                       )}
                     </div>
@@ -2304,7 +2430,11 @@
       const [showSearch,   setShowSearch]   = useState(false);
       const [searchQuery,  setSearchQuery]  = useState("");
       const [pricingEnabled, setPricingEnabled] = useState(false);
+      // { [profileId]: { [barcode]: price } } — server-resolved, cap-enforced
+      // active vendor+branch profiles (see getBasketPrices' `profiles` field).
+      const [activeProfiles, setActiveProfiles] = useState([]);
       const [priceMap,       setPriceMap]       = useState({});
+      // { [itemName]: { vendors: [chainIds searched], list: [candidates] } }
       const [candidatesByName, setCandidatesByName] = useState({});
       const [pickerItem,      setPickerItem]      = useState(null);
       const [pickerQuery,     setPickerQuery]      = useState("");
@@ -2359,9 +2489,25 @@
         });
       }, []);
 
-      // ─── Price comparison (Rami Levy / Osher Ad) — no AI, plain lookups ───────
-      const applyItemMatch = (item, barcode, matchedName) => {
-        var updates = { barcode: barcode };
+      // ─── Price comparison (any number of active vendor+branch profiles) —
+      // no AI, plain lookups. item.barcodes is keyed by vendor CHAIN (a GTIN
+      // doesn't change by branch); priceMap is keyed by PROFILE id (price
+      // does change by branch). ───────────────────────────────────────────
+      function collectBarcodesByVendor(itemList) {
+        var out = {};
+        itemList.forEach(function(i) {
+          VENDOR_IDS.forEach(function(v) {
+            var bc = itemVendorBarcode(i, v);
+            if (!bc) return;
+            if (!out[v]) out[v] = [];
+            if (out[v].indexOf(bc) === -1) out[v].push(bc);
+          });
+        });
+        return out;
+      }
+      const applyItemMatch = (item, vendorBarcodes, matchedName) => {
+        var nextBarcodes = Object.assign({}, item.barcodes, vendorBarcodes);
+        var updates = { barcodes: nextBarcodes };
         if (matchedName && matchedName !== item.name) {
           updates.originalName = item.originalName || item.name;
           updates.name = matchedName;
@@ -2369,10 +2515,17 @@
         setItems(function(prev) { return prev.map(function(i) { return i.id === item.id ? Object.assign({}, i, updates) : i; }); });
         db.ref("items/" + listId + "/" + item.id).update(updates);
       };
-      const fetchPrices = (barcodes, force) => {
-        if (!barcodes || barcodes.length === 0) return Promise.resolve();
-        return fns.httpsCallable("getBasketPrices")({ barcodes: barcodes, force: !!force }).then(function(res) {
-          setPriceMap(function(prev) { return Object.assign({}, prev, res.data.prices || {}); });
+      const fetchPrices = (barcodesByVendor, force) => {
+        var hasAny = Object.keys(barcodesByVendor || {}).some(function(v) { return barcodesByVendor[v] && barcodesByVendor[v].length > 0; });
+        if (!hasAny) return Promise.resolve();
+        return fns.httpsCallable("getBasketPrices")({ barcodesByVendor: barcodesByVendor, force: !!force }).then(function(res) {
+          var byProfile = res.data.prices || {};
+          setPriceMap(function(prev) {
+            var next = Object.assign({}, prev);
+            Object.keys(byProfile).forEach(function(pid) { next[pid] = Object.assign({}, next[pid], byProfile[pid]); });
+            return next;
+          });
+          if (res.data.profiles) setActiveProfiles(res.data.profiles);
           var now = Date.now();
           setList(function(prev) { return prev ? Object.assign({}, prev, { pricesRefreshedAt: now }) : prev; });
           db.ref("lists/" + listId + "/pricesRefreshedAt").set(now);
@@ -2381,10 +2534,10 @@
 
       const [pricesRefreshing, setPricesRefreshing] = useState(false);
       const refreshAllPrices = () => {
-        var barcodes = items.filter(function(i) { return i.barcode; }).map(function(i) { return i.barcode; });
-        if (barcodes.length === 0) { showToast("אין פריטים עם ברקוד לרענון"); return; }
+        var barcodesByVendor = collectBarcodesByVendor(items.filter(itemHasAnyBarcode));
+        if (Object.keys(barcodesByVendor).length === 0) { showToast("אין פריטים עם ברקוד לרענון"); return; }
         setPricesRefreshing(true);
-        fetchPrices(barcodes, true).then(function() {
+        fetchPrices(barcodesByVendor, true).then(function() {
           setPricesRefreshing(false);
           showToast("המחירים עודכנו");
         });
@@ -2392,30 +2545,45 @@
 
       useEffect(function() {
         if (!pricingEnabled || items.length === 0) return;
-        var withBarcode = items.filter(function(i) { return i.barcode; }).map(function(i) { return i.barcode; });
-        fetchPrices(withBarcode);
+        fetchPrices(collectBarcodesByVendor(items.filter(itemHasAnyBarcode)));
 
-        var withoutBarcode = items.filter(function(i) { return !i.barcode && i.name && i.name.trim(); });
-        if (withoutBarcode.length === 0) return;
-        fns.httpsCallable("resolveItemBarcodes")({ items: withoutBarcode.map(function(i) { return i.name; }) }).then(function(res) {
+        var unresolved = items.filter(function(i) { return itemMissingVendors(i).length > 0 && i.name && i.name.trim(); });
+        if (unresolved.length === 0) return;
+        fns.httpsCallable("resolveItemBarcodes")({ items: unresolved.map(function(i) { return i.name; }) }).then(function(res) {
           var results = res.data.results || {};
-          var newBarcodes = [];
+          var newlyResolved = [];
           var newCandidates = {};
-          withoutBarcode.forEach(function(item) {
+          var resolvedNames = [];
+          unresolved.forEach(function(item) {
             var r = results[item.name];
-            if (r && r.cached && r.barcode) {
-              applyItemMatch(item, r.barcode, r.matchedName);
-              newBarcodes.push(r.barcode);
-            } else if (r && !r.cached) {
-              // Store even when empty — an empty array means "searched, found
-              // nothing" (show a manual-search prompt), distinct from
-              // undefined, which means "not searched yet" (show nothing).
-              newCandidates[item.name] = r.candidates || [];
+            if (!r) return;
+            var hadNone = !itemHasAnyBarcode(item);
+            if (r.barcodes && Object.keys(r.barcodes).length > 0) {
+              var vendorBarcodes = {};
+              var firstMatchedName = null;
+              Object.keys(r.barcodes).forEach(function(v) {
+                vendorBarcodes[v] = r.barcodes[v].barcode;
+                if (!firstMatchedName) firstMatchedName = r.barcodes[v].name;
+              });
+              applyItemMatch(item, vendorBarcodes, hadNone ? firstMatchedName : null);
+              newlyResolved.push(Object.assign({}, item, { barcodes: Object.assign({}, item.barcodes, vendorBarcodes) }));
+            }
+            if (r.missingVendors && r.missingVendors.length > 0 && r.candidates) {
+              // Store even when the candidate list is empty — that means
+              // "searched, found nothing" (show a manual-search prompt),
+              // distinct from no entry at all, which means "not searched yet".
+              newCandidates[item.name] = { vendors: r.missingVendors, list: r.candidates };
+            } else if (r.missingVendors && r.missingVendors.length === 0) {
+              resolvedNames.push(item.name);
             }
           });
-          if (newBarcodes.length > 0) fetchPrices(newBarcodes);
-          if (Object.keys(newCandidates).length > 0) {
-            setCandidatesByName(function(prev) { return Object.assign({}, prev, newCandidates); });
+          if (newlyResolved.length > 0) fetchPrices(collectBarcodesByVendor(newlyResolved));
+          if (resolvedNames.length > 0 || Object.keys(newCandidates).length > 0) {
+            setCandidatesByName(function(prev) {
+              var next = Object.assign({}, prev, newCandidates);
+              resolvedNames.forEach(function(n) { delete next[n]; });
+              return next;
+            });
           }
         }).catch(function() {});
         // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -2484,7 +2652,7 @@
         db.ref("items/" + listId + "/" + updated.id).update({
           name: updated.name, quantity: updated.quantity !== "" && updated.quantity != null ? Number(updated.quantity) || 1 : null,
           unit: updated.unit, category: updated.category, note: updated.note || "",
-          barcode: updated.barcode || null, originalName: updated.originalName || null
+          barcode: updated.barcode || null, barcodes: updated.barcodes || null, originalName: updated.originalName || null
         }).then(function() { showToast("פריט עודכן"); }, function(err) { showToast("שגיאה: " + (err && err.message || "?")); });
       };
 
@@ -2517,17 +2685,38 @@
       };
 
       const pickPriceCandidate = (item, candidate) => {
+        var entry = candidatesByName[item.name];
+        var searchedVendors = (entry && entry.vendors) || Object.keys(candidate.prices || {});
+        // Only confirm vendors this exact barcode was actually found for —
+        // a butcher-counter item may match in one chain's catalog but not
+        // the other (see [[feedback_buli_pricing_conditional]] context: no
+        // shared GTIN exists for weighed goods), so the rest stay missing
+        // and keep their own "match separately" affordance.
+        var vendorsToConfirm = searchedVendors.filter(function(v) { return candidate.prices && candidate.prices[v] != null; });
+        if (vendorsToConfirm.length === 0) return;
         setResolveBusy(true);
-        fns.httpsCallable("confirmItemBarcode")({ name: item.name, barcode: candidate.barcode, matchedName: candidate.name }).then(function() {
-          applyItemMatch(item, candidate.barcode, candidate.name);
-          // The candidate already carries both vendors' prices (search was
-          // merged by barcode across both catalogs) — no follow-up fetch needed.
+        fns.httpsCallable("confirmItemBarcode")({ name: item.name, barcode: candidate.barcode, matchedName: candidate.name, vendors: vendorsToConfirm }).then(function() {
+          var vendorBarcodes = {};
+          vendorsToConfirm.forEach(function(v) { vendorBarcodes[v] = candidate.barcode; });
+          applyItemMatch(item, vendorBarcodes, candidate.name);
+          // The candidate already carries confirmed vendors' prices from the
+          // merged search — apply directly, no follow-up fetch needed.
           setPriceMap(function(prev) {
             var next = Object.assign({}, prev);
-            next[candidate.barcode] = { ramiLevy: candidate.ramiLevy, osherAd: candidate.osherAd };
+            activeProfiles.forEach(function(p) {
+              if (vendorsToConfirm.indexOf(p.vendor) === -1) return;
+              next[p.id] = Object.assign({}, next[p.id]);
+              next[p.id][candidate.barcode] = candidate.prices[p.vendor];
+            });
             return next;
           });
-          setCandidatesByName(function(prev) { var next = Object.assign({}, prev); delete next[item.name]; return next; });
+          var stillMissing = searchedVendors.filter(function(v) { return vendorsToConfirm.indexOf(v) === -1; });
+          setCandidatesByName(function(prev) {
+            var next = Object.assign({}, prev);
+            if (stillMissing.length > 0) next[item.name] = Object.assign({}, entry, { vendors: stillMissing });
+            else delete next[item.name];
+            return next;
+          });
           setPickerItem(null);
           setResolveBusy(false);
         }, function() { setResolveBusy(false); });
@@ -2535,14 +2724,14 @@
 
       const handleResetMatch = (item) => {
         var revertedName = item.originalName || item.name;
-        var cleared = { barcode: null, originalName: null, name: revertedName };
+        var cleared = { barcodes: null, barcode: null, originalName: null, name: revertedName };
         setItems(function(prev) { return prev.map(function(i) { return i.id === item.id ? Object.assign({}, i, cleared) : i; }); });
         db.ref("items/" + listId + "/" + item.id).update(cleared);
         setEditItem(null);
         fns.httpsCallable("resolveItemBarcodes")({ items: [revertedName], force: true }).then(function(res) {
           var r = (res.data.results || {})[revertedName];
           if (r && r.candidates && r.candidates.length > 0) {
-            setCandidatesByName(function(prev) { var next = Object.assign({}, prev); next[revertedName] = r.candidates; return next; });
+            setCandidatesByName(function(prev) { var next = Object.assign({}, prev); next[revertedName] = { vendors: r.missingVendors, list: r.candidates }; return next; });
             setPickerItem(Object.assign({}, item, cleared));
           } else {
             showToast("לא נמצאו התאמות נוספות");
@@ -2556,7 +2745,11 @@
         setPickerSearching(true);
         fns.httpsCallable("resolveItemBarcodes")({ items: [q], force: true }).then(function(res) {
           var r = (res.data.results || {})[q];
-          setCandidatesByName(function(prev) { var next = Object.assign({}, prev); next[pickerItem.name] = (r && r.candidates) || []; return next; });
+          setCandidatesByName(function(prev) {
+            var next = Object.assign({}, prev);
+            next[pickerItem.name] = { vendors: (r && r.missingVendors) || VENDOR_IDS, list: (r && r.candidates) || [] };
+            return next;
+          });
           setPickerSearching(false);
         }, function() { showToast("שגיאה בחיפוש"); setPickerSearching(false); });
       };
@@ -2639,7 +2832,7 @@
         if (filterPerson === "others" && item.addedBy === user.uid) return false;
         if (filterStatus === "done"    && !item.done) return false;
         if (filterStatus === "pending" &&  item.done) return false;
-        if (filterNoBarcode && item.barcode) return false;
+        if (filterNoBarcode && itemMissingVendors(item).length === 0) return false;
         if (searchQuery.trim()) {
           var q = searchQuery.trim().toLowerCase();
           if ((item.name || "").toLowerCase().indexOf(q) === -1) return false;
@@ -2657,7 +2850,7 @@
             <div className="space-y-2">
               {[...arr].sort((a,b) => (a.name||"").localeCompare(b.name||"","he")).map(item =>
                 <ItemRow key={item.id} item={item} canEdit={canEditItem(item)} onToggle={toggle} onDelete={remove} onEdit={() => editFn(item)} onUpdateNote={updateNote} isTasks={false} currentUserId={user.uid}
-                  priceInfo={priceMap[item.barcode]} priceCandidates={candidatesByName[item.name]} onPickPrice={() => setPickerItem(item)} />
+                  priceMap={priceMap} activeProfiles={activeProfiles} priceCandidates={candidatesByName[item.name]} onPickPrice={() => setPickerItem(item)} />
               )}
             </div>
           );
@@ -2693,7 +2886,7 @@
             </div>
             <div className="space-y-2">
               {group.items.map(item => <ItemRow key={item.id} item={item} canEdit={canEditItem(item)} onToggle={toggle} onDelete={remove} onEdit={() => editFn(item)} onUpdateNote={updateNote} isTasks={false} currentUserId={user.uid}
-                  priceInfo={priceMap[item.barcode]} priceCandidates={candidatesByName[item.name]} onPickPrice={() => setPickerItem(item)} />)}
+                  priceMap={priceMap} activeProfiles={activeProfiles} priceCandidates={candidatesByName[item.name]} onPickPrice={() => setPickerItem(item)} />)}
             </div>
           </div>
         ));
@@ -2703,16 +2896,18 @@
       const isFiltered = filterStatus !== "all" || filterPerson !== "all" || filterNoBarcode || searchQuery.trim().length > 0;
 
       var priceTotals = null;
-      if (pricingEnabled && !isTasks && !isNotes) {
-        var totals = { ramiLevy: 0, osherAd: 0, ramiLevyCount: 0, osherAdCount: 0 };
+      if (pricingEnabled && !isTasks && !isNotes && activeProfiles.length > 0) {
+        var totalsByProfile = {};
         filteredItems.filter(function(i) { return !i.done; }).forEach(function(i) {
-          var p = priceMap[i.barcode];
-          if (!p) return;
           var qty = i.quantity || 1;
-          if (p.ramiLevy != null) { totals.ramiLevy += p.ramiLevy * qty; totals.ramiLevyCount++; }
-          if (p.osherAd != null) { totals.osherAd += p.osherAd * qty; totals.osherAdCount++; }
+          itemProfilePrices(i, activeProfiles, priceMap).forEach(function(e) {
+            if (e.price == null) return;
+            if (!totalsByProfile[e.profile.id]) totalsByProfile[e.profile.id] = { profile: e.profile, total: 0 };
+            totalsByProfile[e.profile.id].total += e.price * qty;
+          });
         });
-        if (totals.ramiLevyCount > 0 || totals.osherAdCount > 0) priceTotals = totals;
+        var totalsList = Object.values(totalsByProfile);
+        if (totalsList.length > 0) priceTotals = totalsList;
       }
 
       return (
@@ -2813,13 +3008,15 @@
           )}
 
           {priceTotals && (
-            <div className="flex items-center justify-around bg-white border-b border-gray-100 px-4 py-2 flex-shrink-0">
-              <div className={"text-sm font-bold " + priceTextClass(priceTotals.ramiLevy, priceTotals.osherAd)}>
-                רמי לוי: ₪{priceTotals.ramiLevy.toFixed(2)}
-              </div>
-              <div className={"text-sm font-bold " + priceTextClass(priceTotals.osherAd, priceTotals.ramiLevy)}>
-                אושר עד: ₪{priceTotals.osherAd.toFixed(2)}
-              </div>
+            <div className="flex items-center justify-around flex-wrap gap-2 bg-white border-b border-gray-100 px-4 py-2 flex-shrink-0">
+              {priceTotals.map(function(t) {
+                var others = priceTotals.filter(function(o) { return o.profile.id !== t.profile.id; }).map(function(o) { return o.total; });
+                return (
+                  <div key={t.profile.id} className={"text-sm font-bold " + cheapestTextClass(t.total, others)}>
+                    {profileLabel(t.profile, activeProfiles)}: ₪{t.total.toFixed(2)}
+                  </div>
+                );
+              })}
             </div>
           )}
 
@@ -2893,27 +3090,41 @@
                 </button>
               </div>
               <div className="space-y-2 max-h-80 overflow-y-auto">
-                {(candidatesByName[pickerItem.name] || []).map(function(c) {
-                  var both = c.ramiLevy != null && c.osherAd != null;
+                {(function() {
+                  var entry = candidatesByName[pickerItem.name];
+                  var searchedVendors = (entry && entry.vendors) || [];
+                  var list = (entry && entry.list) || [];
                   return (
-                    <button key={c.barcode} onClick={() => pickPriceCandidate(pickerItem, c)} disabled={resolveBusy}
-                      className={"w-full text-right rounded-xl px-3 py-2.5 disabled:opacity-50 " + (both ? "bg-green-50 hover:bg-green-100 border border-green-200" : "bg-gray-50 hover:bg-gray-100")}>
-                      <div className="text-sm font-medium text-gray-800">{c.name}</div>
-                      <div className="text-xs text-gray-400 mb-1">{c.unit}</div>
-                      <div className="flex items-center gap-1.5">
-                        <span className={"text-xs font-semibold px-1.5 py-0.5 rounded " + priceBadgeClass(c.ramiLevy, c.osherAd)}>
-                          רמי לוי: {c.ramiLevy != null ? "₪" + Number(c.ramiLevy).toFixed(2) : "לא נמכר כאן"}
-                        </span>
-                        <span className={"text-xs font-semibold px-1.5 py-0.5 rounded " + priceBadgeClass(c.osherAd, c.ramiLevy)}>
-                          אושר עד: {c.osherAd != null ? "₪" + Number(c.osherAd).toFixed(2) : "לא נמכר כאן"}
-                        </span>
-                      </div>
-                    </button>
+                    <React.Fragment>
+                      {list.map(function(c) {
+                        var allFound = searchedVendors.length > 0 && searchedVendors.every(function(v) { return c.prices && c.prices[v] != null; });
+                        return (
+                          <button key={c.barcode} onClick={() => pickPriceCandidate(pickerItem, c)} disabled={resolveBusy}
+                            className={"w-full text-right rounded-xl px-3 py-2.5 disabled:opacity-50 " + (allFound ? "bg-green-50 hover:bg-green-100 border border-green-200" : "bg-gray-50 hover:bg-gray-100")}>
+                            <div className="text-sm font-medium text-gray-800">{c.name}</div>
+                            <div className="text-xs text-gray-400 mb-1">{c.unit}</div>
+                            <div className="flex items-center gap-1.5 flex-wrap">
+                              {searchedVendors.map(function(v) {
+                                var meta = VENDOR_LIST.find(function(x) { return x.id === v; });
+                                var price = c.prices ? c.prices[v] : null;
+                                var others = searchedVendors.filter(function(o) { return o !== v; })
+                                  .map(function(o) { return c.prices ? c.prices[o] : null; }).filter(function(x) { return x != null; });
+                                return (
+                                  <span key={v} className={"text-xs font-semibold px-1.5 py-0.5 rounded " + cheapestBadgeClass(price, others)}>
+                                    {meta ? meta.label : v}: {price != null ? "₪" + Number(price).toFixed(2) : "לא נמכר כאן"}
+                                  </span>
+                                );
+                              })}
+                            </div>
+                          </button>
+                        );
+                      })}
+                      {list.length === 0 && !pickerSearching && (
+                        <p className="text-center text-gray-400 text-sm py-4">לא נמצאו התאמות — נסה חיפוש מדויק יותר</p>
+                      )}
+                    </React.Fragment>
                   );
-                })}
-                {(candidatesByName[pickerItem.name] || []).length === 0 && !pickerSearching && (
-                  <p className="text-center text-gray-400 text-sm py-4">לא נמצאו התאמות — נסה חיפוש מדויק יותר</p>
-                )}
+                })()}
               </div>
             </Modal>
           )}
@@ -3004,7 +3215,7 @@
       try { var p = dateStr.split("-"); return p[2] + "/" + p[1] + "/" + p[0]; } catch(e) { return dateStr; }
     }
 
-    function ItemRow({ item, canEdit, onToggle, onDelete, onEdit, onUpdateNote, isTasks, currentUserId, priceInfo, priceCandidates, onPickPrice }) {
+    function ItemRow({ item, canEdit, onToggle, onDelete, onEdit, onUpdateNote, isTasks, currentUserId, priceMap, activeProfiles, priceCandidates, onPickPrice }) {
       const [editingNote, setEditingNote] = useState(false);
       const [noteVal,     setNoteVal]     = useState(item.note || "");
 
@@ -3014,6 +3225,7 @@
 
       const qty = (!isTasks && (item.quantity > 1 || (item.unit && item.unit !== "יחידות"))) ? item.quantity + " " + (item.unit || "") : "";
       const dateStr = isTasks ? formatDueDate(item.dueDate) : "";
+      const pricedEntries = (!isTasks && activeProfiles) ? itemProfilePrices(item, activeProfiles, priceMap || {}) : [];
 
       return (
         <div className="bg-white rounded-xl border border-gray-100 overflow-hidden">
@@ -3040,23 +3252,25 @@
                   <span>💬</span><span>הוסף הערה</span>
                 </button>
               ) : null}
-              {!isTasks && priceInfo && (
-                <div className="flex items-center gap-1.5 mt-1">
-                  <span className={"text-xs font-semibold px-1.5 py-0.5 rounded " + priceBadgeClass(priceInfo.ramiLevy, priceInfo.osherAd)}>
-                    רמי לוי: {priceInfo.ramiLevy != null ? "₪" + priceInfo.ramiLevy.toFixed(2) : "לא נמכר כאן"}
-                  </span>
-                  <span className={"text-xs font-semibold px-1.5 py-0.5 rounded " + priceBadgeClass(priceInfo.osherAd, priceInfo.ramiLevy)}>
-                    אושר עד: {priceInfo.osherAd != null ? "₪" + priceInfo.osherAd.toFixed(2) : "לא נמכר כאן"}
-                  </span>
+              {!isTasks && pricedEntries.length > 0 && (
+                <div className="flex items-center gap-1.5 flex-wrap mt-1">
+                  {pricedEntries.map(function(e) {
+                    var others = pricedEntries.filter(function(o) { return o.profile.id !== e.profile.id; }).map(function(o) { return o.price; });
+                    return (
+                      <span key={e.profile.id} className={"text-xs font-semibold px-1.5 py-0.5 rounded " + cheapestBadgeClass(e.price, others)}>
+                        {profileLabel(e.profile, activeProfiles)}: {e.price != null ? "₪" + e.price.toFixed(2) : "לא נמכר כאן"}
+                      </span>
+                    );
+                  })}
                 </div>
               )}
-              {!isTasks && !priceInfo && priceCandidates && priceCandidates.length > 0 && (
+              {!isTasks && priceCandidates && priceCandidates.list && priceCandidates.list.length > 0 && (
                 <button onClick={function(e) { e.stopPropagation(); onPickPrice(); }}
                   className="text-xs text-blue-500 border border-blue-200 bg-blue-50 rounded-full px-2 py-0.5 mt-1">
                   💰 התאם פריט
                 </button>
               )}
-              {!isTasks && !priceInfo && priceCandidates && priceCandidates.length === 0 && (
+              {!isTasks && priceCandidates && priceCandidates.list && priceCandidates.list.length === 0 && (
                 <button onClick={function(e) { e.stopPropagation(); onPickPrice(); }}
                   className="text-xs text-orange-600 border border-orange-200 bg-orange-50 rounded-full px-2 py-0.5 mt-1">
                   ⚠ לא נמצא ברקוד — חפש ידנית
@@ -3134,14 +3348,18 @@
               <input value={item.name || ""} onChange={e => onChange({...item, name: e.target.value})}
                 className="w-full border border-gray-200 rounded-xl px-4 py-3 text-right focus:outline-none focus:border-blue-400" />
             </div>
-            {pricingEnabled && (item.barcode || item.originalName) && (
+            {pricingEnabled && (itemHasAnyBarcode(item) || item.originalName) && (
               <div className="bg-blue-50 border border-blue-100 rounded-xl p-3 space-y-1">
                 {item.originalName && (
                   <div className="text-xs text-gray-500">השם שהזנת במקור: <span className="font-medium text-gray-700">{item.originalName}</span></div>
                 )}
-                {item.barcode && (
-                  <div className="text-xs text-gray-500" dir="ltr">ברקוד מזוהה: <span className="font-mono text-gray-700">{item.barcode}</span></div>
-                )}
+                {VENDOR_LIST.map(function(v) {
+                  var bc = itemVendorBarcode(item, v.id);
+                  if (!bc) return null;
+                  return (
+                    <div key={v.id} className="text-xs text-gray-500" dir="ltr">{v.label} — ברקוד: <span className="font-mono text-gray-700">{bc}</span></div>
+                  );
+                })}
                 <button onClick={() => onResetMatch(item)}
                   className="text-xs text-blue-600 font-medium">🔄 חפש התאמת פריט מחדש</button>
               </div>

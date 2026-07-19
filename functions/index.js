@@ -594,15 +594,6 @@ async function ensureFreshCatalog(vendor, branchId, force) {
   return ingestVendorCatalog(vendor, branchId);
 }
 
-async function getUserActiveBranches(uid) {
-  const snap = await db.ref(`users/${uid}/activeBranch`).once('value');
-  const val = snap.val() || {};
-  return {
-    ramiLevy: val.ramiLevy || DEFAULT_BRANCH.ramiLevy,
-    osherAd: val.osherAd || DEFAULT_BRANCH.osherAd,
-  };
-}
-
 // Plain substring/token-overlap matching — no AI. Grocery names are literal
 // enough that this, combined with a human picking from the shortlist, is
 // both sufficient and free.
@@ -612,6 +603,38 @@ async function getUserActiveBranches(uid) {
 // candidate list entirely, even when a perfectly good match exists there too.
 // Scores a normalized catalog name against a normalized query. Returns null
 // when there's no match at all.
+const VENDOR_IDS = Object.keys(VENDORS);
+const DEFAULT_MAX_ACTIVE_VENDORS = 3;
+
+async function getMaxActiveVendors() {
+  const snap = await db.ref('pricingConfig/maxActiveVendors').once('value');
+  const v = snap.val();
+  return (Number.isFinite(v) && v > 0) ? v : DEFAULT_MAX_ACTIVE_VENDORS;
+}
+
+// A "profile" is one vendor chain + one specific branch the user tracks —
+// distinct from a vendor chain itself, since the same chain can appear as
+// two profiles at once (comparing two branches of Rami Levy, say). Only up
+// to the admin-set cap are ever actually queried here, regardless of how
+// many the client has marked active, so the cost/latency ceiling always
+// holds no matter what the client sends.
+async function getUserActiveProfiles(uid) {
+  const [profilesSnap, cap] = await Promise.all([
+    db.ref(`users/${uid}/vendorProfiles`).once('value'),
+    getMaxActiveVendors(),
+  ]);
+  const all = profilesSnap.val() || {};
+  let entries = Object.entries(all)
+    .filter(([, p]) => p && p.active && VENDOR_IDS.includes(p.vendor) && p.branchId);
+  if (entries.length === 0) {
+    // Nobody has picked profiles yet — fall back to the original two
+    // defaults so existing users keep working without a migration step.
+    return VENDOR_IDS.map(v => ({ id: `default-${v}`, vendor: v, branchId: DEFAULT_BRANCH[v] })).slice(0, cap);
+  }
+  entries.sort((a, b) => (a[1].addedAt || 0) - (b[1].addedAt || 0));
+  return entries.slice(0, cap).map(([id, p]) => ({ id, vendor: p.vendor, branchId: String(p.branchId) }));
+}
+
 function scoreCatalogName(name, q, qTokens) {
   const nameTokens = name.split(' ').filter(Boolean);
   const overlap = qTokens.filter(t => nameTokens.includes(t)).length;
@@ -675,9 +698,13 @@ function fuzzyMatchCatalogs(query, catalogsByVendor) {
     }
   }
 
-  // A barcode may have matched via one vendor's name; fill in the other
-  // vendor's price too if that same barcode exists there, even though its
-  // (possibly differently-worded) name isn't what matched the query.
+  // A barcode may have matched via one vendor's name; fill in any other
+  // searched vendor's price too if that same barcode exists there, even
+  // though its (possibly differently-worded) name isn't what matched the
+  // query. A vendor key stays entirely absent (not just null) when this
+  // barcode genuinely doesn't exist in that vendor's catalog — that
+  // distinction lets the caller tell "searched and not sold here" apart
+  // from "vendor wasn't part of this search" (see resolveItemBarcodes).
   for (const entry of Object.values(byBarcode)) {
     for (const vendor of vendorNames) {
       if (entry.prices[vendor] === undefined) {
@@ -691,9 +718,8 @@ function fuzzyMatchCatalogs(query, catalogsByVendor) {
     barcode: entry.barcode,
     name: entry.name,
     unit: entry.unit,
-    score: entry.bestScore + (vendorNames.every(v => entry.prices[v] != null) ? 20 : 0),
-    ramiLevy: entry.prices.ramiLevy ?? null,
-    osherAd: entry.prices.osherAd ?? null,
+    score: entry.bestScore + (vendorNames.length > 1 && vendorNames.every(v => entry.prices[v] != null) ? 20 : 0),
+    prices: entry.prices,
   }));
   list.sort((a, b) => b.score - a.score);
   return list.slice(0, 10);
@@ -714,19 +740,56 @@ exports.getVendorBranches = onCall(
   }
 );
 
+// Returns, per item name: whichever vendors are already resolved (from the
+// global itemBarcodes cache) plus fuzzy-match candidates for whichever
+// vendors are still missing. A "vendor" here is never hardcoded to exactly
+// two — everything iterates VENDOR_IDS, so adding a third chain is just
+// another VENDORS/DEFAULT_BRANCH entry, no logic changes. An optional
+// `vendors` filter scopes the search to specific vendor(s) only — used for
+// the "also match this one separately" follow-up when a shared barcode
+// doesn't exist (e.g. butcher-counter items priced by weight, which each
+// chain codes internally rather than under a real shared GTIN).
+exports.getPricingSettings = onCall(
+  { timeoutSeconds: 30, memory: '128MiB', region: 'europe-west1' },
+  async (request) => {
+    await requireAuthorized(request);
+    return { maxActiveVendors: await getMaxActiveVendors() };
+  }
+);
+
+exports.setMaxActiveVendors = onCall(
+  { timeoutSeconds: 30, memory: '128MiB', region: 'europe-west1' },
+  async (request) => {
+    const role = await requireAuthorized(request);
+    requireAdmin(role);
+    const n = parseInt((request.data || {}).value, 10);
+    if (!Number.isFinite(n) || n < 1 || n > 10) throw new HttpsError('invalid-argument', 'value must be between 1 and 10');
+    await db.ref('pricingConfig/maxActiveVendors').set(n);
+    return { ok: true };
+  }
+);
+
 exports.resolveItemBarcodes = onCall(
   { timeoutSeconds: 300, memory: '1GiB', region: 'europe-west1' },
   async (request) => {
     await requireAuthorized(request);
-    const { items, force } = request.data || {};
+    const { items, force, vendors } = request.data || {};
     if (!Array.isArray(items) || items.length === 0) throw new HttpsError('invalid-argument', 'items array required');
 
-    const activeBranch = await getUserActiveBranches(request.auth.uid);
-    const [ramiLevy, osherAd] = await Promise.all([
-      ensureFreshCatalog('ramiLevy', activeBranch.ramiLevy).catch(() => ({})),
-      ensureFreshCatalog('osherAd', activeBranch.osherAd).catch(() => ({})),
-    ]);
-    const catalogsByVendor = { ramiLevy, osherAd };
+    // Name→barcode matching is chain-wide, not branch-specific (a GTIN
+    // doesn't change by branch) — so when two active profiles share a
+    // chain, one representative branch per chain is enough to search.
+    const activeProfiles = await getUserActiveProfiles(request.auth.uid);
+    const repProfileByVendor = {};
+    activeProfiles.forEach(p => { if (!repProfileByVendor[p.vendor]) repProfileByVendor[p.vendor] = p; });
+    const vendorIds = Object.keys(repProfileByVendor).filter(v => !Array.isArray(vendors) || vendors.includes(v));
+    if (vendorIds.length === 0) throw new HttpsError('invalid-argument', 'no active vendors');
+
+    const catalogsByVendor = {};
+    await Promise.all(vendorIds.map(async (vendor) => {
+      const p = repProfileByVendor[vendor];
+      catalogsByVendor[vendor] = await ensureFreshCatalog(vendor, p.branchId).catch(() => ({}));
+    }));
 
     const results = {};
     for (const rawName of items) {
@@ -734,67 +797,92 @@ exports.resolveItemBarcodes = onCall(
       if (!name) continue;
       // force=true (manual "search again") bypasses the cache read entirely —
       // otherwise a stale/wrong global match would just get re-applied.
-      const cached = force ? null : (await db.ref(`itemBarcodes/${itemNameKey(name)}`).once('value')).val();
-      if (cached) {
-        results[name] = { cached: true, barcode: cached.barcode, matchedName: cached.name };
-      } else {
-        results[name] = { cached: false, candidates: fuzzyMatchCatalogs(name, catalogsByVendor) };
+      const cachedSnap = force ? null : (await db.ref(`itemBarcodes/${itemNameKey(name)}`).once('value')).val();
+      const barcodes = {};
+      if (cachedSnap) vendorIds.forEach(v => { if (cachedSnap[v]) barcodes[v] = cachedSnap[v]; });
+      const missingVendors = vendorIds.filter(v => !barcodes[v]);
+
+      if (missingVendors.length === 0) {
+        results[name] = { barcodes, missingVendors: [] };
+        continue;
       }
+      const missingCatalogs = {};
+      missingVendors.forEach(v => { missingCatalogs[v] = catalogsByVendor[v]; });
+      results[name] = { barcodes, missingVendors, candidates: fuzzyMatchCatalogs(name, missingCatalogs) };
     }
     return { results };
   }
 );
 
+// Writes into the global name→barcode cache for whichever vendors the
+// caller confirmed (defaults to all vendors, for the common case of a
+// shared-barcode candidate picked from a merged search).
 exports.confirmItemBarcode = onCall(
   { timeoutSeconds: 30, memory: '128MiB', region: 'europe-west1' },
   async (request) => {
     await requireAuthorized(request);
-    const { name, barcode, matchedName } = request.data || {};
+    const { name, barcode, matchedName, vendors } = request.data || {};
     if (!name || !barcode) throw new HttpsError('invalid-argument', 'name and barcode required');
-    await db.ref(`itemBarcodes/${itemNameKey(name)}`).set({
-      barcode: String(barcode), name: String(matchedName || name).trim(), matchedAt: Date.now(),
-    });
+    const vendorList = (Array.isArray(vendors) ? vendors : VENDOR_IDS).filter(v => VENDOR_IDS.includes(v));
+    if (vendorList.length === 0) throw new HttpsError('invalid-argument', 'no valid vendors');
+    const entry = { barcode: String(barcode), name: String(matchedName || name).trim(), matchedAt: Date.now() };
+    const updates = {};
+    for (const vendor of vendorList) updates[`itemBarcodes/${itemNameKey(name)}/${vendor}`] = entry;
+    await db.ref().update(updates);
     return { ok: true };
   }
 );
 
+// Input is keyed by vendor CHAIN (barcodes are chain-wide — see item.barcodes
+// on the client). Output is keyed by PROFILE id, since price is specific to
+// one branch — two active profiles on the same chain can have different
+// prices for the same barcode. `profiles` echoes back the server-resolved,
+// cap-enforced active list so the client's rendering always matches exactly
+// what was actually priced, even if the client has more marked active than
+// the current admin cap allows.
 exports.getBasketPrices = onCall(
   { timeoutSeconds: 300, memory: '1GiB', region: 'europe-west1' },
   async (request) => {
     await requireAuthorized(request);
-    const { barcodes, force } = request.data || {};
-    if (!Array.isArray(barcodes) || barcodes.length === 0) throw new HttpsError('invalid-argument', 'barcodes array required');
+    const { barcodesByVendor, force } = request.data || {};
+    if (!barcodesByVendor || typeof barcodesByVendor !== 'object') throw new HttpsError('invalid-argument', 'barcodesByVendor required');
 
-    const activeBranch = await getUserActiveBranches(request.auth.uid);
+    const activeProfiles = await getUserActiveProfiles(request.auth.uid);
+    const relevantProfiles = activeProfiles.filter(p => Array.isArray(barcodesByVendor[p.vendor]) && barcodesByVendor[p.vendor].length > 0);
+    const prices = {};
+    if (relevantProfiles.length === 0) return { prices, profiles: activeProfiles };
 
     if (force) {
       // Explicit "רענן מחירים" action — a real re-fetch from the vendor is
       // exactly what was asked for, so the cost/latency here is expected.
-      const [ramiLevy, osherAd] = await Promise.all([
-        ingestVendorCatalog('ramiLevy', activeBranch.ramiLevy).catch(() => ({})),
-        ingestVendorCatalog('osherAd', activeBranch.osherAd).catch(() => ({})),
-      ]);
-      const prices = {};
-      for (const barcode of barcodes) {
-        prices[barcode] = { ramiLevy: ramiLevy[barcode]?.price ?? null, osherAd: osherAd[barcode]?.price ?? null };
-      }
-      return { prices };
+      // Dedupe by (vendor,branchId) so two profiles sharing one branch
+      // don't trigger the 30-50s re-ingest twice.
+      const catalogByBranch = {};
+      await Promise.all(relevantProfiles.map(async (p) => {
+        const key = `${p.vendor}:${p.branchId}`;
+        if (!catalogByBranch[key]) catalogByBranch[key] = ingestVendorCatalog(p.vendor, p.branchId).catch(() => ({}));
+        const items = await catalogByBranch[key];
+        prices[p.id] = {};
+        barcodesByVendor[p.vendor].forEach(barcode => { prices[p.id][barcode] = items[barcode]?.price ?? null; });
+      }));
+      return { prices, profiles: activeProfiles };
     }
 
     // Default path runs on every list open — must never download a whole
     // catalog (thousands of items, real RTDB bandwidth cost) or trigger a
     // synchronous vendor re-fetch (30-50s) just to read a handful of prices.
     // Point-reads cost the same regardless of how big the catalog is.
-    const prices = {};
-    await Promise.all(barcodes.map(async (barcode) => {
-      const [ramiSnap, osherSnap] = await Promise.all([
-        db.ref(`vendorCatalog/ramiLevy/${activeBranch.ramiLevy}/items/${barcode}/price`).once('value'),
-        db.ref(`vendorCatalog/osherAd/${activeBranch.osherAd}/items/${barcode}/price`).once('value'),
-      ]);
-      prices[barcode] = { ramiLevy: ramiSnap.val() ?? null, osherAd: osherSnap.val() ?? null };
+    let readCount = 0;
+    await Promise.all(relevantProfiles.map(async (p) => {
+      prices[p.id] = {};
+      await Promise.all(barcodesByVendor[p.vendor].map(async (barcode) => {
+        const snap = await db.ref(`vendorCatalog/${p.vendor}/${p.branchId}/items/${barcode}/price`).once('value');
+        prices[p.id][barcode] = snap.val() ?? null;
+        readCount++;
+      }));
     }));
-    await recordPricingUsage({ pointReadCount: barcodes.length * 2 });
-    return { prices };
+    await recordPricingUsage({ pointReadCount: readCount });
+    return { prices, profiles: activeProfiles };
   }
 );
 

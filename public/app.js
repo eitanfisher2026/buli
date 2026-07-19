@@ -1,6 +1,6 @@
     const { useState, useEffect, useRef } = React;
 
-    const VERSION = "v5.37";
+    const VERSION = "v5.38";
 
     // ── CONFIG ────────────────────────────────────────────────────────────────────
     const FIREBASE_CONFIG = {
@@ -2484,9 +2484,10 @@
       const [sharing,          setSharing]          = useState(false);
       const [filterStatus, setFilterStatus] = useState(function() { return localStorage.getItem("buli_filter_status") || "all"; });
       const [filterPerson, setFilterPerson] = useState(function() { return localStorage.getItem("buli_filter_person") || "all"; });
-      const [filterNoBarcode, setFilterNoBarcode] = useState(false);
-      const [showSearch,   setShowSearch]   = useState(false);
-      const [searchQuery,  setSearchQuery]  = useState("");
+      // "all" | "noBarcode" | a profile id — which vendor branch an item must
+      // actually be sold at (or "noBarcode" for still-unmatched items).
+      const [filterVendorProfile, setFilterVendorProfile] = useState("all");
+      const [showFilters, setShowFilters] = useState(false);
       const [pricingEnabled, setPricingEnabled] = useState(false);
       // { [profileId]: { [barcode]: price } } — server-resolved, cap-enforced
       // active vendor+branch profiles (see getBasketPrices' `profiles` field).
@@ -2884,17 +2885,22 @@
 
       const applyStatusFilter = function(v) { setFilterStatus(v); localStorage.setItem("buli_filter_status", v); };
       const applyPersonFilter = function(v) { setFilterPerson(v); localStorage.setItem("buli_filter_person", v); };
-      const clearAllFilters   = function() { applyStatusFilter("all"); applyPersonFilter("all"); setFilterNoBarcode(false); setSearchQuery(""); setShowSearch(false); };
+      const clearAllFilters   = function() { applyStatusFilter("all"); applyPersonFilter("all"); setFilterVendorProfile("all"); };
 
       const filteredItems = items.filter(function(item) {
         if (filterPerson === "mine"   && item.addedBy !== user.uid) return false;
         if (filterPerson === "others" && item.addedBy === user.uid) return false;
         if (filterStatus === "done"    && !item.done) return false;
         if (filterStatus === "pending" &&  item.done) return false;
-        if (filterNoBarcode && itemMissingVendors(item).length === 0) return false;
-        if (searchQuery.trim()) {
-          var q = searchQuery.trim().toLowerCase();
-          if ((item.name || "").toLowerCase().indexOf(q) === -1) return false;
+        if (filterVendorProfile === "noBarcode" && itemMissingVendors(item).length === 0) return false;
+        if (filterVendorProfile !== "all" && filterVendorProfile !== "noBarcode") {
+          var prof = activeProfiles.find(function(p) { return p.id === filterVendorProfile; });
+          if (prof) {
+            var bc = itemVendorBarcode(item, prof.vendor);
+            var vp = priceMap[prof.id];
+            var soldThere = !!(bc && vp && (bc in vp) && vp[bc] != null);
+            if (!soldThere) return false;
+          }
         }
         return true;
       });
@@ -2952,7 +2958,7 @@
       };
 
       const doneCount  = filteredItems.filter(i => i.done).length;
-      const isFiltered = filterStatus !== "all" || filterPerson !== "all" || filterNoBarcode || searchQuery.trim().length > 0;
+      const isFiltered = filterStatus !== "all" || filterPerson !== "all" || filterVendorProfile !== "all";
 
       return (
         <div className="bg-gray-50 flex flex-col" style={{height:"100dvh"}}>
@@ -2992,49 +2998,62 @@
               </span>
             </div>
             {!isNotes && (
-              <div className="flex items-center gap-1.5 mt-2" dir="ltr">
-                <div className="flex bg-white/15 rounded-full p-0.5 gap-0.5">
-                  {[["all","הכל"],["pending","○ פתוח"],["done","✓ " + (isTasks ? "הושלם" : "בסל")]].map(function(entry) {
-                    var v = entry[0], l = entry[1];
-                    return (
-                      <button key={v} onClick={function() { applyStatusFilter(v); }}
-                        className={"text-xs px-2 py-1 rounded-full transition whitespace-nowrap " + (filterStatus===v ? "bg-white text-blue-600 font-semibold" : "text-white/70")}>
-                        {l}
-                      </button>
-                    );
-                  })}
-                </div>
-                <div className="flex bg-white/15 rounded-full p-0.5 gap-0.5">
-                  {[["all","כולם"],["mine","שלי"],["others","אחרים"]].map(function(entry) {
-                    var v = entry[0], l = entry[1];
-                    return (
-                      <button key={v} onClick={function() { applyPersonFilter(v); }}
-                        className={"text-xs px-2 py-1 rounded-full transition " + (filterPerson===v ? "bg-white text-blue-600 font-semibold" : "text-white/70")}>
-                        {l}
-                      </button>
-                    );
-                  })}
-                </div>
-                <button onClick={function() { setShowSearch(function(p) { return !p; }); setSearchQuery(""); }}
-                  className={"w-7 h-7 flex-shrink-0 flex items-center justify-center rounded-full text-sm transition " + (showSearch ? "bg-white text-blue-600" : "bg-white/15 text-white/80")}>
-                  🔍
-                </button>
-                {pricingEnabled && !isTasks && (
-                  <button onClick={function() { setFilterNoBarcode(function(p) { return !p; }); }}
-                    className={"text-xs px-2 py-1 rounded-full transition whitespace-nowrap flex-shrink-0 " + (filterNoBarcode ? "bg-white text-orange-600 font-semibold" : "bg-white/15 text-white/70")}>
-                    ⚠ ללא ברקוד
+              <div className="mt-2" dir="ltr">
+                <div className="flex items-center gap-1.5">
+                  <div className="flex bg-white/15 rounded-full p-0.5 gap-0.5">
+                    {[["all","הכל"],["pending","○ פתוח"],["done","✓ " + (isTasks ? "הושלם" : "בסל")]].map(function(entry) {
+                      var v = entry[0], l = entry[1];
+                      return (
+                        <button key={v} onClick={function() { applyStatusFilter(v); }}
+                          className={"text-xs px-2 py-1 rounded-full transition whitespace-nowrap " + (filterStatus===v ? "bg-white text-blue-600 font-semibold" : "text-white/70")}>
+                          {l}
+                        </button>
+                      );
+                    })}
+                  </div>
+                  <button onClick={function() { setShowFilters(function(p) { return !p; }); }}
+                    className={"text-xs px-2.5 py-1 rounded-full transition whitespace-nowrap flex-shrink-0 flex items-center gap-1 " + (showFilters ? "bg-white text-blue-600 font-semibold" : "bg-white/15 text-white/70")}>
+                    מסננים {(filterPerson !== "all" || filterVendorProfile !== "all") && <span className="text-orange-300">●</span>}
                   </button>
+                  {isFiltered && (
+                    <button onClick={clearAllFilters} className="text-white/60 hover:text-white text-xs flex-shrink-0" title="נקה פילטרים">✕</button>
+                  )}
+                </div>
+                {showFilters && (
+                  <div className="mt-2 bg-white/10 rounded-2xl p-2.5 space-y-2.5">
+                    <div>
+                      <div className="text-white/50 text-xs mb-1">מי הוסיף</div>
+                      <div className="flex bg-white/15 rounded-full p-0.5 gap-0.5 w-fit">
+                        {[["all","כולם"],["mine","שלי"],["others","אחרים"]].map(function(entry) {
+                          var v = entry[0], l = entry[1];
+                          return (
+                            <button key={v} onClick={function() { applyPersonFilter(v); }}
+                              className={"text-xs px-2.5 py-1 rounded-full transition " + (filterPerson===v ? "bg-white text-blue-600 font-semibold" : "text-white/70")}>
+                              {l}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+                    {pricingEnabled && !isTasks && (
+                      <div>
+                        <div className="text-white/50 text-xs mb-1">זמינות לפי סניף</div>
+                        <div className="flex flex-wrap gap-1">
+                          {[{ id: "all", label: "הכל" }, { id: "noBarcode", label: "⚠ ללא ברקוד" }]
+                            .concat(activeProfiles.map(function(p) { return { id: p.id, label: profileLabel(p, activeProfiles) }; }))
+                            .map(function(opt) {
+                              return (
+                                <button key={opt.id} onClick={function() { setFilterVendorProfile(opt.id); }}
+                                  className={"text-xs px-2.5 py-1 rounded-full transition whitespace-nowrap " + (filterVendorProfile===opt.id ? "bg-white text-blue-600 font-semibold" : "bg-white/15 text-white/70")}>
+                                  {opt.label}
+                                </button>
+                              );
+                            })}
+                        </div>
+                      </div>
+                    )}
+                  </div>
                 )}
-                {isFiltered && (
-                  <button onClick={clearAllFilters} className="text-white/60 hover:text-white text-xs flex-shrink-0" title="נקה פילטרים">✕</button>
-                )}
-              </div>
-            )}
-            {!isNotes && showSearch && (
-              <div className="mt-2">
-                <input value={searchQuery} onChange={function(e) { setSearchQuery(e.target.value); }}
-                  autoFocus placeholder="חפש פריט..." dir="rtl"
-                  className="w-full bg-white/20 text-white placeholder-white/40 rounded-full px-4 py-1.5 text-sm focus:outline-none border border-white/20" />
               </div>
             )}
           </div>

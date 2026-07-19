@@ -1,6 +1,6 @@
     const { useState, useEffect, useRef } = React;
 
-    const VERSION = "v5.44";
+    const VERSION = "v5.45";
 
     // ── CONFIG ────────────────────────────────────────────────────────────────────
     const FIREBASE_CONFIG = {
@@ -2722,6 +2722,7 @@
       };
 
       const [pricesRefreshing, setPricesRefreshing] = useState(false);
+      const [pricesLoading, setPricesLoading] = useState(false);
       const [viewMode, setViewMode] = useState(function() { return localStorage.getItem("buli_view_mode") || "list"; }); // "list" | "table" — table is pricing-only
       useEffect(function() { localStorage.setItem("buli_view_mode", viewMode); }, [viewMode]);
       const refreshAllPrices = () => {
@@ -2742,7 +2743,11 @@
 
       useEffect(function() {
         if (!pricingEnabled || items.length === 0) return;
-        fetchPrices(collectBarcodesByVendor(items.filter(itemHasAnyBarcode)));
+        var barcoded = items.filter(itemHasAnyBarcode);
+        if (barcoded.length > 0) {
+          setPricesLoading(true);
+          fetchPrices(collectBarcodesByVendor(barcoded)).then(function() { setPricesLoading(false); });
+        }
 
         var unresolved = items.filter(function(i) { return itemMissingVendors(i).length > 0 && i.name && i.name.trim(); });
         if (unresolved.length === 0) return;
@@ -3227,7 +3232,12 @@
                 {pricesRefreshing ? <Spinner /> : "🔄"} רענן מחירים
               </button>
               <div className="flex items-center gap-2">
-                {list.pricesRefreshedAt && (
+                {pricesLoading ? (
+                  <span className="text-xs text-blue-500 flex items-center gap-1">
+                    <span className="spinner w-3 h-3 border-2 border-blue-500 border-t-transparent rounded-full inline-block" />
+                    טוען מחירים...
+                  </span>
+                ) : list.pricesRefreshedAt && (
                   <span className="text-xs text-gray-400">עודכן: {formatRefreshTime(list.pricesRefreshedAt)}</span>
                 )}
                 <button onClick={function() { setViewMode(viewMode === "table" ? "list" : "table"); }}

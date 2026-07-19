@@ -1,6 +1,6 @@
     const { useState, useEffect, useRef } = React;
 
-    const VERSION = "v5.34";
+    const VERSION = "v5.35";
 
     // ── CONFIG ────────────────────────────────────────────────────────────────────
     const FIREBASE_CONFIG = {
@@ -152,6 +152,7 @@
       { id: "ramiLevy", label: "רמי לוי" },
       { id: "osherAd", label: "אושר עד" },
       { id: "keshet", label: "קשת טעמים" },
+      { id: "yohananof", label: "יוחננוף" },
     ];
     const VENDOR_IDS = VENDOR_LIST.map(function(v) { return v.id; });
     // Autocomplete suggestions only — real, common Israeli chains, most of
@@ -159,7 +160,7 @@
     // isn't in VENDOR_LIST above just surfaces the "ask the admin" request
     // flow; it's never a claim that the chain works.
     const VENDOR_NAME_SUGGESTIONS = VENDOR_LIST.map(function(v) { return v.label; }).concat([
-      "שופרסל", "יינות ביתן", "ויקטורי", "טיב טעם", "מגה", "יוחננוף",
+      "שופרסל", "יינות ביתן", "ויקטורי", "טיב טעם", "מגה",
       "סופר פארם", "גוד פארם", "חצי חינם", "זול ובגדול", "מחסני השוק", "סופר יודה",
     ]);
 
@@ -2634,6 +2635,7 @@
       };
 
       const [pricesRefreshing, setPricesRefreshing] = useState(false);
+      const [viewMode, setViewMode] = useState("list"); // "list" | "table" — table is pricing-only
       const refreshAllPrices = () => {
         var barcodesByVendor = collectBarcodesByVendor(items.filter(itemHasAnyBarcode));
         if (Object.keys(barcodesByVendor).length === 0) { showToast("אין פריטים עם ברקוד לרענון"); return; }
@@ -3102,9 +3104,15 @@
                 className="text-xs text-blue-600 font-medium flex items-center gap-1 disabled:opacity-50">
                 {pricesRefreshing ? <Spinner /> : "🔄"} רענן מחירים
               </button>
-              {list.pricesRefreshedAt && (
-                <span className="text-xs text-gray-400">עודכן: {formatRefreshTime(list.pricesRefreshedAt)}</span>
-              )}
+              <div className="flex items-center gap-2">
+                {list.pricesRefreshedAt && (
+                  <span className="text-xs text-gray-400">עודכן: {formatRefreshTime(list.pricesRefreshedAt)}</span>
+                )}
+                <button onClick={function() { setViewMode(viewMode === "table" ? "list" : "table"); }}
+                  className="text-xs text-gray-500 font-medium border border-gray-200 rounded-full px-2 py-0.5">
+                  {viewMode === "table" ? "📋 רשימה" : "🔢 טבלה"}
+                </button>
+              </div>
             </div>
           )}
 
@@ -3148,6 +3156,8 @@
                 <p className="font-medium">אין פריטים תואמים</p>
                 <button onClick={clearAllFilters} className="mt-4 text-sm text-blue-500 bg-blue-50 px-5 py-2 rounded-full">נקה פילטרים</button>
               </div>
+            ) : viewMode === "table" && pricingEnabled && !isTasks && !isNotes ? (
+              <PriceComparisonTable items={filteredItems} activeProfiles={activeProfiles} priceMap={priceMap} />
             ) : (
               <>
                 {renderGroup(notDone)}
@@ -3314,6 +3324,88 @@
     function formatDueDate(dateStr) {
       if (!dateStr) return "";
       try { var p = dateStr.split("-"); return p[2] + "/" + p[1] + "/" + p[0]; } catch(e) { return dateStr; }
+    }
+
+    // Spreadsheet-style comparison: one row per item, one column per active
+    // vendor+branch profile, so it's easy to see which basket is actually
+    // cheaper overall and by how many items — the badge-per-row list view
+    // shows a price, but not "how many of my items are even in this basket."
+    // Sticky first column + horizontal scroll so it still works on mobile
+    // with several columns.
+    function PriceComparisonTable({ items, activeProfiles, priceMap }) {
+      var notDoneItems = items.filter(function(i) { return !i.done; });
+      var doneItems = items.filter(function(i) { return i.done; });
+      var ordered = notDoneItems.concat(doneItems);
+
+      var totals = {};
+      activeProfiles.forEach(function(p) { totals[p.id] = { sum: 0, count: 0 }; });
+      notDoneItems.forEach(function(item) {
+        var qty = item.quantity || 1;
+        itemProfilePrices(item, activeProfiles, priceMap).forEach(function(e) {
+          if (e.price == null) return;
+          totals[e.profile.id].sum += e.price * qty;
+          totals[e.profile.id].count++;
+        });
+      });
+
+      if (activeProfiles.length === 0) {
+        return <p className="text-center text-gray-400 text-sm py-10">אין סניפים פעילים להשוואה</p>;
+      }
+
+      return (
+        <div className="overflow-x-auto -mx-4 border border-gray-100 rounded-xl">
+          <table className="min-w-full text-xs" style={{ borderCollapse: "separate", borderSpacing: 0 }}>
+            <thead>
+              <tr>
+                <th className="sticky right-0 bg-gray-50 z-10 font-semibold text-gray-500 text-right px-3 py-2 border-b border-gray-200" style={{minWidth: 140}}>פריט</th>
+                {activeProfiles.map(function(p) {
+                  return <th key={p.id} className="font-semibold text-gray-500 text-center px-3 py-2 border-b border-gray-200 whitespace-nowrap">{profileLabel(p, activeProfiles)}</th>;
+                })}
+              </tr>
+            </thead>
+            <tbody>
+              {ordered.map(function(item) {
+                var priced = itemProfilePrices(item, activeProfiles, priceMap);
+                var byId = {};
+                priced.forEach(function(e) { byId[e.profile.id] = e.price; });
+                return (
+                  <tr key={item.id}>
+                    <td className={"sticky right-0 bg-white z-10 px-3 py-2 border-b border-gray-100 text-right " + (item.done ? "line-through text-gray-400" : "text-gray-800")}>{item.name}</td>
+                    {activeProfiles.map(function(p) {
+                      var bc = itemVendorBarcode(item, p.vendor);
+                      var vendorPrices = priceMap[p.id];
+                      var fetched = !!(bc && vendorPrices && (bc in vendorPrices));
+                      var price = fetched ? vendorPrices[bc] : null;
+                      var others = priced.filter(function(e) { return e.profile.id !== p.id; }).map(function(e) { return e.price; });
+                      var cellClass = !bc ? "text-gray-300" : !fetched ? "text-gray-300" : cheapestTextClass(price, others);
+                      return (
+                        <td key={p.id} className={"text-center px-3 py-2 border-b border-gray-100 " + cellClass}>
+                          {!bc ? "—" : !fetched ? "…" : price != null ? "₪" + price.toFixed(2) : "אין"}
+                        </td>
+                      );
+                    })}
+                  </tr>
+                );
+              })}
+            </tbody>
+            <tfoot>
+              <tr>
+                <td className="sticky right-0 bg-gray-50 z-10 font-bold px-3 py-2 border-t-2 border-gray-300 text-right">סה"כ</td>
+                {activeProfiles.map(function(p) {
+                  var others = activeProfiles.filter(function(o) { return o.id !== p.id; }).map(function(o) { return totals[o.id].sum; });
+                  return <td key={p.id} className={"font-bold text-center px-3 py-2 border-t-2 border-gray-300 " + cheapestTextClass(totals[p.id].sum, others)}>₪{totals[p.id].sum.toFixed(2)}</td>;
+                })}
+              </tr>
+              <tr>
+                <td className="sticky right-0 bg-gray-50 z-10 text-gray-500 px-3 py-2">פריטים בסל</td>
+                {activeProfiles.map(function(p) {
+                  return <td key={p.id} className="text-gray-500 text-center px-3 py-2">{totals[p.id].count}</td>;
+                })}
+              </tr>
+            </tfoot>
+          </table>
+        </div>
+      );
     }
 
     function ItemRow({ item, canEdit, onToggle, onDelete, onEdit, onUpdateNote, isTasks, currentUserId, priceMap, activeProfiles, priceCandidates, onPickPrice }) {

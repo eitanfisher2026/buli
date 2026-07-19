@@ -462,6 +462,7 @@ const VENDORS = {
   ramiLevy: { ftpUser: 'RamiLevi' },
   osherAd: { ftpUser: 'osherad' },
   keshet: { ftpUser: 'Keshet' }, // קשת טעמים — same Cerberus platform, verified 2026-07-19
+  yohananof: { ftpUser: 'yohananof' }, // יוחננוף — same Cerberus platform, verified 2026-07-19
 };
 const FTP_HOST = 'url.retail.publishedprices.co.il';
 // Only vendors a brand-new user should start with pre-seeded (matches the

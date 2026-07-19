@@ -48,7 +48,11 @@
     "users": {
       "$uid": {
         ".read": "auth != null && auth.uid === $uid",
-        ".write": "auth != null && auth.uid === $uid"
+        "pricingEnabled": { ".write": false },
+        "nickname": { ".write": false },
+        "$other": {
+          ".write": "auth != null && auth.uid === $uid"
+        }
       }
     },
 

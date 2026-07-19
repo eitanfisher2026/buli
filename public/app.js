@@ -1,6 +1,6 @@
     const { useState, useEffect, useRef } = React;
 
-    const VERSION = "v5.43";
+    const VERSION = "v5.44";
 
     // ── CONFIG ────────────────────────────────────────────────────────────────────
     const FIREBASE_CONFIG = {
@@ -61,7 +61,7 @@
     // ── AI PARSING ────────────────────────────────────────────────────────────────
     // AI keys never touch the client's network requests — parseItems (Cloud Function)
     // does the actual provider call server-side, using the caller's own stored key.
-    var DEFAULT_AI_PROMPT = 'אתה מסייע לסיווג פריטי קנייה בעברית לקטגוריות.\n\nקטגוריות זמינות — חייב להשתמש באחד השמות המדויקים האלו:\n{categories}\n\nכללים:\n1. זהה כל פריט נפרד בטקסט (גם אם כתובים ברשימה, גם אם בטקסט חופשי)\n2. לכל פריט, בחר את הקטגוריה המתאימה ביותר מהרשימה\n3. שם הקטגוריה חייב להיות זהה לחלוטין לאחד השמות ברשימה — אל תשנה, אל תקצר, אל תתרגם\n4. "שונות" — רק אם אין שום קטגוריה מתאימה אחרת\n5. אם לא צוינה כמות — הכנס 1. אם לא צוינה יחידה — הכנס "יחידות"\n6. הערה (note) — רק אם קיימת בטקסט, אחרת ""\n\nיחידות אפשריות: יחידות / ק"ג / גרם / ליטר / מ"ל / קופסה / חבילה / צרור\n\nפרמט JSON נדרש:\n[{"name":"שם הפריט","quantity":1,"unit":"יחידות","category":"שם קטגוריה מדויק","note":""}]\n\nטקסט: {text}\n\nהחזר מערך JSON בלבד, ללא הסברים:';
+    var DEFAULT_AI_PROMPT = 'אתה מסייע לסיווג פריטי קנייה בעברית לקטגוריות.\n\nקטגוריות זמינות — חייב להשתמש באחד השמות המדויקים האלו:\n{categories}\n\nכללים:\n1. זהה כל פריט נפרד בטקסט (גם אם כתובים ברשימה, גם אם בטקסט חופשי)\n2. לכל פריט, בחר את הקטגוריה המתאימה ביותר מהרשימה\n3. שם הקטגוריה חייב להיות זהה לחלוטין לאחד השמות ברשימה — אל תשנה, אל תקצר, אל תתרגם\n4. "שונות" — רק אם אין שום קטגוריה מתאימה אחרת\n5. אם לא צוינה כמות — הכנס 1. אם לא צוינה יחידה — הכנס "יחידות"\n6. הערה (note) — רק אם קיימת בטקסט, אחרת ""\n7. שם הפריט (name) — העתק בדיוק כפי שהמשתמש כתב או אמר, באותה שפה. אסור בתכלית האיסור לתרגם לאנגלית או לכל שפה אחרת, גם אם שם המוצר או המותג מקורו לועזי — שמור על הכתיב (בעברית/אנגלית/אחר) כפי שהופיע בטקסט המקורי\n\nיחידות אפשריות: יחידות / ק"ג / גרם / ליטר / מ"ל / קופסה / חבילה / צרור\n\nפרמט JSON נדרש:\n[{"name":"שם הפריט","quantity":1,"unit":"יחידות","category":"שם קטגוריה מדויק","note":""}]\n\nטקסט: {text}\n\nהחזר מערך JSON בלבד, ללא הסברים:';
 
     function parseWithAI(text, categories, aiSettings) {
       var cats = categories.length > 0 ? categories : DEFAULT_CATEGORIES;
@@ -238,8 +238,10 @@
         </div>
       );
     }
-    function Spinner() {
-      return <div className="spinner w-5 h-5 border-2 border-white border-t-transparent rounded-full inline-block" />;
+    function Spinner({ large }) {
+      return large
+        ? <div className="spinner w-8 h-8 border-2 border-blue-600 border-t-transparent rounded-full" />
+        : <div className="spinner w-5 h-5 border-2 border-white border-t-transparent rounded-full inline-block" />;
     }
     function Modal({ onClose, children }) {
       const [dragY, setDragY] = React.useState(0);
@@ -833,12 +835,46 @@
       };
 
       useEffect(function() {
-        db.ref("lists").once("value").then(function(snap) {
-          var arr = [];
-          snap.forEach(function(c) {
-            var l = Object.assign({ id: c.key }, c.val());
-            if ((l.ownerId === user.uid || (l.sharedWith && l.sharedWith[user.uid])) && l.type !== "tasks") arr.push(l);
+        // listsByUser/{uid} is a point-read index kept up to date by every
+        // create/share/delete path below — avoids scanning the app-wide
+        // `lists` table (every user's every list) just to filter to "mine"
+        // client-side. Existing users haven't had that index backfilled yet,
+        // so each user does exactly one full scan (same cost as before this
+        // change, no visibility regression) the first time, backfills their
+        // own index, and marks themselves migrated so every load after that
+        // uses the cheap indexed path instead.
+        function loadMyLists() {
+          return db.ref("listsMigrated/" + user.uid).once("value").then(function(migSnap) {
+            if (migSnap.val()) {
+              return db.ref("listsByUser/" + user.uid).once("value").then(function(idxSnap) {
+                var ids = Object.keys(idxSnap.val() || {});
+                if (ids.length === 0) return [];
+                return Promise.all(ids.map(function(id) { return db.ref("lists/" + id).once("value"); })).then(function(snaps) {
+                  var arr = [];
+                  snaps.forEach(function(s, i) {
+                    if (!s.exists()) return;
+                    var l = Object.assign({ id: ids[i] }, s.val());
+                    if (l.type !== "tasks") arr.push(l);
+                  });
+                  return arr;
+                });
+              });
+            }
+            return db.ref("lists").once("value").then(function(snap) {
+              var arr = []; var backfill = {};
+              snap.forEach(function(c) {
+                var l = Object.assign({ id: c.key }, c.val());
+                var mine = l.ownerId === user.uid || (l.sharedWith && l.sharedWith[user.uid]);
+                if (mine) backfill["listsByUser/" + user.uid + "/" + c.key] = true;
+                if (mine && l.type !== "tasks") arr.push(l);
+              });
+              backfill["listsMigrated/" + user.uid] = true;
+              db.ref().update(backfill).catch(function() {});
+              return arr;
+            });
           });
+        }
+        loadMyLists().then(function(arr) {
           arr.sort(function(a, b) { return b.createdAt - a.createdAt; });
           setLists(arr);
           // Auto-set major if there's only one active shopping list and none is set
@@ -875,9 +911,10 @@
         var autoName = prefix + (maxNum + 1);
         var now = Date.now();
         var newList = { name: autoName, type: "shopping", isPrivate: false, done: false, ownerId: user.uid, ownerName: user.displayName, sharedWith: {}, createdAt: now };
-        db.ref("lists").push(newList).then(function(ref) {
-          setLists(function(prev) { return [Object.assign({ id: ref.key }, newList)].concat(prev || []); });
-          onCreateShoppingList(ref.key, autoName);
+        var newListId = db.ref("lists").push().key;
+        db.ref().update({ ["lists/" + newListId]: newList, ["listsByUser/" + user.uid + "/" + newListId]: true }).then(function() {
+          setLists(function(prev) { return [Object.assign({ id: newListId }, newList)].concat(prev || []); });
+          onCreateShoppingList(newListId, autoName);
         }, function() { showToast("שגיאה ביצירת הרשימה"); });
       };
 
@@ -894,9 +931,10 @@
         var now = Date.now();
         var lastDiners = parseInt(localStorage.getItem("buli_last_diners_count"), 10) || 12;
         var newList = { name: autoName, type: "notes", isPrivate: true, done: false, ownerId: user.uid, ownerName: user.displayName, sharedWith: {}, createdAt: now, dinnerDate: nextFriday(now), dinersCount: lastDiners };
-        db.ref("lists").push(newList).then(function(ref) {
-          setLists(function(prev) { return [Object.assign({ id: ref.key }, newList)].concat(prev || []); });
-          onCreateNotesList(ref.key, autoName);
+        var newListId = db.ref("lists").push().key;
+        db.ref().update({ ["lists/" + newListId]: newList, ["listsByUser/" + user.uid + "/" + newListId]: true }).then(function() {
+          setLists(function(prev) { return [Object.assign({ id: newListId }, newList)].concat(prev || []); });
+          onCreateNotesList(newListId, autoName);
         }, function() { showToast("שגיאה ביצירת התפריט"); });
       };
 
@@ -939,6 +977,7 @@
 
       const deleteList = (id) => {
         setMenuId(null);
+        var listObj = (lists || []).find(function(l) { return l.id === id; });
         setConfirmDialog({
           message: "למחוק את הרשימה וכל הפריטים שלה?",
           onConfirm: function() {
@@ -949,6 +988,10 @@
             var updates = {};
             updates["lists/" + id] = null;
             updates["items/" + id] = null;
+            updates["listsByUser/" + user.uid + "/" + id] = null;
+            if (listObj && listObj.sharedWith) {
+              Object.keys(listObj.sharedWith).forEach(function(uid) { updates["listsByUser/" + uid + "/" + id] = null; });
+            }
             db.ref().update(updates);
           }
         });
@@ -978,7 +1021,9 @@
           db.ref("shareDefaults").once("value").then(function(snap) {
             var val = snap.val() || {};
             Object.keys(val).forEach(function(uid) {
-              if (val[uid] && uid !== user.uid) db.ref("lists/" + id + "/sharedWith/" + uid).set("edit");
+              if (val[uid] && uid !== user.uid) {
+                db.ref().update({ ["lists/" + id + "/sharedWith/" + uid]: "edit", ["listsByUser/" + uid + "/" + id]: true });
+              }
             });
           });
         }
@@ -1020,7 +1065,7 @@
             <p className="text-white/60 text-sm mt-2 text-right">שלום, {user.displayName.split(" ")[0]}</p>
           </div>
           <div className="flex-1 flex items-center justify-center">
-            <div className="spinner w-8 h-8 border-2 border-blue-600 border-t-transparent rounded-full" />
+            <Spinner large />
           </div>
         </div>
       );
@@ -2183,7 +2228,7 @@
 
           <div className="flex-1 overflow-y-auto p-4">
             {members === null ? (
-              <div className="flex justify-center py-20"><div className="spinner w-8 h-8 border-2 border-blue-600 border-t-transparent rounded-full" /></div>
+              <div className="flex justify-center py-20"><Spinner large /></div>
             ) : members.length === 0 ? (
               <div className="text-center py-20 text-gray-400">
                 <div className="text-5xl mb-3">👥</div>
@@ -2251,8 +2296,9 @@
       return "📦";
     }
 
-    // No-AI fallback: match an item name to one of the family's actual categories via the
-    // same keyword→emoji map used for category suggestions, instead of calling parseItems.
+    // Fills in a store profile's saved category order with any categories it
+    // doesn't mention yet (new categories added after the profile was made),
+    // appended in the app's default order.
     function resolveProfileOrder(categoryOrder, allCategories) {
       var labels = allCategories.map(function(c) { return c.label; });
       var order = (categoryOrder || []).filter(function(l) { return labels.indexOf(l) !== -1; });
@@ -2396,7 +2442,7 @@
         <div className="bg-gray-50 flex flex-col" style={{height:"100dvh"}}>
           <Header onBack={onBack} title="הגדרות" />
           <div className="flex-1 flex items-center justify-center">
-            <div className="spinner w-8 h-8 border-2 border-blue-600 border-t-transparent rounded-full" />
+            <Spinner large />
           </div>
         </div>
       );
@@ -2688,6 +2734,12 @@
         });
       };
 
+      // Renaming an item (e.g. via EditItemModal) doesn't change items.length,
+      // so it wouldn't otherwise re-trigger a re-resolve for a still-unmatched
+      // item — this signature changes whenever any unresolved item's name does.
+      var unresolvedSignature = items.filter(function(i) { return itemMissingVendors(i).length > 0; })
+        .map(function(i) { return i.id + ":" + (i.name || ""); }).join("|");
+
       useEffect(function() {
         if (!pricingEnabled || items.length === 0) return;
         fetchPrices(collectBarcodesByVendor(items.filter(itemHasAnyBarcode)));
@@ -2732,7 +2784,7 @@
           }
         }).catch(function() {});
         // eslint-disable-next-line react-hooks/exhaustive-deps
-      }, [pricingEnabled, items.length]);
+      }, [pricingEnabled, items.length, unresolvedSignature]);
 
       useEffect(function() {
         if (pickerItem) setPickerQuery(pickerItem.name);
@@ -2740,7 +2792,7 @@
 
       if (loading || !list) return (
         <div className="bg-gray-50 flex flex-col items-center justify-center" style={{height:"100dvh"}}>
-          <div className="spinner w-8 h-8 border-2 border-blue-600 border-t-transparent rounded-full" />
+          <Spinner large />
         </div>
       );
 
@@ -2899,18 +2951,6 @@
         }, function() { showToast("שגיאה בחיפוש"); setPickerSearching(false); });
       };
 
-      const shareList = () => {
-        if (!shareEmail.trim()) return;
-        setSharing(true);
-        db.ref("usersByEmail/" + encodeEmail(shareEmail.trim().toLowerCase())).once("value")
-          .then(function(snap) {
-            if (!snap.exists()) { showToast("המשתמש לא נמצא"); setSharing(false); return; }
-            db.ref("lists/" + listId + "/sharedWith/" + snap.val()).set(shareRole)
-              .then(function() { setShareEmail(""); showToast("שותף!"); setSharing(false); },
-                    function() { showToast("שגיאה בשיתוף"); setSharing(false); });
-          }, function() { showToast("שגיאה בשיתוף"); setSharing(false); });
-      };
-
       const shareWithContacts = () => {
         if (!selectedContacts.length && !shareEmail.trim()) return;
         setSharing(true);
@@ -2928,12 +2968,13 @@
         }
         selectedContacts.forEach(function(uid) {
           // contacts[].id is already the target's uid (from listTeamMembers) — no lookup needed
-          db.ref("lists/" + listId + "/sharedWith/" + uid).set(shareRole).then(done, done);
+          db.ref().update({ ["lists/" + listId + "/sharedWith/" + uid]: shareRole, ["listsByUser/" + uid + "/" + listId]: true }).then(done, done);
         });
         if (shareEmail.trim()) {
           db.ref("usersByEmail/" + encodeEmail(shareEmail.trim().toLowerCase())).once("value").then(function(snap) {
             if (!snap.exists()) { showToast("אימייל לא נמצא"); done(); return; }
-            db.ref("lists/" + listId + "/sharedWith/" + snap.val()).set(shareRole).then(done, done);
+            var uid = snap.val();
+            db.ref().update({ ["lists/" + listId + "/sharedWith/" + uid]: shareRole, ["listsByUser/" + uid + "/" + listId]: true }).then(done, done);
           }, done);
         }
       };
@@ -3407,12 +3448,10 @@
       var ordered = notDoneItems.concat(doneItems);
 
       var totals = {};
-      activeProfiles.forEach(function(p) { totals[p.id] = { sum: 0, count: 0 }; });
+      activeProfiles.forEach(function(p) { totals[p.id] = { count: 0 }; });
       notDoneItems.forEach(function(item) {
-        var qty = item.quantity || 1;
         itemProfilePrices(item, activeProfiles, priceMap).forEach(function(e) {
           if (e.price == null) return;
-          totals[e.profile.id].sum += e.price * qty;
           totals[e.profile.id].count++;
         });
       });
@@ -3782,7 +3821,6 @@
         var catEmojis = {};
         var validCats = new Set();
         var activeCats = (cats && cats.length > 0) ? cats : categoriesRef.current;
-        console.log("[buli] saveItems — validCats:", activeCats.map(function(c){return c.label;}));
         activeCats.forEach(function(c) { catEmojis[c.label] = c.emoji; validCats.add(c.label); });
         var now = Date.now();
         var pos = 0;

@@ -14,6 +14,15 @@ function sanitizeEmailKey(email) {
   return email.trim().toLowerCase().replace(/\./g, ',');
 }
 
+// Looks up a user's uid from their email via the usersByEmail index — null
+// if they've never signed in. Always normalizes (trim+lowercase) so this
+// can't drift from sanitizeEmailKey's normalization the way separate
+// hand-rolled copies of this lookup previously could.
+async function resolveUidByEmail(email) {
+  const snap = await db.ref(`usersByEmail/${sanitizeEmailKey(String(email || ''))}`).once('value');
+  return snap.val() || null;
+}
+
 async function getRole(email) {
   if (!email) return null;
   const normalized = email.trim().toLowerCase();
@@ -359,9 +368,7 @@ exports.listAuthorizedUsers = onCall(
     const snap = await db.ref('authorizedUsers').once('value');
     const val = snap.val() || {};
     const resolveExtra = async (email) => {
-      const emailKey = (email || '').replace(/\./g, ',');
-      const uidSnap = await db.ref(`usersByEmail/${emailKey}`).once('value');
-      const uid = uidSnap.val();
+      const uid = await resolveUidByEmail(email);
       let nickname = null, pricingEnabled = false;
       if (uid) {
         const [nickSnap, pricingSnap] = await Promise.all([
@@ -392,9 +399,7 @@ exports.setUserNickname = onCall(
     requireAdmin(role);
     const { email: rawEmail, nickname: rawNickname } = request.data || {};
     if (!rawEmail || typeof rawEmail !== 'string') throw new HttpsError('invalid-argument', 'email required');
-    const emailKey = rawEmail.trim().toLowerCase().replace(/\./g, ',');
-    const uidSnap = await db.ref(`usersByEmail/${emailKey}`).once('value');
-    const uid = uidSnap.val();
+    const uid = await resolveUidByEmail(rawEmail);
     if (!uid) throw new HttpsError('not-found', 'That person has not signed in yet');
     const nickname = (typeof rawNickname === 'string' ? rawNickname.trim() : '').slice(0, 40);
     await db.ref(`users/${uid}/nickname`).set(nickname || null);
@@ -412,9 +417,7 @@ exports.listTeamMembers = onCall(
     const val = snap.val() || {};
     const emails = [OWNER_EMAIL, ...Object.values(val).map(u => u.email)];
     const members = await Promise.all(emails.map(async (email) => {
-      const emailKey = email.replace(/\./g, ',');
-      const uidSnap = await db.ref(`usersByEmail/${emailKey}`).once('value');
-      const uid = uidSnap.val();
+      const uid = await resolveUidByEmail(email);
       let name = email;
       if (uid) {
         const [nameSnap, nickSnap] = await Promise.all([
@@ -435,9 +438,7 @@ async function mirrorUserAccess(email, role) {
   // Best-effort: if this email has already signed in before, we know its uid via
   // usersByEmail and can flip its access immediately instead of waiting for next login.
   try {
-    const emailKey = email.replace(/\./g, ',');
-    const uidSnap = await db.ref(`usersByEmail/${emailKey}`).once('value');
-    const uid = uidSnap.val();
+    const uid = await resolveUidByEmail(email);
     if (!uid) return;
     await db.ref(`userAccess/${uid}`).set({ authorized: !!role, role: role || null, email });
   } catch {}
@@ -989,9 +990,7 @@ exports.setUserPricingEnabled = onCall(
     requireAdmin(role);
     const { email: rawEmail, enabled } = request.data || {};
     if (!rawEmail || typeof rawEmail !== 'string') throw new HttpsError('invalid-argument', 'email required');
-    const emailKey = rawEmail.trim().toLowerCase().replace(/\./g, ',');
-    const uidSnap = await db.ref(`usersByEmail/${emailKey}`).once('value');
-    const uid = uidSnap.val();
+    const uid = await resolveUidByEmail(rawEmail);
     if (!uid) throw new HttpsError('not-found', 'That person has not signed in yet');
     await db.ref(`users/${uid}/pricingEnabled`).set(!!enabled);
     return { ok: true };

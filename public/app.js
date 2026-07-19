@@ -1,6 +1,6 @@
     const { useState, useEffect, useRef } = React;
 
-    const VERSION = "v5.38";
+    const VERSION = "v5.40";
 
     // ── CONFIG ────────────────────────────────────────────────────────────────────
     const FIREBASE_CONFIG = {
@@ -2468,10 +2468,10 @@
       const [list,       setList]       = useState(null);
       const [items,      setItems]      = useState([]);
       const [loading,    setLoading]    = useState(true);
-      const [sortBy,     setSortBy]     = useState("category");
       const [profiles,         setProfiles]         = useState([]);
-      const [activeProfile,    setActiveProfile]    = useState(function() { return localStorage.getItem("buli_profile") || "default"; });
-      const [showProfilePicker,setShowProfilePicker]= useState(false);
+      // Category order profile — now driven automatically by which shop is
+      // selected in the filter panel (see the effect below), not manually.
+      const [activeProfile,    setActiveProfile]    = useState("default");
       const [editItem,      setEditItem]      = useState(null);
       const [taskEdit,      setTaskEdit]      = useState(null);
       const [noteEdit,      setNoteEdit]      = useState(null);
@@ -2547,6 +2547,22 @@
           setPricingEnabled(!!snap.val());
         });
       }, []);
+
+      // Picking a shop to filter by also switches the category order to
+      // whichever named profile matches that shop (so aisle order lines up
+      // with where you're actually shopping) — falls back to default when
+      // no shop is selected or no matching profile exists.
+      useEffect(function() {
+        if (filterVendorProfile === "all" || filterVendorProfile === "noBarcode") {
+          setActiveProfile("default");
+          return;
+        }
+        var prof = activeProfiles.find(function(p) { return p.id === filterVendorProfile; });
+        var shopLabel = prof ? profileLabel(prof, activeProfiles) : null;
+        var match = shopLabel ? profiles.find(function(p) { return p.name === shopLabel; }) : null;
+        setActiveProfile(match ? match.id : "default");
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+      }, [filterVendorProfile, activeProfiles, profiles]);
 
       // ─── Price comparison (any number of active vendor+branch profiles) —
       // no AI, plain lookups. item.barcodes is keyed by vendor CHAIN (a GTIN
@@ -2909,27 +2925,9 @@
 
       const editFn = (item) => isTasks ? setTaskEdit({...item}) : setEditItem({...item});
 
-      const renderGroup = (arr) => {
-        if (!isTasks && sortBy === "name") {
-          return (
-            <div className="space-y-2">
-              {[...arr].sort((a,b) => (a.name||"").localeCompare(b.name||"","he")).map(item =>
-                <ItemRow key={item.id} item={item} canEdit={canEditItem(item)} onToggle={toggle} onDelete={remove} onEdit={() => editFn(item)} onUpdateNote={updateNote} isTasks={false} currentUserId={user.uid}
-                  priceMap={priceMap} activeProfiles={activeProfiles} priceCandidates={candidatesByName[item.name]} onPickPrice={() => setPickerItem(item)} />
-              )}
-            </div>
-          );
-        }
-        if (isTasks) {
-          return (
-            <div className="space-y-2">
-              {arr.map(item =>
-                <ItemRow key={item.id} item={item} canEdit={canEditItem(item)} onToggle={toggle} onDelete={remove} onEdit={() => editFn(item)} onUpdateNote={updateNote} isTasks={true} currentUserId={user.uid} />
-              )}
-            </div>
-          );
-        }
-        // By category — respect user-defined category order
+      // Same category grouping/order the list uses — shared so the table
+      // view's row order matches what's actually shown in the list.
+      const groupByCategory = (arr) => {
         var activeProf = activeProfile !== "default" ? profiles.find(function(p) { return p.id === activeProfile; }) : null;
         const catOrder = activeProf
           ? resolveProfileOrder(activeProf.categoryOrder, categories)
@@ -2940,10 +2938,24 @@
           if (!catMap[c]) catMap[c] = { emoji: i.categoryEmoji || "🛍️", items: [] };
           catMap[c].items.push(i);
         });
-        const sortedGroups = [
+        return [
           ...catOrder.filter(l => catMap[l]).map(l => ({ label: l, ...catMap[l] })),
           ...Object.entries(catMap).filter(([l]) => !catOrder.includes(l)).map(([l,v]) => ({ label: l, ...v }))
         ];
+      };
+      const orderByCategory = (arr) => groupByCategory(arr).flatMap(function(g) { return g.items; });
+
+      const renderGroup = (arr) => {
+        if (isTasks) {
+          return (
+            <div className="space-y-2">
+              {arr.map(item =>
+                <ItemRow key={item.id} item={item} canEdit={canEditItem(item)} onToggle={toggle} onDelete={remove} onEdit={() => editFn(item)} onUpdateNote={updateNote} isTasks={true} currentUserId={user.uid} />
+              )}
+            </div>
+          );
+        }
+        const sortedGroups = groupByCategory(arr);
         return sortedGroups.map(group => (
           <div key={group.label} className="mb-5">
             <div className="text-xs font-semibold text-gray-400 mb-2 flex items-center gap-1 uppercase tracking-wide">
@@ -2951,7 +2963,7 @@
             </div>
             <div className="space-y-2">
               {group.items.map(item => <ItemRow key={item.id} item={item} canEdit={canEditItem(item)} onToggle={toggle} onDelete={remove} onEdit={() => editFn(item)} onUpdateNote={updateNote} isTasks={false} currentUserId={user.uid}
-                  priceMap={priceMap} activeProfiles={activeProfiles} priceCandidates={candidatesByName[item.name]} onPickPrice={() => setPickerItem(item)} />)}
+                  priceMap={priceMap} activeProfiles={activeProfiles} singleShopId={singleShopId} priceCandidates={candidatesByName[item.name]} onPickPrice={() => setPickerItem(item)} />)}
             </div>
           </div>
         ));
@@ -2959,6 +2971,8 @@
 
       const doneCount  = filteredItems.filter(i => i.done).length;
       const isFiltered = filterStatus !== "all" || filterPerson !== "all" || filterVendorProfile !== "all";
+      const singleShopId = (pricingEnabled && !isTasks && filterVendorProfile !== "all" && filterVendorProfile !== "noBarcode") ? filterVendorProfile : null;
+      const singleShopProfile = singleShopId ? activeProfiles.find(function(p) { return p.id === singleShopId; }) : null;
 
       return (
         <div className="bg-gray-50 flex flex-col" style={{height:"100dvh"}}>
@@ -2973,20 +2987,10 @@
               )}
             </div>
             <div className="flex items-center justify-between mt-2" dir="ltr">
-              {!isNotes ? (
-                <div className="flex bg-white/15 rounded-full p-0.5">
-                  <button onClick={function() { setSortBy("name"); }}
-                    className={"text-xs px-3 py-1 rounded-full transition " + (sortBy==="name" ? "bg-white text-blue-600 font-semibold" : "text-white/70")}>שם</button>
-                  <button onClick={function() {
-                    setSortBy("category");
-                    if (profiles.length > 0) setShowProfilePicker(true);
-                  }} className={"text-xs px-3 py-1 rounded-full transition flex items-center gap-1 " + (sortBy==="category" ? "bg-white text-blue-600 font-semibold" : "text-white/70")}>
-                    {sortBy === "category" && activeProfile !== "default"
-                      ? ((profiles.find(function(p) { return p.id === activeProfile; }) || {}).name || "קטגוריה")
-                      : "קטגוריה"}
-                    {profiles.length > 0 && <span style={{fontSize:"9px"}}>▾</span>}
-                  </button>
-                </div>
+              {!isNotes && singleShopProfile ? (
+                <span className="text-xs font-semibold bg-white/20 px-3 py-1 rounded-full whitespace-nowrap">
+                  🏪 {profileLabel(singleShopProfile, activeProfiles)}
+                </span>
               ) : <div />}
               <span className="text-white/50 text-xs flex items-center gap-2">
                 {isNotes ? (notesSorted.filter(i=>i.done).length + "/" + notesSorted.length) : (isFiltered ? filteredItems.length + "/" + items.length : doneCount + "/" + items.length)}
@@ -2997,7 +3001,7 @@
                 )}
               </span>
             </div>
-            {!isNotes && (
+            {!isNotes && !(viewMode === "table" && pricingEnabled && !isTasks) && (
               <div className="mt-2" dir="ltr">
                 <div className="flex items-center gap-1.5">
                   <div className="flex bg-white/15 rounded-full p-0.5 gap-0.5">
@@ -3011,9 +3015,15 @@
                       );
                     })}
                   </div>
+                  {pricingEnabled && !isTasks && (
+                    <button onClick={function() { setFilterVendorProfile(function(p) { return p === "noBarcode" ? "all" : "noBarcode"; }); }}
+                      className={"text-xs px-2 py-1 rounded-full transition whitespace-nowrap flex-shrink-0 " + (filterVendorProfile==="noBarcode" ? "bg-white text-orange-600 font-semibold" : "bg-white/15 text-white/70")}>
+                      ⚠ ללא ברקוד
+                    </button>
+                  )}
                   <button onClick={function() { setShowFilters(function(p) { return !p; }); }}
                     className={"text-xs px-2.5 py-1 rounded-full transition whitespace-nowrap flex-shrink-0 flex items-center gap-1 " + (showFilters ? "bg-white text-blue-600 font-semibold" : "bg-white/15 text-white/70")}>
-                    מסננים {(filterPerson !== "all" || filterVendorProfile !== "all") && <span className="text-orange-300">●</span>}
+                    מסננים {(filterPerson !== "all" || singleShopId) && <span className="text-orange-300">●</span>}
                   </button>
                   {isFiltered && (
                     <button onClick={clearAllFilters} className="text-white/60 hover:text-white text-xs flex-shrink-0" title="נקה פילטרים">✕</button>
@@ -3035,16 +3045,18 @@
                         })}
                       </div>
                     </div>
-                    {pricingEnabled && !isTasks && (
+                    {pricingEnabled && !isTasks && activeProfiles.length > 0 && (
                       <div>
-                        <div className="text-white/50 text-xs mb-1">זמינות לפי סניף</div>
+                        <div className="text-white/50 text-xs mb-1">הצג פריטים לחנות</div>
                         <div className="flex flex-wrap gap-1">
-                          {[{ id: "all", label: "הכל" }, { id: "noBarcode", label: "⚠ ללא ברקוד" }]
+                          {[{ id: "all", label: "הכל" }]
                             .concat(activeProfiles.map(function(p) { return { id: p.id, label: profileLabel(p, activeProfiles) }; }))
                             .map(function(opt) {
                               return (
-                                <button key={opt.id} onClick={function() { setFilterVendorProfile(opt.id); }}
-                                  className={"text-xs px-2.5 py-1 rounded-full transition whitespace-nowrap " + (filterVendorProfile===opt.id ? "bg-white text-blue-600 font-semibold" : "bg-white/15 text-white/70")}>
+                                <button key={opt.id} onClick={function() {
+                                  setFilterVendorProfile(opt.id);
+                                  if (opt.id !== "all") setShowFilters(false);
+                                }} className={"text-xs px-2.5 py-1 rounded-full transition whitespace-nowrap " + (filterVendorProfile===opt.id ? "bg-white text-blue-600 font-semibold" : "bg-white/15 text-white/70")}>
                                   {opt.label}
                                 </button>
                               );
@@ -3104,7 +3116,7 @@
                 <button onClick={clearAllFilters} className="mt-4 text-sm text-blue-500 bg-blue-50 px-5 py-2 rounded-full">נקה פילטרים</button>
               </div>
             ) : viewMode === "table" && pricingEnabled && !isTasks && !isNotes ? (
-              <PriceComparisonTable items={filteredItems} activeProfiles={activeProfiles} priceMap={priceMap} />
+              <PriceComparisonTable items={orderByCategory(items.filter(function(i) { return !i.done; }))} activeProfiles={activeProfiles} priceMap={priceMap} />
             ) : (
               <>
                 {renderGroup(notDone)}
@@ -3232,38 +3244,6 @@
             </Modal>
           )}
 
-          {showProfilePicker && (
-            <Modal onClose={function() { setShowProfilePicker(false); }}>
-              <h3 className="text-lg font-bold text-center mb-4">סדר קטגוריות לפי חנות</h3>
-              <div className="space-y-2">
-                <button onClick={function() {
-                  setActiveProfile("default");
-                  localStorage.setItem("buli_profile", "default");
-                  setShowProfilePicker(false);
-                }} className={"w-full flex items-center gap-3 px-4 py-3 rounded-xl border text-right transition " + (activeProfile === "default" ? "bg-blue-50 border-blue-400" : "bg-white border-gray-200")}>
-                  <div className={"w-5 h-5 rounded-full border-2 flex-shrink-0 flex items-center justify-center text-xs " + (activeProfile === "default" ? "bg-blue-600 border-blue-600 text-white" : "border-gray-300")}>
-                    {activeProfile === "default" ? "✓" : ""}
-                  </div>
-                  <span className="font-medium text-gray-800">ברירת מחדל</span>
-                </button>
-                {profiles.map(function(p) {
-                  var sel = activeProfile === p.id;
-                  return (
-                    <button key={p.id} onClick={function() {
-                      setActiveProfile(p.id);
-                      localStorage.setItem("buli_profile", p.id);
-                      setShowProfilePicker(false);
-                    }} className={"w-full flex items-center gap-3 px-4 py-3 rounded-xl border text-right transition " + (sel ? "bg-blue-50 border-blue-400" : "bg-white border-gray-200")}>
-                      <div className={"w-5 h-5 rounded-full border-2 flex-shrink-0 flex items-center justify-center text-xs " + (sel ? "bg-blue-600 border-blue-600 text-white" : "border-gray-300")}>
-                        {sel ? "✓" : ""}
-                      </div>
-                      <span className="font-medium text-gray-800">{p.name}</span>
-                    </button>
-                  );
-                })}
-              </div>
-            </Modal>
-          )}
         </div>
       );
     }
@@ -3348,7 +3328,7 @@
       );
     }
 
-    function ItemRow({ item, canEdit, onToggle, onDelete, onEdit, onUpdateNote, isTasks, currentUserId, priceMap, activeProfiles, priceCandidates, onPickPrice }) {
+    function ItemRow({ item, canEdit, onToggle, onDelete, onEdit, onUpdateNote, isTasks, currentUserId, priceMap, activeProfiles, singleShopId, priceCandidates, onPickPrice }) {
       const [editingNote, setEditingNote] = useState(false);
       const [noteVal,     setNoteVal]     = useState(item.note || "");
 
@@ -3385,7 +3365,19 @@
                   <span>💬</span><span>הוסף הערה</span>
                 </button>
               ) : null}
-              {!isTasks && pricedEntries.length > 0 && (
+              {!isTasks && singleShopId ? (
+                (function() {
+                  var e = pricedEntries.find(function(x) { return x.profile.id === singleShopId; });
+                  if (!e) return null;
+                  return (
+                    <div className="mt-1">
+                      <span className="text-xs font-semibold text-gray-800">
+                        {e.price != null ? "₪" + e.price.toFixed(2) : "לא נמכר כאן"}
+                      </span>
+                    </div>
+                  );
+                })()
+              ) : !isTasks && pricedEntries.length > 0 && (
                 <div className="flex items-center gap-1.5 flex-wrap mt-1">
                   {pricedEntries.map(function(e) {
                     var others = pricedEntries.filter(function(o) { return o.profile.id !== e.profile.id; }).map(function(o) { return o.price; });

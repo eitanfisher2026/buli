@@ -1,6 +1,6 @@
     const { useState, useEffect, useRef } = React;
 
-    const VERSION = "v5.49";
+    const VERSION = "v5.50";
 
     // ── CONFIG ────────────────────────────────────────────────────────────────────
     const FIREBASE_CONFIG = {
@@ -3383,7 +3383,8 @@
             </button>
           )}
 
-          {editItem && <EditItemModal item={editItem} categories={categories} onChange={setEditItem} onSave={saveEdit} onResetMatch={handleResetMatch} pricingEnabled={pricingEnabled} onClose={() => setEditItem(null)} />}
+          {editItem && <EditItemModal item={editItem} categories={categories} onChange={setEditItem} onSave={saveEdit} onResetMatch={handleResetMatch} pricingEnabled={pricingEnabled}
+            priceCandidates={candidatesByName[editItem.name]} onPickPrice={() => setPickerItem(editItem)} onClose={() => setEditItem(null)} />}
           {noteEdit && <NoteEditModal item={noteEdit} onSave={saveNoteEdit} onClose={function() { setNoteEdit(null); }} />}
           {taskEdit && <TaskEditModal item={taskEdit} onChange={setTaskEdit} onSave={saveTaskEdit} onDelete={deleteTask} onClose={() => setTaskEdit(null)} />}
           {confirmDialog && <ConfirmDialog message={confirmDialog.message} confirmLabel={confirmDialog.confirmLabel} onConfirm={confirmDialog.onConfirm} onClose={function() { setConfirmDialog(null); }} />}
@@ -3663,13 +3664,17 @@
                   })}
                 </div>
               )}
-              {!isTasks && priceCandidates && priceCandidates.list && priceCandidates.list.length > 0 && (
+              {/* Only surface the match action here for items with NO vendor
+                  matched at all — once at least one is matched, seeing real
+                  prices next to "still needs matching" reads as contradictory,
+                  so the remaining vendor gets handled from the edit dialog. */}
+              {!isTasks && !itemHasAnyBarcode(item) && priceCandidates && priceCandidates.list && priceCandidates.list.length > 0 && (
                 <button onClick={function(e) { e.stopPropagation(); onPickPrice(); }}
                   className="text-xs text-blue-500 border border-blue-200 bg-blue-50 rounded-full px-2 py-0.5 mt-1">
                   💰 התאם פריט
                 </button>
               )}
-              {!isTasks && priceCandidates && priceCandidates.list && priceCandidates.list.length === 0 && (
+              {!isTasks && !itemHasAnyBarcode(item) && priceCandidates && priceCandidates.list && priceCandidates.list.length === 0 && (
                 <button onClick={function(e) { e.stopPropagation(); onPickPrice(); }}
                   className="text-xs text-orange-600 border border-orange-200 bg-orange-50 rounded-full px-2 py-0.5 mt-1">
                   ⚠ לא נמצא ברקוד — חפש ידנית
@@ -3737,7 +3742,7 @@
       );
     }
 
-    function EditItemModal({ item, categories, onChange, onSave, onResetMatch, pricingEnabled, onClose }) {
+    function EditItemModal({ item, categories, onChange, onSave, onResetMatch, pricingEnabled, priceCandidates, onPickPrice, onClose }) {
       return (
         <Modal onClose={onClose}>
           <h3 className="text-lg font-bold text-center mb-4">עריכת פריט</h3>
@@ -3774,6 +3779,16 @@
                 })()}
                 <button onClick={() => onResetMatch(item)}
                   className="text-xs text-blue-600 font-medium">🔄 חפש התאמת פריט מחדש</button>
+                {/* Item already matched for at least one vendor — the still-
+                    missing one(s) are surfaced here instead of on the main
+                    list, since "prices already showing" + "still needs
+                    matching" reads as contradictory in the list view. */}
+                {itemHasAnyBarcode(item) && priceCandidates && priceCandidates.list && (
+                  <button onClick={() => { onPickPrice(); onClose(); }}
+                    className="text-xs text-blue-600 font-medium block">
+                    {priceCandidates.list.length > 0 ? "🔍 השלם התאמה לרשת החסרה" : "⚠ לא נמצא ברקוד לרשת החסרה — חפש ידנית"}
+                  </button>
+                )}
               </div>
             )}
             <div className="grid grid-cols-2 gap-2">

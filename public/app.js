@@ -1,6 +1,6 @@
     const { useState, useEffect, useRef } = React;
 
-    const VERSION = "v5.35";
+    const VERSION = "v5.36";
 
     // ── CONFIG ────────────────────────────────────────────────────────────────────
     const FIREBASE_CONFIG = {
@@ -2998,21 +2998,6 @@
       const doneCount  = filteredItems.filter(i => i.done).length;
       const isFiltered = filterStatus !== "all" || filterPerson !== "all" || filterNoBarcode || searchQuery.trim().length > 0;
 
-      var priceTotals = null;
-      if (pricingEnabled && !isTasks && !isNotes && activeProfiles.length > 0) {
-        var totalsByProfile = {};
-        filteredItems.filter(function(i) { return !i.done; }).forEach(function(i) {
-          var qty = i.quantity || 1;
-          itemProfilePrices(i, activeProfiles, priceMap).forEach(function(e) {
-            if (e.price == null) return;
-            if (!totalsByProfile[e.profile.id]) totalsByProfile[e.profile.id] = { profile: e.profile, total: 0 };
-            totalsByProfile[e.profile.id].total += e.price * qty;
-          });
-        });
-        var totalsList = Object.values(totalsByProfile);
-        if (totalsList.length > 0) priceTotals = totalsList;
-      }
-
       return (
         <div className="bg-gray-50 flex flex-col" style={{height:"100dvh"}}>
           <div className="bg-blue-600 text-white px-4 pt-10 pb-3 flex-shrink-0">
@@ -3116,19 +3101,6 @@
             </div>
           )}
 
-          {priceTotals && (
-            <div className="flex items-center justify-around flex-wrap gap-2 bg-white border-b border-gray-100 px-4 py-2 flex-shrink-0">
-              {priceTotals.map(function(t) {
-                var others = priceTotals.filter(function(o) { return o.profile.id !== t.profile.id; }).map(function(o) { return o.total; });
-                return (
-                  <div key={t.profile.id} className={"text-sm font-bold " + cheapestTextClass(t.total, others)}>
-                    {profileLabel(t.profile, activeProfiles)}: ₪{t.total.toFixed(2)}
-                  </div>
-                );
-              })}
-            </div>
-          )}
-
           <div className="flex-1 overflow-y-auto p-4 pb-28">
             {isNotes ? (
               notesSorted.length === 0 ? (
@@ -3175,7 +3147,7 @@
             )}
           </div>
 
-          {canAddItems && (
+          {canAddItems && !(viewMode === "table" && pricingEnabled && !isTasks && !isNotes) && (
             <button onClick={() => onAdd(list.type, list.name)} className="fixed bottom-6 left-1/2 -translate-x-1/2 bg-blue-600 text-white px-8 py-4 rounded-2xl shadow-xl font-semibold text-base flex items-center gap-2">
               <span className="text-xl font-light">+</span> {isTasks ? "הוסף מטלה" : isNotes ? "הוסף מנות" : "הוסף פריטים"}
             </button>
@@ -3390,16 +3362,9 @@
             </tbody>
             <tfoot>
               <tr>
-                <td className="sticky right-0 bg-gray-50 z-10 font-bold px-3 py-2 border-t-2 border-gray-300 text-right">סה"כ</td>
+                <td className="sticky right-0 bg-gray-50 z-10 font-semibold text-gray-500 px-3 py-2 border-t-2 border-gray-300 text-right">פריטים בסל</td>
                 {activeProfiles.map(function(p) {
-                  var others = activeProfiles.filter(function(o) { return o.id !== p.id; }).map(function(o) { return totals[o.id].sum; });
-                  return <td key={p.id} className={"font-bold text-center px-3 py-2 border-t-2 border-gray-300 " + cheapestTextClass(totals[p.id].sum, others)}>₪{totals[p.id].sum.toFixed(2)}</td>;
-                })}
-              </tr>
-              <tr>
-                <td className="sticky right-0 bg-gray-50 z-10 text-gray-500 px-3 py-2">פריטים בסל</td>
-                {activeProfiles.map(function(p) {
-                  return <td key={p.id} className="text-gray-500 text-center px-3 py-2">{totals[p.id].count}</td>;
+                  return <td key={p.id} className="font-semibold text-gray-500 text-center px-3 py-2 border-t-2 border-gray-300">{totals[p.id].count}</td>;
                 })}
               </tr>
             </tfoot>

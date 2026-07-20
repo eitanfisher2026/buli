@@ -1,6 +1,6 @@
     const { useState, useEffect, useRef } = React;
 
-    const VERSION = "v5.57";
+    const VERSION = "v5.58";
 
     // ── CONFIG ────────────────────────────────────────────────────────────────────
     const FIREBASE_CONFIG = {
@@ -3695,10 +3695,12 @@
       var ordered = notDoneItems.concat(doneItems);
 
       var totals = {};
-      activeProfiles.forEach(function(p) { totals[p.id] = { count: 0 }; });
+      activeProfiles.forEach(function(p) { totals[p.id] = { sum: 0, count: 0 }; });
       notDoneItems.forEach(function(item) {
+        var qty = item.quantity || 1;
         itemProfilePrices(item, activeProfiles, priceMap).forEach(function(e) {
           if (e.price == null) return;
+          totals[e.profile.id].sum += e.price * qty;
           totals[e.profile.id].count++;
         });
       });
@@ -3745,9 +3747,16 @@
             </tbody>
             <tfoot>
               <tr>
-                <td className="sticky right-0 bg-gray-50 z-10 font-semibold text-gray-500 px-3 py-2 border-t-2 border-gray-300 text-right">פריטים בסל</td>
+                <td className="sticky right-0 bg-gray-50 z-10 font-bold px-3 py-2 border-t-2 border-gray-300 text-right">סה"כ</td>
                 {activeProfiles.map(function(p) {
-                  return <td key={p.id} className="font-semibold text-gray-500 text-center px-3 py-2 border-t-2 border-gray-300">{totals[p.id].count}</td>;
+                  var others = activeProfiles.filter(function(o) { return o.id !== p.id; }).map(function(o) { return totals[o.id].sum; });
+                  return <td key={p.id} className={"font-bold text-center px-3 py-2 border-t-2 border-gray-300 " + cheapestTextClass(totals[p.id].sum, others)}>₪{totals[p.id].sum.toFixed(2)}</td>;
+                })}
+              </tr>
+              <tr>
+                <td className="sticky right-0 bg-gray-50 z-10 font-semibold text-gray-500 px-3 py-2 text-right">פריטים בסל</td>
+                {activeProfiles.map(function(p) {
+                  return <td key={p.id} className="font-semibold text-gray-500 text-center px-3 py-2">{totals[p.id].count}</td>;
                 })}
               </tr>
             </tfoot>

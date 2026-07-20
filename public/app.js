@@ -1,6 +1,6 @@
     const { useState, useEffect, useRef } = React;
 
-    const VERSION = "v5.51";
+    const VERSION = "v5.52";
 
     // ── CONFIG ────────────────────────────────────────────────────────────────────
     const FIREBASE_CONFIG = {
@@ -615,6 +615,7 @@
       const tasksListId = "tasks_" + user.uid;
       const [lists,      setLists]      = useState(function() { return homeDataCache ? homeDataCache.lists : null; });
       const [tasks,      setTasks]      = useState(function() { return homeDataCache ? homeDataCache.tasks : null; });
+      const [loadError,  setLoadError]  = useState(null);
       const [editTask,   setEditTask]   = useState(null);
       const [menuId,     setMenuId]     = useState(null);
       const [showDone,   setShowDone]   = useState(false);
@@ -959,7 +960,8 @@
         }
       };
 
-      useEffect(function() {
+      const loadHome = function() {
+        setLoadError(null);
         // App() already kicked this off the moment the uid was known, in
         // parallel with the getMyRole round-trip — by the time HomeScreen
         // mounts (which waits on role), this is often already done or close
@@ -977,8 +979,14 @@
               if (!existing) { localStorage.setItem("buli_major_list", JSON.stringify({ id: active[0].id, name: active[0].name })); setMajorListIdState(active[0].id); }
             } catch(e) { localStorage.setItem("buli_major_list", JSON.stringify({ id: active[0].id, name: active[0].name })); setMajorListIdState(active[0].id); }
           }
+        }, function(err) {
+          // Without this, a dropped connection (far more common on flaky mobile
+          // networks than on wired desktop) left lists/tasks at null forever —
+          // an infinite "טוען רשימות..." spinner with no error and no retry.
+          setLoadError((err && err.message) || "שגיאה בטעינת הרשימות");
         });
-      }, []);
+      };
+      useEffect(function() { loadHome(); }, []);
 
       const quickCreate = () => {
         var prefix = "רשימת קניות #";
@@ -1145,9 +1153,19 @@
             </div>
             <p className="text-white/60 text-sm mt-2 text-right">שלום, {user.displayName.split(" ")[0]}</p>
           </div>
-          <div className="flex-1 flex flex-col items-center justify-center gap-3">
-            <Spinner large />
-            <p className="text-sm text-gray-400">טוען רשימות...</p>
+          <div className="flex-1 flex flex-col items-center justify-center gap-3 px-6">
+            {loadError ? (
+              <React.Fragment>
+                <span className="text-4xl">⚠️</span>
+                <p className="text-sm text-gray-500 text-center">לא הצלחנו לטעון את הרשימות.<br/>בדקו את החיבור לאינטרנט ונסו שוב.</p>
+                <button onClick={loadHome} className="bg-blue-600 text-white px-5 py-2 rounded-full text-sm font-medium">נסה שוב</button>
+              </React.Fragment>
+            ) : (
+              <React.Fragment>
+                <Spinner large />
+                <p className="text-sm text-gray-400">טוען רשימות...</p>
+              </React.Fragment>
+            )}
           </div>
         </div>
       );

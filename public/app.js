@@ -1,6 +1,6 @@
     const { useState, useEffect, useRef } = React;
 
-    const VERSION = "v5.53";
+    const VERSION = "v5.54";
 
     // ── CONFIG ────────────────────────────────────────────────────────────────────
     const FIREBASE_CONFIG = {
@@ -367,15 +367,51 @@
         ? <div className="spinner w-8 h-8 border-2 border-blue-600 border-t-transparent rounded-full" />
         : <div className="spinner w-5 h-5 border-2 border-white border-t-transparent rounded-full inline-block" />;
     }
+    // Animated cart — inline SVG (not a downloaded GIF/WebP) so the loading
+    // screen itself costs zero extra network requests, matching this whole
+    // cold-start effort. Speed lines flow toward the cart on a stagger, the
+    // cart itself bounces gently; keyframes live in styles.css.
+    function CartLoader() {
+      return (
+        <svg width="96" height="72" viewBox="0 0 120 90" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <defs>
+            <linearGradient id="cartLoaderGrad" x1="0" y1="0" x2="1" y2="1">
+              <stop offset="0%" stopColor="#60a5fa" />
+              <stop offset="100%" stopColor="#2563eb" />
+            </linearGradient>
+          </defs>
+          <g className="cart-loader-line" style={{animationDelay:"0s"}}>
+            <line x1="38" y1="26" x2="6" y2="26" stroke="url(#cartLoaderGrad)" strokeWidth="4" strokeLinecap="round" />
+          </g>
+          <g className="cart-loader-line" style={{animationDelay:"0.15s"}}>
+            <line x1="38" y1="38" x2="12" y2="38" stroke="url(#cartLoaderGrad)" strokeWidth="4" strokeLinecap="round" />
+          </g>
+          <g className="cart-loader-line" style={{animationDelay:"0.3s"}}>
+            <line x1="38" y1="50" x2="18" y2="50" stroke="url(#cartLoaderGrad)" strokeWidth="4" strokeLinecap="round" />
+          </g>
+          <g className="cart-loader-line" style={{animationDelay:"0.45s"}}>
+            <line x1="38" y1="62" x2="26" y2="62" stroke="url(#cartLoaderGrad)" strokeWidth="4" strokeLinecap="round" />
+          </g>
+          <g className="cart-loader-cart">
+            <path d="M46 14 H58 L64 24" stroke="url(#cartLoaderGrad)" strokeWidth="5" strokeLinecap="round" strokeLinejoin="round" />
+            <path d="M64 24 H108 L100 58 H72 Z" stroke="url(#cartLoaderGrad)" strokeWidth="5" strokeLinejoin="round" />
+            <line x1="78" y1="24" x2="76" y2="58" stroke="url(#cartLoaderGrad)" strokeWidth="3" />
+            <line x1="92" y1="24" x2="94" y2="58" stroke="url(#cartLoaderGrad)" strokeWidth="3" />
+            <line x1="69" y1="36" x2="105" y2="36" stroke="url(#cartLoaderGrad)" strokeWidth="3" />
+            <line x1="70" y1="47" x2="102" y2="47" stroke="url(#cartLoaderGrad)" strokeWidth="3" />
+            <circle cx="80" cy="70" r="6" stroke="url(#cartLoaderGrad)" strokeWidth="5" />
+            <circle cx="98" cy="70" r="6" stroke="url(#cartLoaderGrad)" strokeWidth="5" />
+          </g>
+        </svg>
+      );
+    }
     // Shared cold-start loading screen — one consistent look for every stage
     // (auth init, role check) instead of two blank near-identical screens,
     // with a real label reflecting what's actually happening at that moment.
-    // The 🛒 span is the one spot to swap in an animated GIF later.
     function LoadingScreen({ label }) {
       return (
         <div className="bg-gray-50 flex flex-col items-center justify-center gap-3" style={{height:"100dvh"}}>
-          <span className="text-6xl">🛒</span>
-          <Spinner large />
+          <CartLoader />
           {label && <p className="text-sm text-gray-400">{label}</p>}
         </div>
       );
@@ -1191,7 +1227,7 @@
               </React.Fragment>
             ) : (
               <React.Fragment>
-                <Spinner large />
+                <CartLoader />
                 <p className="text-sm text-gray-400">טוען רשימות...</p>
               </React.Fragment>
             )}

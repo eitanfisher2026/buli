@@ -1,6 +1,6 @@
     const { useState, useEffect, useRef } = React;
 
-    const VERSION = "v5.56";
+    const VERSION = "v5.57";
 
     // ── CONFIG ────────────────────────────────────────────────────────────────────
     const FIREBASE_CONFIG = {
@@ -2749,6 +2749,7 @@
       const [list,       setList]       = useState(null);
       const [items,      setItems]      = useState([]);
       const [loading,    setLoading]    = useState(true);
+      const [loadError,  setLoadError]  = useState(null);
       const [profiles,         setProfiles]         = useState([]);
       // In pricing mode, category order is driven automatically by which
       // shop is selected (see the effect below). Without pricing, there's no
@@ -2793,10 +2794,23 @@
       const [pickerSearching, setPickerSearching]  = useState(false);
       const [resolveBusy,     setResolveBusy]     = useState(false);
 
-      // Load everything once — optimistic updates for all mutations
-      useEffect(function() {
+      const loadList = function() {
+        setLoadError(null);
         var done = 0;
-        function tick() { if (++done >= 3) setLoading(false); }
+        var settled = false;
+        // Same class of bug as HomeScreen's prewarm: RTDB's once('value') has
+        // no built-in timeout, so a stalled connection left this stuck on the
+        // spinner indefinitely with no error and no retry. This mirrors that
+        // fix — a 12s cap surfaces a retryable error instead.
+        var timer = setTimeout(function() {
+          if (settled) return;
+          settled = true;
+          setLoadError("תם הזמן הקצוב לטעינה");
+        }, 12000);
+        function tick() {
+          if (settled) return;
+          if (++done >= 3) { settled = true; clearTimeout(timer); setLoading(false); }
+        }
 
         db.ref("globalCategories").once("value").then(function(snap) {
           if (snap.exists()) {
@@ -2806,12 +2820,12 @@
             setCategories(arr);
           }
           tick();
-        });
+        }, tick);
 
         db.ref("lists/" + listId).once("value").then(function(snap) {
           if (snap.exists()) setList(Object.assign({ id: snap.key }, snap.val()));
           tick();
-        });
+        }, tick);
 
         db.ref("items/" + listId).once("value").then(function(snap) {
           var arr = [];
@@ -2819,7 +2833,7 @@
           arr.sort(function(a, b) { return (a.createdAt || 0) - (b.createdAt || 0); });
           setItems(arr);
           tick();
-        });
+        }, tick);
 
         fns.httpsCallable("listTeamMembers")().then(function(res) {
           var others = (res.data.members || []).filter(function(m) { return m.uid !== user.uid; });
@@ -2839,7 +2853,8 @@
         db.ref("users/" + user.uid + "/pricingEnabled").once("value").then(function(snap) {
           setPricingEnabled(!!snap.val());
         });
-      }, []);
+      };
+      useEffect(function() { loadList(); }, []);
 
       // Picking a shop to filter by also switches the category order to
       // whichever named profile matches that shop (so aisle order lines up
@@ -3009,9 +3024,16 @@
         if (pickerItem) setPickerQuery(pickerItem.name);
       }, [pickerItem]);
 
+      if (loadError) return (
+        <div className="bg-gray-50 flex flex-col items-center justify-center gap-3 px-6" style={{height:"100dvh"}}>
+          <span className="text-4xl">⚠️</span>
+          <p className="text-sm text-gray-500 text-center">לא הצלחנו לטעון את הרשימה.<br/>בדקו את החיבור לאינטרנט ונסו שוב.</p>
+          <button onClick={loadList} className="bg-blue-600 text-white px-5 py-2 rounded-full text-sm font-medium">נסה שוב</button>
+        </div>
+      );
       if (loading || !list) return (
         <div className="bg-gray-50 flex flex-col items-center justify-center" style={{height:"100dvh"}}>
-          <Spinner large />
+          <CartLoader />
         </div>
       );
 

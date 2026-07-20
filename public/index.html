@@ -6,7 +6,7 @@
   <meta name="google" content="notranslate">
   <title>בולי</title>
   <link rel="manifest" href="manifest.json">
-  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🛒</text></svg>">
+  <link rel="icon" href="icon.svg" type="image/svg+xml">
   <meta name="theme-color" content="#2563eb">
   <meta name="mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-capable" content="yes">
@@ -25,21 +25,58 @@
       window.__installPrompt = null;
       window.dispatchEvent(new Event('pwa_installed'));
     });
-    // Generate apple-touch-icon PNG dynamically (iOS doesn't support SVG)
+    // Generate apple-touch-icon PNG dynamically (iOS doesn't support SVG).
+    // Mirrors public/icon.svg's cart design (same gradient/shape) at 180x180 —
+    // scaled by 180/192 from the source SVG's coordinates.
     try {
       var _c = document.createElement('canvas');
       _c.width = _c.height = 180;
       var _x = _c.getContext('2d');
       var _r = 38;
-      _x.fillStyle = '#2563eb';
+      _x.fillStyle = '#ffffff';
       _x.beginPath();
       _x.moveTo(_r,0); _x.lineTo(180-_r,0);
       _x.arcTo(180,0,180,_r,_r); _x.lineTo(180,180-_r);
       _x.arcTo(180,180,180-_r,180,_r); _x.lineTo(_r,180);
       _x.arcTo(0,180,0,180-_r,_r); _x.lineTo(0,_r);
       _x.arcTo(0,0,_r,0,_r); _x.closePath(); _x.fill();
-      _x.font = '110px serif'; _x.textAlign = 'center'; _x.textBaseline = 'middle';
-      _x.fillText('🛒', 90, 98);
+
+      var _g = _x.createLinearGradient(0, 0, 180, 180);
+      _g.addColorStop(0, '#60a5fa'); _g.addColorStop(1, '#2563eb');
+
+      function _line(x1,y1,x2,y2,op) {
+        _x.strokeStyle = _g; _x.lineWidth = 6.5; _x.lineCap = 'round'; _x.globalAlpha = op;
+        _x.beginPath(); _x.moveTo(x1,y1); _x.lineTo(x2,y2); _x.stroke(); _x.globalAlpha = 1;
+      }
+      _line(17,66,56,66,0.35); _line(24,79,71,79,0.55); _line(17,92,66,92,0.75); _line(28,105,69,105,0.9);
+
+      _x.strokeStyle = _g; _x.lineWidth = 10; _x.lineCap = 'round'; _x.lineJoin = 'round';
+      _x.beginPath(); _x.moveTo(79,32); _x.lineTo(98,32); _x.lineTo(109,51); _x.stroke();
+
+      _x.fillStyle = _g;
+      _x.beginPath();
+      _x.moveTo(109,51); _x.lineTo(161,51);
+      _x.quadraticCurveTo(168,51,166,59); _x.lineTo(152,111);
+      _x.quadraticCurveTo(150,117,143,117); _x.lineTo(120,117);
+      _x.quadraticCurveTo(113,117,112,111); _x.lineTo(98,59);
+      _x.quadraticCurveTo(96,51,109,51); _x.closePath(); _x.fill();
+
+      _x.strokeStyle = 'white'; _x.lineWidth = 3.5; _x.globalAlpha = 0.85;
+      function _grid(x1,y1,x2,y2) { _x.beginPath(); _x.moveTo(x1,y1); _x.lineTo(x2,y2); _x.stroke(); }
+      _grid(124,61,121,108); _grid(140,61,139,108); _grid(114,75,157,75); _grid(118,93,153,93);
+      _x.globalAlpha = 1;
+
+      function _wheel(cx,cy) {
+        _x.fillStyle = _g;
+        _x.beginPath(); _x.arc(cx,cy,12,0,Math.PI*2); _x.fill();
+        _x.fillStyle = 'white';
+        _x.beginPath(); _x.arc(cx,cy,5,0,Math.PI*2); _x.fill();
+      }
+      _wheel(122,131); _wheel(148,131);
+
+      _x.fillStyle = '#93c5fd'; _x.globalAlpha = 0.4;
+      _x.beginPath(); _x.ellipse(135,148,32,5,0,0,Math.PI*2); _x.fill(); _x.globalAlpha = 1;
+
       var _l = document.createElement('link');
       _l.rel = 'apple-touch-icon'; _l.href = _c.toDataURL('image/png');
       document.head.appendChild(_l);
@@ -55,7 +92,7 @@
 </head>
 <body>
   <div id="root"></div>
-  <script src="app.compiled.js?v=5.54"></script>
+  <script src="app.compiled.js?v=5.55"></script>
   <script>
     if ('serviceWorker' in navigator) {
       navigator.serviceWorker.register('/sw.js').catch(() => {});

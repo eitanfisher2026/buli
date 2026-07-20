@@ -1,6 +1,6 @@
     const { useState, useEffect, useRef } = React;
 
-    const VERSION = "v5.54";
+    const VERSION = "v5.55";
 
     // ── CONFIG ────────────────────────────────────────────────────────────────────
     const FIREBASE_CONFIG = {
@@ -369,40 +369,36 @@
     }
     // Animated cart — inline SVG (not a downloaded GIF/WebP) so the loading
     // screen itself costs zero extra network requests, matching this whole
-    // cold-start effort. Speed lines flow toward the cart on a stagger, the
-    // cart itself bounces gently; keyframes live in styles.css.
+    // cold-start effort. Solid gradient-filled cart (matches the app icon —
+    // see public/icon.svg, same shape/gradient) drives left-to-right across
+    // its track and loops; keyframes live in styles.css.
     function CartLoader() {
       return (
-        <svg width="96" height="72" viewBox="0 0 120 90" fill="none" xmlns="http://www.w3.org/2000/svg">
-          <defs>
-            <linearGradient id="cartLoaderGrad" x1="0" y1="0" x2="1" y2="1">
-              <stop offset="0%" stopColor="#60a5fa" />
-              <stop offset="100%" stopColor="#2563eb" />
-            </linearGradient>
-          </defs>
-          <g className="cart-loader-line" style={{animationDelay:"0s"}}>
-            <line x1="38" y1="26" x2="6" y2="26" stroke="url(#cartLoaderGrad)" strokeWidth="4" strokeLinecap="round" />
-          </g>
-          <g className="cart-loader-line" style={{animationDelay:"0.15s"}}>
-            <line x1="38" y1="38" x2="12" y2="38" stroke="url(#cartLoaderGrad)" strokeWidth="4" strokeLinecap="round" />
-          </g>
-          <g className="cart-loader-line" style={{animationDelay:"0.3s"}}>
-            <line x1="38" y1="50" x2="18" y2="50" stroke="url(#cartLoaderGrad)" strokeWidth="4" strokeLinecap="round" />
-          </g>
-          <g className="cart-loader-line" style={{animationDelay:"0.45s"}}>
-            <line x1="38" y1="62" x2="26" y2="62" stroke="url(#cartLoaderGrad)" strokeWidth="4" strokeLinecap="round" />
-          </g>
-          <g className="cart-loader-cart">
-            <path d="M46 14 H58 L64 24" stroke="url(#cartLoaderGrad)" strokeWidth="5" strokeLinecap="round" strokeLinejoin="round" />
-            <path d="M64 24 H108 L100 58 H72 Z" stroke="url(#cartLoaderGrad)" strokeWidth="5" strokeLinejoin="round" />
-            <line x1="78" y1="24" x2="76" y2="58" stroke="url(#cartLoaderGrad)" strokeWidth="3" />
-            <line x1="92" y1="24" x2="94" y2="58" stroke="url(#cartLoaderGrad)" strokeWidth="3" />
-            <line x1="69" y1="36" x2="105" y2="36" stroke="url(#cartLoaderGrad)" strokeWidth="3" />
-            <line x1="70" y1="47" x2="102" y2="47" stroke="url(#cartLoaderGrad)" strokeWidth="3" />
-            <circle cx="80" cy="70" r="6" stroke="url(#cartLoaderGrad)" strokeWidth="5" />
-            <circle cx="98" cy="70" r="6" stroke="url(#cartLoaderGrad)" strokeWidth="5" />
-          </g>
-        </svg>
+        <div className="cart-loader-track">
+          <svg className="cart-loader-rig" width="150" height="90" viewBox="0 0 150 90" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <defs>
+              <linearGradient id="cartLoaderGrad" x1="0" y1="0" x2="1" y2="1">
+                <stop offset="0%" stopColor="#60a5fa" />
+                <stop offset="100%" stopColor="#2563eb" />
+              </linearGradient>
+            </defs>
+            <ellipse cx="99" cy="89" rx="22" ry="3" fill="#93c5fd" opacity="0.4" />
+            <line x1="2" y1="28" x2="34" y2="28" stroke="url(#cartLoaderGrad)" strokeWidth="5" strokeLinecap="round" opacity="0.35" />
+            <line x1="8" y1="39" x2="46" y2="39" stroke="url(#cartLoaderGrad)" strokeWidth="5" strokeLinecap="round" opacity="0.55" />
+            <line x1="2" y1="50" x2="42" y2="50" stroke="url(#cartLoaderGrad)" strokeWidth="5" strokeLinecap="round" opacity="0.75" />
+            <line x1="12" y1="61" x2="44" y2="61" stroke="url(#cartLoaderGrad)" strokeWidth="5" strokeLinecap="round" opacity="0.9" />
+            <path d="M56 16 H70 L79 32" stroke="url(#cartLoaderGrad)" strokeWidth="7" strokeLinecap="round" strokeLinejoin="round" fill="none" />
+            <path d="M79 32 H122 Q127 32 125 39 L114 72 Q112 77 107 77 H90 Q85 77 83 72 L72 39 Q70 32 79 32 Z" fill="url(#cartLoaderGrad)" />
+            <line x1="91" y1="42" x2="89" y2="68" stroke="white" strokeWidth="2.2" opacity="0.85" />
+            <line x1="102" y1="42" x2="101" y2="68" stroke="white" strokeWidth="2.2" opacity="0.85" />
+            <line x1="82" y1="52" x2="115" y2="52" stroke="white" strokeWidth="2.2" opacity="0.85" />
+            <line x1="85" y1="64" x2="112" y2="64" stroke="white" strokeWidth="2.2" opacity="0.85" />
+            <circle cx="91" cy="84" r="8" fill="url(#cartLoaderGrad)" />
+            <circle cx="91" cy="84" r="3" fill="white" />
+            <circle cx="108" cy="84" r="8" fill="url(#cartLoaderGrad)" />
+            <circle cx="108" cy="84" r="3" fill="white" />
+          </svg>
+        </div>
       );
     }
     // Shared cold-start loading screen — one consistent look for every stage

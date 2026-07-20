@@ -83,16 +83,32 @@ const PRICING = {
     'claude-haiku-4-5-20251001':  { in: 1, out: 5 },
   },
   gemini: {
+    'gemini-2.0-flash-lite':     { in: 0.075, out: 0.30 },
+    'gemini-2.0-flash':          { in: 0.10, out: 0.40 },
     'gemini-2.5-flash-lite':     { in: 0.10, out: 0.40 },
     'gemini-2.5-flash':          { in: 0.30, out: 2.50 },
     'gemini-2.5-pro':            { in: 1.25, out: 10.00 },
     'gemini-3.1-flash-lite':     { in: 0.25, out: 1.50 },
+    'gemini-3.5-flash':          { in: 1.50, out: 9.00 },
+    'gemini-3.1-pro-preview':    { in: 2.00, out: 12.00 },
+    'gemini-omni-flash-preview': { in: 1.50, out: 9.00 },
   },
   openai: {
-    'gpt-4o-mini':  { in: 0.15, out: 0.60 },
-    'gpt-4o':       { in: 2.50, out: 10.00 },
-    'gpt-4.1':      { in: 2.00, out: 8.00 },
-    'gpt-4.1-mini': { in: 0.40, out: 1.60 },
+    'gpt-4o-mini':   { in: 0.15, out: 0.60 },
+    'gpt-4o':        { in: 2.50, out: 10.00 },
+    'gpt-4.1':       { in: 2.00, out: 8.00 },
+    'gpt-4.1-mini':  { in: 0.40, out: 1.60 },
+    'gpt-5.4-nano':  { in: 0.20, out: 1.25 },
+    'gpt-5.4-mini':  { in: 0.75, out: 4.50 },
+    'gpt-5.4':       { in: 2.50, out: 15.00 },
+    'gpt-5.4-pro':   { in: 30.00, out: 180.00 },
+    'gpt-5.5':       { in: 5.00, out: 30.00 },
+    'gpt-5.5-pro':   { in: 30.00, out: 180.00 },
+    'gpt-5.6-luna':  { in: 1.00, out: 6.00 },
+    'gpt-5.6-terra': { in: 2.50, out: 15.00 },
+    'gpt-5.6-sol':   { in: 5.00, out: 30.00 },
+    'gpt-5.3-codex': { in: 1.75, out: 14.00 },
+    'chat-latest':   { in: 5.00, out: 30.00 },
   }
 };
 
@@ -163,7 +179,12 @@ async function callAI(ai, prompt, maxTokens) {
         `מפתח ה-${name} שלך אינו תקין או פג תוקף.\n\nמה לעשות: פתח הגדרות → הגדרות AI, מחק את המפתח הנוכחי והדבק מפתח תקין.`
       );
     }
-    if (status === 429 || msg.includes('rate limit') || msg.includes('quota exceeded') || msg.includes('too many requests') || msg.includes('rate_limit_exceeded')) {
+    if (msg.includes('insufficient_quota') || msg.includes('exceeded your current quota') || msg.includes('billing') || e.code === 'insufficient_quota') {
+      throw new HttpsError('resource-exhausted',
+        `לחשבון ה-${name} שלך אין מכסה זמינה — בדרך כלל זה אומר שלא הוגדר אמצעי תשלום, או שנגמר קרדיט ניסיון חינמי.\n\nמה לעשות: היכנס לעמוד החיוב בחשבון ה-${name} שלך והוסף אמצעי תשלום, ואז נסה שוב.`
+      );
+    }
+    if (status === 429 || msg.includes('rate limit') || msg.includes('too many requests') || msg.includes('rate_limit_exceeded')) {
       throw new HttpsError('resource-exhausted',
         `הגעת למגבלת הקצב של ${name} — נשלחו יותר מדי בקשות במהירות.\n\nמה לעשות: המתן 30–60 שניות ונסה שוב, או עבור לספק AI אחר בהגדרות.`
       );
@@ -230,6 +251,70 @@ exports.parseItems = onCall(
 
     const items = extractJsonArray(raw);
     return { items };
+  }
+);
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Live model catalog — lets Settings show each provider's current model list
+// (ours goes stale as providers ship new models) with a price hint per model.
+// ─────────────────────────────────────────────────────────────────────────────
+function cheapestModelId(models) {
+  const priced = models.filter(m => m.price);
+  if (priced.length === 0) return null;
+  return priced.reduce((a, b) => (a.price.in + a.price.out) <= (b.price.in + b.price.out) ? a : b).id;
+}
+
+exports.listProviderModels = onCall(
+  { timeoutSeconds: 30, memory: '128MiB', region: 'europe-west1' },
+  async (request) => {
+    await requireAuthorized(request);
+    const { provider, apiKey } = request.data || {};
+    if (!apiKey || typeof apiKey !== 'string') throw new HttpsError('invalid-argument', 'apiKey required');
+
+    async function fetchJson(url, headers) {
+      let res;
+      try {
+        res = await fetch(url, { headers });
+      } catch (e) {
+        throw new HttpsError('unavailable', `לא ניתן היה להגיע לספק: ${e.message}`);
+      }
+      if (!res.ok) {
+        if (res.status === 401 || res.status === 403) {
+          throw new HttpsError('permission-denied', 'מפתח ה-API נדחה. בדוק אותו ונסה שוב.');
+        }
+        throw new HttpsError('failed-precondition', `לא ניתן היה לקבל רשימת מודלים (HTTP ${res.status}).`);
+      }
+      return res.json();
+    }
+
+    if (provider === 'openai') {
+      const json = await fetchJson('https://api.openai.com/v1/models', { Authorization: `Bearer ${apiKey}` });
+      const EXCLUDE = /embedding|whisper|tts|dall-e|davinci|babbage|moderation|realtime|audio|transcribe|image|search|omni-moderation/i;
+      const models = (json.data || [])
+        .filter(m => /^(gpt-|o[1-9]|chatgpt|chat-)/i.test(m.id) && !EXCLUDE.test(m.id))
+        .map(m => ({ id: m.id, price: PRICING.openai[m.id] || null }))
+        .sort((a, b) => a.id.localeCompare(b.id));
+      return { models, cheapestId: cheapestModelId(models) };
+    }
+    if (provider === 'anthropic') {
+      const json = await fetchJson('https://api.anthropic.com/v1/models', { 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' });
+      const models = (json.data || [])
+        .map(m => ({ id: m.id, label: m.display_name || null, price: PRICING.anthropic[m.id] || null }))
+        .sort((a, b) => (b.created_at || '').localeCompare(a.created_at || ''));
+      return { models, cheapestId: cheapestModelId(models) };
+    }
+    if (provider === 'gemini') {
+      const json = await fetchJson(`https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(apiKey)}`, {});
+      const models = (json.models || [])
+        .filter(m => (m.supportedGenerationMethods || []).includes('generateContent') && !/embedding|aqa|imagen|veo/i.test(m.name))
+        .map(m => {
+          const id = m.name.replace(/^models\//, '');
+          return { id, label: m.displayName || null, price: PRICING.gemini[id] || null };
+        })
+        .sort((a, b) => a.id.localeCompare(b.id));
+      return { models, cheapestId: cheapestModelId(models) };
+    }
+    throw new HttpsError('invalid-argument', 'Unknown provider');
   }
 );
 

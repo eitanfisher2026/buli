@@ -1,6 +1,6 @@
     const { useState, useEffect, useRef } = React;
 
-    const VERSION = "v5.58";
+    const VERSION = "v5.59";
 
     // ── CONFIG ────────────────────────────────────────────────────────────────────
     const FIREBASE_CONFIG = {
@@ -27,6 +27,24 @@
       anthropic: { name: "Claude", label: "Anthropic", defaultModel: "claude-haiku-4-5-20251001", keyHint: "sk-ant-...", free: false },
       openai:    { name: "ChatGPT", label: "OpenAI",   defaultModel: "gpt-4o-mini",               keyHint: "sk-...",     free: false },
       gemini:    { name: "Gemini",  label: "Google",   defaultModel: "gemini-2.5-flash-lite",      keyHint: "AIza...",    free: true  }
+    };
+    // Shown before the user presses "refresh list" to pull the real, current
+    // catalog from the provider — kept short since it goes stale over time.
+    const FALLBACK_MODELS = {
+      anthropic: [
+        { id: "claude-haiku-4-5-20251001", label: "Claude Haiku 4.5 — מהיר וזול" },
+        { id: "claude-sonnet-4-6",         label: "Claude Sonnet 4.6 — חזק יותר" },
+      ],
+      openai: [
+        { id: "gpt-4o-mini",  label: "GPT-4o Mini — מהיר וזול" },
+        { id: "gpt-5.4-nano", label: "GPT-5.4 Nano — הכי זול" },
+        { id: "gpt-5.4-mini", label: "GPT-5.4 Mini" },
+      ],
+      gemini: [
+        { id: "gemini-2.5-flash-lite", label: "Gemini 2.5 Flash-Lite — הכי זול" },
+        { id: "gemini-2.5-flash",      label: "Gemini 2.5 Flash" },
+        { id: "gemini-3.1-flash-lite", label: "Gemini 3.1 Flash-Lite — חדש וזול" },
+      ],
     };
     function getAIModel(p) {
       return AI_PROVIDERS[p].defaultModel;
@@ -704,8 +722,41 @@
       const [anthropicKey, setAnthropicKey] = useState("");
       const [aiModel,      setAiModel]      = useState(getAIModel("anthropic"));
       const [aiPrompt,     setAiPrompt]     = useState(DEFAULT_AI_PROMPT);
-      const switchProvider = (p) => { setAiProvider(p); setAiModel(getAIModel(p)); };
+      const switchProvider = (p) => { setAiProvider(p); setAiModel(getAIModel(p)); setLiveModelsErr(""); };
       const [promptOpen, setPromptOpen] = useState(false);
+
+      // Live model catalog for the active provider, fetched on demand — the
+      // hardcoded defaultModel above goes stale as providers ship new models.
+      const [liveModels, setLiveModels] = useState({});      // { [provider]: { models, cheapestId } }
+      const [liveModelsLoading, setLiveModelsLoading] = useState(false);
+      const [liveModelsErr, setLiveModelsErr] = useState("");
+      const currentProviderKey = () => (aiProvider === "openai" ? openaiKey : aiProvider === "gemini" ? geminiKey : anthropicKey);
+      const refreshModels = () => {
+        var key = currentProviderKey();
+        if (!key.trim() || liveModelsLoading) return;
+        setLiveModelsLoading(true);
+        setLiveModelsErr("");
+        fns.httpsCallable("listProviderModels")({ provider: aiProvider, apiKey: key.trim() }).then(function(res) {
+          setLiveModels(function(m) { var next = Object.assign({}, m); next[aiProvider] = res.data; return next; });
+          setLiveModelsLoading(false);
+        }).catch(function(e) {
+          setLiveModelsErr(e.message);
+          setLiveModelsLoading(false);
+        });
+      };
+      const modelLabel = (m, cheapestId) => {
+        var price = m.price ? (" — $" + m.price.in + "/$" + m.price.out + " למיליון") : "";
+        var cheap = m.id === cheapestId ? " · 💰 הכי זול" : "";
+        return (m.label || m.id) + price + cheap;
+      };
+      // Always include the currently-selected model, even if it fell out of
+      // the live/fallback list, so the <select> never silently blanks it.
+      const modelOptions = (models, currentId) => {
+        if (currentId && !models.some(function(m) { return m.id === currentId; })) {
+          return [{ id: currentId, label: currentId }].concat(models);
+        }
+        return models;
+      };
 
       // ── Price comparison vendor profiles (own preference, admin controls
       // the on/off flag and the max-active-at-once cap) ──
@@ -1537,9 +1588,26 @@
                           })}
 
                         <div className="mb-4">
-                          <p className="text-xs text-gray-500 mb-1 text-right">מודל</p>
-                          <input value={aiModel} onChange={function(e) { setAiModel(e.target.value); }} dir="ltr"
-                            className="w-full border border-gray-200 rounded-xl px-4 py-3 text-left focus:outline-none focus:border-blue-400 text-sm font-mono" />
+                          <div className="flex items-center justify-between mb-1">
+                            <button onClick={refreshModels} disabled={!currentProviderKey().trim() || liveModelsLoading}
+                              className="text-xs font-semibold text-blue-500 bg-blue-50 border border-blue-100 rounded-lg px-2 py-1 whitespace-nowrap disabled:opacity-40">
+                              {liveModelsLoading ? "בודק..." : "🔄 רענן רשימה"}
+                            </button>
+                            <p className="text-xs text-gray-500 text-right">מודל</p>
+                          </div>
+                          <select value={aiModel} onChange={function(e) { setAiModel(e.target.value); }} dir="ltr"
+                            className="w-full border border-gray-200 rounded-xl px-4 py-3 text-left focus:outline-none focus:border-blue-400 text-sm font-mono bg-white">
+                            {modelOptions((liveModels[aiProvider] && liveModels[aiProvider].models) || FALLBACK_MODELS[aiProvider], aiModel).map(function(m) {
+                              return <option key={m.id} value={m.id}>{modelLabel(m, liveModels[aiProvider] && liveModels[aiProvider].cheapestId)}</option>;
+                            })}
+                          </select>
+                          {liveModelsErr ? (
+                            <p className="text-xs text-red-500 mt-1 text-right">{liveModelsErr}</p>
+                          ) : liveModels[aiProvider] ? (
+                            <p className="text-xs text-gray-400 mt-1 text-right">נמצאו {liveModels[aiProvider].models.length} מודלים בחשבון שלך.</p>
+                          ) : (
+                            <p className="text-xs text-gray-400 mt-1 text-right">רשימת ברירת מחדל — לחץ "רענן רשימה" למודלים העדכניים מהחשבון שלך.</p>
+                          )}
                         </div>
 
                         <button onClick={function() { setPromptOpen(function(o) { return !o; }); }}

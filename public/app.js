@@ -1,6 +1,6 @@
     const { useState, useEffect, useRef } = React;
 
-    const VERSION = "v5.52";
+    const VERSION = "v5.53";
 
     // ── CONFIG ────────────────────────────────────────────────────────────────────
     const FIREBASE_CONFIG = {
@@ -224,6 +224,32 @@
           return ad > bd ? 1 : ad < bd ? -1 : 0;
         });
         return arr;
+      });
+    }
+    // RTDB's once('value') has no built-in timeout — if the connection dies
+    // silently (much more common on mobile: screen lock, backgrounding,
+    // switching wifi/cellular) the read never resolves *and* never rejects,
+    // so it hangs forever with nothing for a .catch to catch. This races it
+    // against a timeout so a stuck load surfaces as a retryable error instead.
+    function withTimeout(promise, ms, message) {
+      return new Promise(function(resolve, reject) {
+        var settled = false;
+        var timer = setTimeout(function() {
+          if (settled) return;
+          settled = true;
+          reject(new Error(message));
+        }, ms);
+        promise.then(function(v) {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timer);
+          resolve(v);
+        }, function(e) {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timer);
+          reject(e);
+        });
       });
     }
     // Kicks off the lists+tasks load as early as possible — App() calls this
@@ -968,7 +994,7 @@
         // to it, instead of only starting now. If a cached view already
         // exists (returning from a list/other screen within the same
         // session), this resolves instantly with no spinner.
-        prewarmHomeData(user.uid).then(function(data) {
+        withTimeout(prewarmHomeData(user.uid), 12000, "תם הזמן הקצוב לחיבור").then(function(data) {
           setLists(data.lists);
           setTasks(data.tasks);
           // Auto-set major if there's only one active shopping list and none is set
@@ -983,6 +1009,9 @@
           // Without this, a dropped connection (far more common on flaky mobile
           // networks than on wired desktop) left lists/tasks at null forever —
           // an infinite "טוען רשימות..." spinner with no error and no retry.
+          // The underlying prewarmHomeData call itself isn't cancelled: if it
+          // eventually completes in the background, it still populates the
+          // shared cache for next time.
           setLoadError((err && err.message) || "שגיאה בטעינת הרשימות");
         });
       };

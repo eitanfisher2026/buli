@@ -1,6 +1,6 @@
     const { useState, useEffect, useRef } = React;
 
-    const VERSION = "v5.55";
+    const VERSION = "v5.56";
 
     // ── CONFIG ────────────────────────────────────────────────────────────────────
     const FIREBASE_CONFIG = {
@@ -375,29 +375,34 @@
     function CartLoader() {
       return (
         <div className="cart-loader-track">
-          <svg className="cart-loader-rig" width="150" height="90" viewBox="0 0 150 90" fill="none" xmlns="http://www.w3.org/2000/svg">
-            <defs>
-              <linearGradient id="cartLoaderGrad" x1="0" y1="0" x2="1" y2="1">
-                <stop offset="0%" stopColor="#60a5fa" />
-                <stop offset="100%" stopColor="#2563eb" />
-              </linearGradient>
-            </defs>
-            <ellipse cx="99" cy="89" rx="22" ry="3" fill="#93c5fd" opacity="0.4" />
-            <line x1="2" y1="28" x2="34" y2="28" stroke="url(#cartLoaderGrad)" strokeWidth="5" strokeLinecap="round" opacity="0.35" />
-            <line x1="8" y1="39" x2="46" y2="39" stroke="url(#cartLoaderGrad)" strokeWidth="5" strokeLinecap="round" opacity="0.55" />
-            <line x1="2" y1="50" x2="42" y2="50" stroke="url(#cartLoaderGrad)" strokeWidth="5" strokeLinecap="round" opacity="0.75" />
-            <line x1="12" y1="61" x2="44" y2="61" stroke="url(#cartLoaderGrad)" strokeWidth="5" strokeLinecap="round" opacity="0.9" />
-            <path d="M56 16 H70 L79 32" stroke="url(#cartLoaderGrad)" strokeWidth="7" strokeLinecap="round" strokeLinejoin="round" fill="none" />
-            <path d="M79 32 H122 Q127 32 125 39 L114 72 Q112 77 107 77 H90 Q85 77 83 72 L72 39 Q70 32 79 32 Z" fill="url(#cartLoaderGrad)" />
-            <line x1="91" y1="42" x2="89" y2="68" stroke="white" strokeWidth="2.2" opacity="0.85" />
-            <line x1="102" y1="42" x2="101" y2="68" stroke="white" strokeWidth="2.2" opacity="0.85" />
-            <line x1="82" y1="52" x2="115" y2="52" stroke="white" strokeWidth="2.2" opacity="0.85" />
-            <line x1="85" y1="64" x2="112" y2="64" stroke="white" strokeWidth="2.2" opacity="0.85" />
-            <circle cx="91" cy="84" r="8" fill="url(#cartLoaderGrad)" />
-            <circle cx="91" cy="84" r="3" fill="white" />
-            <circle cx="108" cy="84" r="8" fill="url(#cartLoaderGrad)" />
-            <circle cx="108" cy="84" r="3" fill="white" />
-          </svg>
+          <div className="cart-loader-rig-wrap">
+            {/* Artwork is drawn facing right (basket/wheels right, trailing
+                lines left); mirrored here so it faces left to match the
+                right-to-left travel direction below. */}
+            <svg className="cart-loader-rig" width="150" height="90" viewBox="0 0 150 90" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <defs>
+                <linearGradient id="cartLoaderGrad" x1="0" y1="0" x2="1" y2="1">
+                  <stop offset="0%" stopColor="#60a5fa" />
+                  <stop offset="100%" stopColor="#2563eb" />
+                </linearGradient>
+              </defs>
+              <ellipse cx="99" cy="89" rx="22" ry="3" fill="#93c5fd" opacity="0.4" />
+              <line x1="2" y1="28" x2="34" y2="28" stroke="url(#cartLoaderGrad)" strokeWidth="5" strokeLinecap="round" opacity="0.35" />
+              <line x1="8" y1="39" x2="46" y2="39" stroke="url(#cartLoaderGrad)" strokeWidth="5" strokeLinecap="round" opacity="0.55" />
+              <line x1="2" y1="50" x2="42" y2="50" stroke="url(#cartLoaderGrad)" strokeWidth="5" strokeLinecap="round" opacity="0.75" />
+              <line x1="12" y1="61" x2="44" y2="61" stroke="url(#cartLoaderGrad)" strokeWidth="5" strokeLinecap="round" opacity="0.9" />
+              <path d="M56 16 H70 L79 32" stroke="url(#cartLoaderGrad)" strokeWidth="7" strokeLinecap="round" strokeLinejoin="round" fill="none" />
+              <path d="M79 32 H122 Q127 32 125 39 L114 72 Q112 77 107 77 H90 Q85 77 83 72 L72 39 Q70 32 79 32 Z" fill="url(#cartLoaderGrad)" />
+              <line x1="91" y1="42" x2="89" y2="68" stroke="white" strokeWidth="2.2" opacity="0.85" />
+              <line x1="102" y1="42" x2="101" y2="68" stroke="white" strokeWidth="2.2" opacity="0.85" />
+              <line x1="82" y1="52" x2="115" y2="52" stroke="white" strokeWidth="2.2" opacity="0.85" />
+              <line x1="85" y1="64" x2="112" y2="64" stroke="white" strokeWidth="2.2" opacity="0.85" />
+              <circle cx="91" cy="84" r="8" fill="url(#cartLoaderGrad)" />
+              <circle cx="91" cy="84" r="3" fill="white" />
+              <circle cx="108" cy="84" r="8" fill="url(#cartLoaderGrad)" />
+              <circle cx="108" cy="84" r="3" fill="white" />
+            </svg>
+          </div>
         </div>
       );
     }

@@ -1,6 +1,6 @@
     const { useState, useEffect, useRef } = React;
 
-    const VERSION = "v5.50";
+    const VERSION = "v5.51";
 
     // ── CONFIG ────────────────────────────────────────────────────────────────────
     const FIREBASE_CONFIG = {
@@ -165,6 +165,89 @@
     // "back to menu" tap re-triggers the full lists+tasks load (and its
     // spinner) even a second after you were just looking at it.
     var homeDataCache = null; // { lists, tasks }
+    var homeDataPromise = null; // in-flight prewarm — shared so App() starting
+    // it early and HomeScreen's own mount don't each fire a duplicate fetch.
+
+    // listsByUser/{uid} is a point-read index kept up to date by every
+    // create/share/delete path in HomeScreen — avoids scanning the app-wide
+    // `lists` table (every user's every list) just to filter to "mine"
+    // client-side. Existing users haven't had that index backfilled yet, so
+    // each user does exactly one full scan (same cost as before this change,
+    // no visibility regression) the first time, backfills their own index,
+    // and marks themselves migrated so every load after that uses the cheap
+    // indexed path instead.
+    function loadMyListsFor(uid) {
+      return Promise.all([
+        db.ref("listsMigrated/" + uid).once("value"),
+        db.ref("listsByUser/" + uid).once("value"),
+      ]).then(function(results) {
+        var migrated = results[0].val();
+        var idxSnap = results[1];
+        if (migrated) {
+          var ids = Object.keys(idxSnap.val() || {});
+          if (ids.length === 0) return [];
+          return Promise.all(ids.map(function(id) { return db.ref("lists/" + id).once("value"); })).then(function(snaps) {
+            var arr = [];
+            snaps.forEach(function(s, i) {
+              if (!s.exists()) return;
+              var l = Object.assign({ id: ids[i] }, s.val());
+              if (l.type !== "tasks") arr.push(l);
+            });
+            return arr;
+          });
+        }
+        return db.ref("lists").once("value").then(function(snap) {
+          var arr = []; var backfill = {};
+          snap.forEach(function(c) {
+            var l = Object.assign({ id: c.key }, c.val());
+            var mine = l.ownerId === uid || (l.sharedWith && l.sharedWith[uid]);
+            if (mine) backfill["listsByUser/" + uid + "/" + c.key] = true;
+            if (mine && l.type !== "tasks") arr.push(l);
+          });
+          backfill["listsMigrated/" + uid] = true;
+          db.ref().update(backfill).catch(function() {});
+          return arr;
+        });
+      }).then(function(arr) {
+        arr.sort(function(a, b) { return b.createdAt - a.createdAt; });
+        return arr;
+      });
+    }
+    function loadTasksFor(tasksListId) {
+      return db.ref("items/" + tasksListId).once("value").then(function(snap) {
+        var arr = [];
+        snap.forEach(function(c) { arr.push(Object.assign({ id: c.key }, c.val())); });
+        arr.sort(function(a, b) {
+          var ad = a.dueDate || "", bd = b.dueDate || "";
+          if (!ad && !bd) return (a.createdAt || 0) - (b.createdAt || 0);
+          if (!ad) return 1; if (!bd) return -1;
+          return ad > bd ? 1 : ad < bd ? -1 : 0;
+        });
+        return arr;
+      });
+    }
+    // Kicks off the lists+tasks load as early as possible — App() calls this
+    // the moment it knows the uid, in parallel with the getMyRole round-trip,
+    // instead of waiting for role to resolve before HomeScreen even mounts
+    // and starts fetching. HomeScreen's own mount awaits this same call, so
+    // whichever side triggers it first, the other just reuses the in-flight
+    // promise rather than firing a second copy of the same reads.
+    function prewarmHomeData(uid) {
+      if (homeDataCache) return Promise.resolve(homeDataCache);
+      if (homeDataPromise) return homeDataPromise;
+      homeDataPromise = Promise.all([
+        loadMyListsFor(uid),
+        loadTasksFor("tasks_" + uid),
+      ]).then(function(results) {
+        homeDataCache = { lists: results[0], tasks: results[1] };
+        homeDataPromise = null;
+        return homeDataCache;
+      }, function(err) {
+        homeDataPromise = null;
+        throw err;
+      });
+      return homeDataPromise;
+    }
     // Autocomplete suggestions only — real, common Israeli chains, most of
     // which aren't actually wired up yet. Typing/picking one of these that
     // isn't in VENDOR_LIST above just surfaces the "ask the admin" request
@@ -257,6 +340,19 @@
       return large
         ? <div className="spinner w-8 h-8 border-2 border-blue-600 border-t-transparent rounded-full" />
         : <div className="spinner w-5 h-5 border-2 border-white border-t-transparent rounded-full inline-block" />;
+    }
+    // Shared cold-start loading screen — one consistent look for every stage
+    // (auth init, role check) instead of two blank near-identical screens,
+    // with a real label reflecting what's actually happening at that moment.
+    // The 🛒 span is the one spot to swap in an animated GIF later.
+    function LoadingScreen({ label }) {
+      return (
+        <div className="bg-gray-50 flex flex-col items-center justify-center gap-3" style={{height:"100dvh"}}>
+          <span className="text-6xl">🛒</span>
+          <Spinner large />
+          {label && <p className="text-sm text-gray-400">{label}</p>}
+        </div>
+      );
     }
     function Modal({ onClose, children }) {
       const [dragY, setDragY] = React.useState(0);
@@ -392,6 +488,12 @@
           setLoading(false);
           if (u) {
             setRoleLoading(true);
+            // Fire this the moment we know the uid, in parallel with the role
+            // check below, instead of waiting for role to resolve before
+            // HomeScreen even mounts and starts fetching — shaves a full
+            // round-trip off the cold-start chain. Harmless no-op if the
+            // account turns out to be unauthorized (rules just deny the read).
+            prewarmHomeData(u.uid).catch(function() {});
             fns.httpsCallable("getMyRole")().then(function(res) {
               setRole(res.data.role || null);
               setRoleLoading(false);
@@ -435,9 +537,9 @@
         });
       }, []);
 
-      if (loading)     return <div className="flex items-center justify-center h-screen text-5xl">🛒</div>;
+      if (loading)     return <LoadingScreen label="מתחבר..." />;
       if (!user)       return <LoginScreen />;
-      if (roleLoading) return <div className="flex items-center justify-center h-screen text-5xl">🛒</div>;
+      if (roleLoading) return <LoadingScreen label="בודק הרשאות..." />;
       if (!role)       return <NotAuthorizedScreen user={user} />;
 
       const pushNav = (state) => { navHistoryRef.current.push(state); histDepthRef.current++; window.history.pushState({ d: histDepthRef.current }, '', '/'); };
@@ -858,79 +960,23 @@
       };
 
       useEffect(function() {
-        // listsByUser/{uid} is a point-read index kept up to date by every
-        // create/share/delete path below — avoids scanning the app-wide
-        // `lists` table (every user's every list) just to filter to "mine"
-        // client-side. Existing users haven't had that index backfilled yet,
-        // so each user does exactly one full scan (same cost as before this
-        // change, no visibility regression) the first time, backfills their
-        // own index, and marks themselves migrated so every load after that
-        // uses the cheap indexed path instead.
-        function loadMyLists() {
-          // migrated-check and the index read don't depend on each other, so
-          // fire both at once instead of chaining them — cuts a full
-          // round-trip off the common (already-migrated) case.
-          return Promise.all([
-            db.ref("listsMigrated/" + user.uid).once("value"),
-            db.ref("listsByUser/" + user.uid).once("value"),
-          ]).then(function(results) {
-            var migrated = results[0].val();
-            var idxSnap = results[1];
-            if (migrated) {
-              var ids = Object.keys(idxSnap.val() || {});
-              if (ids.length === 0) return [];
-              return Promise.all(ids.map(function(id) { return db.ref("lists/" + id).once("value"); })).then(function(snaps) {
-                var arr = [];
-                snaps.forEach(function(s, i) {
-                  if (!s.exists()) return;
-                  var l = Object.assign({ id: ids[i] }, s.val());
-                  if (l.type !== "tasks") arr.push(l);
-                });
-                return arr;
-              });
-            }
-            return db.ref("lists").once("value").then(function(snap) {
-              var arr = []; var backfill = {};
-              snap.forEach(function(c) {
-                var l = Object.assign({ id: c.key }, c.val());
-                var mine = l.ownerId === user.uid || (l.sharedWith && l.sharedWith[user.uid]);
-                if (mine) backfill["listsByUser/" + user.uid + "/" + c.key] = true;
-                if (mine && l.type !== "tasks") arr.push(l);
-              });
-              backfill["listsMigrated/" + user.uid] = true;
-              db.ref().update(backfill).catch(function() {});
-              return arr;
-            });
-          });
-        }
-        // If a cached view already exists (returning from a list/other screen
-        // within the same session), keep showing it instantly — no spinner —
-        // while this quietly refreshes in the background to pick up anything
-        // that changed elsewhere (e.g. someone else shared a new list).
-        loadMyLists().then(function(arr) {
-          arr.sort(function(a, b) { return b.createdAt - a.createdAt; });
-          setLists(arr);
-          homeDataCache = Object.assign({}, homeDataCache, { lists: arr });
+        // App() already kicked this off the moment the uid was known, in
+        // parallel with the getMyRole round-trip — by the time HomeScreen
+        // mounts (which waits on role), this is often already done or close
+        // to it, instead of only starting now. If a cached view already
+        // exists (returning from a list/other screen within the same
+        // session), this resolves instantly with no spinner.
+        prewarmHomeData(user.uid).then(function(data) {
+          setLists(data.lists);
+          setTasks(data.tasks);
           // Auto-set major if there's only one active shopping list and none is set
-          var active = arr.filter(function(l) { return !l.done && l.type !== "notes"; });
+          var active = data.lists.filter(function(l) { return !l.done && l.type !== "notes"; });
           if (active.length === 1) {
             try {
               var existing = JSON.parse(localStorage.getItem("buli_major_list"));
               if (!existing) { localStorage.setItem("buli_major_list", JSON.stringify({ id: active[0].id, name: active[0].name })); setMajorListIdState(active[0].id); }
             } catch(e) { localStorage.setItem("buli_major_list", JSON.stringify({ id: active[0].id, name: active[0].name })); setMajorListIdState(active[0].id); }
           }
-        });
-        db.ref("items/" + tasksListId).once("value").then(function(snap) {
-          var arr = [];
-          snap.forEach(function(c) { arr.push(Object.assign({ id: c.key }, c.val())); });
-          arr.sort(function(a, b) {
-            var ad = a.dueDate || "", bd = b.dueDate || "";
-            if (!ad && !bd) return (a.createdAt || 0) - (b.createdAt || 0);
-            if (!ad) return 1; if (!bd) return -1;
-            return ad > bd ? 1 : ad < bd ? -1 : 0;
-          });
-          setTasks(arr);
-          homeDataCache = Object.assign({}, homeDataCache, { tasks: arr });
         });
       }, []);
 
@@ -1099,8 +1145,9 @@
             </div>
             <p className="text-white/60 text-sm mt-2 text-right">שלום, {user.displayName.split(" ")[0]}</p>
           </div>
-          <div className="flex-1 flex items-center justify-center">
+          <div className="flex-1 flex flex-col items-center justify-center gap-3">
             <Spinner large />
+            <p className="text-sm text-gray-400">טוען רשימות...</p>
           </div>
         </div>
       );

@@ -1,6 +1,6 @@
     const { useState, useEffect, useRef } = React;
 
-    const VERSION = "v5.77";
+    const VERSION = "v5.78";
 
     // ── CONFIG ────────────────────────────────────────────────────────────────────
     const FIREBASE_CONFIG = {
@@ -3632,20 +3632,27 @@
               </div>
             ) : viewMode === "table" && pricingEnabled && !isTasks && !isNotes ? (
               <PriceComparisonTable items={orderByCategory(items.filter(function(i) { return !i.done; }))} activeProfiles={activeProfiles} priceMap={priceMap} canEditItem={canEditItem} onEditItem={editFn} />
-            ) : (
+            ) : isTasks ? (
               <>
                 {renderGroup(notDone)}
                 {done.length > 0 && (
                   <div className="mb-5 mt-2">
                     <div className="text-xs font-semibold text-gray-300 mb-2 flex items-center gap-1">
-                      <span>{isTasks ? "✅" : "🛒"}</span><span>{isTasks ? "הושלם" : "בסל"}</span>
+                      <span>✅</span><span>הושלם</span>
                     </div>
                     <div className="space-y-2">
-                      {done.map(item => <ItemRow key={item.id} item={item} canEdit={canEditItem(item)} onToggle={toggle} onDelete={remove} onEdit={() => editFn(item)} onUpdateNote={updateNote} isTasks={isTasks} currentUserId={user.uid} />)}
+                      {done.map(item => <ItemRow key={item.id} item={item} canEdit={canEditItem(item)} onToggle={toggle} onDelete={remove} onEdit={() => editFn(item)} onUpdateNote={updateNote} isTasks={true} currentUserId={user.uid} />)}
                     </div>
                   </div>
                 )}
               </>
+            ) : (
+              // Marking an item "in the basket" no longer moves it to a
+              // separate section at the bottom — it stays exactly where it
+              // was in the list, just visually marked (line-through, filled
+              // basket icon), so the list doesn't reshuffle under the user's
+              // finger while shopping.
+              renderGroup(filteredItems)
             )}
           </div>
 

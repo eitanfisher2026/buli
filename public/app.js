@@ -1,6 +1,6 @@
     const { useState, useEffect, useRef } = React;
 
-    const VERSION = "v5.79";
+    const VERSION = "v5.80";
 
     // ── CONFIG ────────────────────────────────────────────────────────────────────
     const FIREBASE_CONFIG = {
@@ -1036,6 +1036,7 @@
       const [showFirebaseUsage, setShowFirebaseUsage] = useState(false);
       const [firebaseUsageLoading, setFirebaseUsageLoading] = useState(false);
       const [firebaseUsageMonths, setFirebaseUsageMonths] = useState(null);
+      const [expandedUsageMonth, setExpandedUsageMonth] = useState(null);
       const loadFirebaseUsage = () => {
         setFirebaseUsageLoading(true);
         fns.httpsCallable("getPricingUsage")().then(function(res) {
@@ -2040,6 +2041,7 @@
                       ) : (
                         <div>
                           {firebaseUsageMonths.map(function(m) {
+                            var expanded = expandedUsageMonth === m.month;
                             return (
                               <div key={m.month} className="bg-gray-50 rounded-xl px-3 py-2 mb-2">
                                 <div className="flex items-center justify-between mb-1">
@@ -2051,6 +2053,29 @@
                                   <div>חיפושי מוצר חדש: {m.catalogReadCount} ({formatBytes(m.catalogReadBytes)} נקראו)</div>
                                   <div>בדיקות מחיר לפריט קיים: {m.pointReadCount} (זניח)</div>
                                 </div>
+                                {m.byUser && m.byUser.length > 0 && (
+                                  <div className="mt-1.5 pt-1.5 border-t border-gray-200">
+                                    <button onClick={function() { setExpandedUsageMonth(expanded ? null : m.month); }}
+                                      className="text-xs text-blue-500 font-medium">
+                                      {expanded ? "▲ הסתר לפי משתמש" : "▼ פירוט לפי משתמש (" + m.byUser.length + ")"}
+                                    </button>
+                                    {expanded && (
+                                      <div className="mt-1.5 space-y-1">
+                                        {m.byUser.map(function(u) {
+                                          return (
+                                            <div key={u.uid} className="flex items-center justify-between text-xs text-gray-500 bg-white rounded-lg px-2 py-1.5">
+                                              <span className="truncate">{u.email || u.uid}</span>
+                                              <span className="flex-shrink-0 flex items-center gap-2">
+                                                <span>רענונים: {u.catalogRefreshCount}</span>
+                                                <span className="font-semibold text-green-500">≈${u.estimatedUsd.toFixed(3)}</span>
+                                              </span>
+                                            </div>
+                                          );
+                                        })}
+                                      </div>
+                                    )}
+                                  </div>
+                                )}
                               </div>
                             );
                           })}

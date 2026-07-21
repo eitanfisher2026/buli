@@ -62,18 +62,24 @@ async function recordCost(request, ai, inputTokens, outputTokens) {
   return costUsd;
 }
 
-// Realtime Database usage for the pricing feature — global (not per-user,
-// since the catalog is shared infrastructure everyone reads from, and it's
-// Eitan who pays regardless of who triggered which read). This is *our own*
+// Realtime Database usage for the pricing feature — the totals stay global
+// (it's Eitan who pays the one Firebase bill regardless of who triggered
+// which read), but each field is also mirrored under byUser/{uid} when the
+// caller is known, purely for attribution/visibility — "who's actually
+// driving this cost" — not a separate bill. System-triggered usage (the
+// scheduled catalog refresh) has no uid and so is only ever counted in the
+// global total, never attributed to a person. This is *our own*
 // approximation of bytes moved, not a query against Google's actual billing
 // data (RTDB doesn't expose that programmatically) — good enough to show
 // whether the feature is behaving, not a substitute for the real invoice.
-async function recordPricingUsage(fields) {
+async function recordPricingUsage(fields, uid, email) {
   const month = new Date().toISOString().slice(0, 7);
   const updates = {};
   for (const [key, value] of Object.entries(fields)) {
     updates[`pricingUsage/${month}/${key}`] = admin.database.ServerValue.increment(value);
+    if (uid) updates[`pricingUsage/${month}/byUser/${uid}/${key}`] = admin.database.ServerValue.increment(value);
   }
+  if (uid && email) updates[`pricingUsage/${month}/byUser/${uid}/email`] = email;
   await db.ref().update(updates).catch(() => {});
 }
 
@@ -364,6 +370,12 @@ exports.getCosts = onCall(
 // region, free-tier thresholds, and everything else in the project).
 const RTDB_DOWNLOAD_USD_PER_GB = 1;
 const RTDB_STORAGE_USD_PER_GB_MONTH = 5;
+// Writes are actually billed as stored data, not download bandwidth —
+// approximating them at the download rate is deliberately the more
+// conservative (higher) estimate rather than the more precise one.
+function estimatePricingUsd(readBytes, writeBytes) {
+  return (readBytes / 1e9) * RTDB_DOWNLOAD_USD_PER_GB + (writeBytes / 1e9) * RTDB_STORAGE_USD_PER_GB_MONTH;
+}
 exports.getPricingUsage = onCall(
   { timeoutSeconds: 30, memory: '128MiB', region: 'europe-west1' },
   async (request) => {
@@ -374,11 +386,16 @@ exports.getPricingUsage = onCall(
     const months = Object.entries(val).map(([month, m]) => {
       const readBytes = (m.catalogReadBytes || 0);
       const writeBytes = (m.catalogWriteBytes || 0);
-      // Writes are actually billed as stored data, not download bandwidth —
-      // approximating them at the download rate is deliberately the more
-      // conservative (higher) estimate rather than the more precise one.
-      const estimatedUsd = (readBytes / 1e9) * RTDB_DOWNLOAD_USD_PER_GB
-        + (writeBytes / 1e9) * RTDB_STORAGE_USD_PER_GB_MONTH;
+      const byUser = Object.entries(m.byUser || {}).map(([uid, u]) => ({
+        uid,
+        email: u.email || null,
+        catalogReadBytes: u.catalogReadBytes || 0,
+        catalogWriteBytes: u.catalogWriteBytes || 0,
+        catalogRefreshCount: u.catalogRefreshCount || 0,
+        catalogReadCount: u.catalogReadCount || 0,
+        pointReadCount: u.pointReadCount || 0,
+        estimatedUsd: estimatePricingUsd(u.catalogReadBytes || 0, u.catalogWriteBytes || 0),
+      })).sort((a, b) => b.estimatedUsd - a.estimatedUsd);
       return {
         month,
         catalogReadBytes: readBytes,
@@ -386,7 +403,8 @@ exports.getPricingUsage = onCall(
         catalogRefreshCount: m.catalogRefreshCount || 0,
         catalogReadCount: m.catalogReadCount || 0,
         pointReadCount: m.pointReadCount || 0,
-        estimatedUsd,
+        estimatedUsd: estimatePricingUsd(readBytes, writeBytes),
+        byUser,
       };
     }).sort((a, b) => b.month.localeCompare(a.month));
     return { months };
@@ -684,7 +702,7 @@ async function ingestVendorBranches(vendor) {
 // Refreshes vendorCatalog/{vendor}/{branchId} from that branch's latest full
 // price snapshot. Writes the whole catalog in one .set() — cheap in RTDB
 // regardless of item count (bills by bytes, not by write count).
-async function ingestVendorCatalog(vendor, branchId) {
+async function ingestVendorCatalog(vendor, branchId, uid, email) {
   const client = await ftpConnect(vendor);
   try {
     const list = await client.list();
@@ -720,7 +738,7 @@ async function ingestVendorCatalog(vendor, branchId) {
       [`vendorCatalog/${vendor}/${branchId}`]: payload,
       [`vendorCatalogIndex/${vendor}/${branchId}`]: { updatedAt, sizeBytes, itemCount: Object.keys(items).length },
     });
-    await recordPricingUsage({ catalogWriteBytes: sizeBytes, catalogRefreshCount: 1 });
+    await recordPricingUsage({ catalogWriteBytes: sizeBytes, catalogRefreshCount: 1 }, uid, email);
     return items;
   } finally {
     client.close();
@@ -737,13 +755,13 @@ function sameIsraelDate(ts1, ts2) {
   return fmt.format(new Date(ts1)) === fmt.format(new Date(ts2));
 }
 
-async function ensureFreshCatalog(vendor, branchId, force) {
+async function ensureFreshCatalog(vendor, branchId, force, uid, email) {
   const metaSnap = await db.ref(`vendorCatalog/${vendor}/${branchId}/updatedAt`).once('value');
   const updatedAt = metaSnap.val();
   if (!force && updatedAt) {
     const itemsSnap = await db.ref(`vendorCatalog/${vendor}/${branchId}/items`).once('value');
     const items = itemsSnap.val() || {};
-    await recordPricingUsage({ catalogReadBytes: Buffer.byteLength(JSON.stringify(items)), catalogReadCount: 1 });
+    await recordPricingUsage({ catalogReadBytes: Buffer.byteLength(JSON.stringify(items)), catalogReadCount: 1 }, uid, email);
     // Serve what's cached right away instead of blocking this request on a
     // 30-50s re-ingest just because the 18h freshness window lapsed — that
     // was a ~1 minute stall before "match item" appeared on the client
@@ -752,13 +770,13 @@ async function ensureFreshCatalog(vendor, branchId, force) {
     // instance stays warm), but the scheduled refreshActiveVendorCatalogs
     // job below is what actually guarantees staleness never compounds.
     if (Date.now() - updatedAt >= CATALOG_STALENESS_MS) {
-      ingestVendorCatalog(vendor, branchId).catch(() => {});
+      ingestVendorCatalog(vendor, branchId, uid, email).catch(() => {});
     }
     return items;
   }
   // No cached data at all yet (first-ever ingest for this branch) — there's
   // nothing to serve immediately, so this one genuinely has to wait.
-  return ingestVendorCatalog(vendor, branchId);
+  return ingestVendorCatalog(vendor, branchId, uid, email);
 }
 
 // Runs independently of any user request so a real person's "match item" or
@@ -1045,7 +1063,7 @@ exports.resolveItemBarcodes = onCall(
     const catalogsByVendor = {};
     await Promise.all(vendorIds.map(async (vendor) => {
       const p = repProfileByVendor[vendor];
-      catalogsByVendor[vendor] = await ensureFreshCatalog(vendor, p.branchId).catch(() => ({}));
+      catalogsByVendor[vendor] = await ensureFreshCatalog(vendor, p.branchId, false, request.auth.uid, request.auth.token.email).catch(() => ({}));
     }));
 
     // Widen the SEARCH (not the price comparison) to any other integrated
@@ -1177,7 +1195,7 @@ exports.getBasketPrices = onCall(
               return itemsSnap.val() || {};
             }
             refreshedBranches.push(key);
-            return ingestVendorCatalog(p.vendor, p.branchId).catch(() => ({}));
+            return ingestVendorCatalog(p.vendor, p.branchId, request.auth.uid, request.auth.token.email).catch(() => ({}));
           })();
         }
         const items = await catalogByBranch[key];
@@ -1203,7 +1221,7 @@ exports.getBasketPrices = onCall(
         readCount++;
       }));
     }));
-    await recordPricingUsage({ pointReadCount: readCount });
+    await recordPricingUsage({ pointReadCount: readCount }, request.auth.uid, request.auth.token.email);
     return { prices, profiles: activeProfiles };
   }
 );

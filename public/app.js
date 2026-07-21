@@ -1,6 +1,6 @@
     const { useState, useEffect, useRef } = React;
 
-    const VERSION = "v5.68";
+    const VERSION = "v5.69";
 
     // ── CONFIG ────────────────────────────────────────────────────────────────────
     const FIREBASE_CONFIG = {
@@ -3895,9 +3895,13 @@
                 var priced = itemProfilePrices(item, activeProfiles, priceMap);
                 var byId = {};
                 priced.forEach(function(e) { byId[e.profile.id] = e.price; });
+                var qty = item.quantity || 1;
                 return (
                   <tr key={item.id}>
-                    <td className={"sticky right-0 bg-white z-10 px-3 py-2 border-b border-gray-100 text-right " + (item.done ? "line-through text-gray-400" : "text-gray-800")}>{item.name}</td>
+                    <td className={"sticky right-0 bg-white z-10 px-3 py-2 border-b border-gray-100 text-right " + (item.done ? "line-through text-gray-400" : "text-gray-800")}>
+                      {item.name}
+                      {qty !== 1 && <span className="text-gray-400"> ({qty})</span>}
+                    </td>
                     {activeProfiles.map(function(p) {
                       var bc = itemVendorBarcode(item, p.vendor);
                       var vendorPrices = priceMap[p.id];
@@ -3907,7 +3911,16 @@
                       var cellClass = !bc ? "text-gray-300" : !fetched ? "text-gray-300" : cheapestTextClass(price, others);
                       return (
                         <td key={p.id} className={"text-center px-3 py-2 border-b border-gray-100 " + cellClass}>
-                          {!bc ? "—" : !fetched ? "…" : price != null ? "₪" + price.toFixed(2) : "אין"}
+                          {!bc ? "—" : !fetched ? "…" : price != null ? (
+                            <div className="leading-tight">
+                              <div>₪{(price * qty).toFixed(2)}</div>
+                              {/* The line total above is what actually feeds
+                                  the "סה"כ" sum at the bottom — this breakdown
+                                  is what makes that arithmetic visible instead
+                                  of asking the user to trust a hidden ×qty. */}
+                              {qty !== 1 && <div className="text-[10px] text-gray-400">{qty}x{price.toFixed(2)}</div>}
+                            </div>
+                          ) : "אין"}
                         </td>
                       );
                     })}
@@ -3943,7 +3956,13 @@
       const saveNote = (e) => { e.stopPropagation(); onUpdateNote(item.id, noteVal.trim()); setEditingNote(false); };
       const cancelNote = (e) => { e.stopPropagation(); setNoteVal(item.note || ""); setEditingNote(false); };
 
-      const qty = (!isTasks && (item.quantity > 1 || (item.unit && item.unit !== "יחידות"))) ? item.quantity + " " + (item.unit || "") : "";
+      // Count and unit shown separately: "(2)" for how many, plus the unit
+      // label only when it's not the generic "יחידות" default (a weight/
+      // volume unit like "500 גרם" is real info; "יחידות" just repeats
+      // what buying by the piece already implies).
+      const qtyCount = (!isTasks && item.quantity && item.quantity !== 1) ? "(" + item.quantity + ")" : "";
+      const qtyUnit = (!isTasks && item.unit && item.unit !== "יחידות") ? item.unit : "";
+      const qty = [qtyCount, qtyUnit].filter(Boolean).join(" ");
       const dateStr = isTasks ? formatDueDate(item.dueDate) : "";
       const pricedEntries = (!isTasks && activeProfiles) ? itemProfilePrices(item, activeProfiles, priceMap || {}) : [];
 
@@ -4135,13 +4154,18 @@
             <div className="grid grid-cols-2 gap-2">
               <div>
                 <label className="text-xs text-gray-500 block mb-1">כמות</label>
-                <div className="relative">
+                {/* +/- buttons instead of relying on the native number input's
+                    tiny spinner arrows (or opening the keyboard) just to bump
+                    a quantity by 1 — the single most common edit here. */}
+                <div className="flex items-center gap-1">
+                  <button type="button"
+                    onClick={() => onChange({...item, quantity: Math.max(0.1, Math.round(((parseFloat(item.quantity) || 1) - 1) * 10) / 10)})}
+                    className="w-10 h-11 rounded-xl bg-gray-100 text-gray-600 text-xl font-bold flex items-center justify-center active:bg-gray-200 flex-shrink-0">−</button>
                   <input type="number" min="0.1" step="0.1" value={item.quantity || ""} onChange={e => onChange({...item, quantity: e.target.value})}
-                    className="w-full border border-gray-200 rounded-xl px-4 py-3 text-center focus:outline-none focus:border-blue-400 pr-8" />
-                  {item.quantity ? (
-                    <button onClick={() => onChange({...item, quantity: ""})}
-                      className="absolute left-2 top-1/2 -translate-y-1/2 text-gray-300 hover:text-gray-500 text-base leading-none">✕</button>
-                  ) : null}
+                    className="w-full min-w-0 border border-gray-200 rounded-xl px-1 py-3 text-center focus:outline-none focus:border-blue-400" />
+                  <button type="button"
+                    onClick={() => onChange({...item, quantity: Math.round(((parseFloat(item.quantity) || 0) + 1) * 10) / 10})}
+                    className="w-10 h-11 rounded-xl bg-blue-50 text-blue-600 text-xl font-bold flex items-center justify-center active:bg-blue-100 flex-shrink-0">+</button>
                 </div>
               </div>
               <div>

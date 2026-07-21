@@ -1,4 +1,5 @@
 const { onCall, HttpsError } = require('firebase-functions/v2/https');
+const { onSchedule } = require('firebase-functions/v2/scheduler');
 const admin = require('firebase-admin');
 const Anthropic = require('@anthropic-ai/sdk');
 const { GoogleGenerativeAI } = require('@google/generative-ai');
@@ -718,18 +719,52 @@ async function ingestVendorCatalog(vendor, branchId) {
 }
 
 async function ensureFreshCatalog(vendor, branchId, force) {
-  if (!force) {
-    const metaSnap = await db.ref(`vendorCatalog/${vendor}/${branchId}/updatedAt`).once('value');
-    const updatedAt = metaSnap.val();
-    if (updatedAt && Date.now() - updatedAt < CATALOG_STALENESS_MS) {
-      const itemsSnap = await db.ref(`vendorCatalog/${vendor}/${branchId}/items`).once('value');
-      const items = itemsSnap.val() || {};
-      await recordPricingUsage({ catalogReadBytes: Buffer.byteLength(JSON.stringify(items)), catalogReadCount: 1 });
-      return items;
+  const metaSnap = await db.ref(`vendorCatalog/${vendor}/${branchId}/updatedAt`).once('value');
+  const updatedAt = metaSnap.val();
+  if (!force && updatedAt) {
+    const itemsSnap = await db.ref(`vendorCatalog/${vendor}/${branchId}/items`).once('value');
+    const items = itemsSnap.val() || {};
+    await recordPricingUsage({ catalogReadBytes: Buffer.byteLength(JSON.stringify(items)), catalogReadCount: 1 });
+    // Serve what's cached right away instead of blocking this request on a
+    // 30-50s re-ingest just because the 18h freshness window lapsed — that
+    // was a ~1 minute stall before "match item" appeared on the client
+    // every time nobody had opened the list in the last 18 hours. A
+    // best-effort background refresh is attempted here (helps when the
+    // instance stays warm), but the scheduled refreshActiveVendorCatalogs
+    // job below is what actually guarantees staleness never compounds.
+    if (Date.now() - updatedAt >= CATALOG_STALENESS_MS) {
+      ingestVendorCatalog(vendor, branchId).catch(() => {});
     }
+    return items;
   }
+  // No cached data at all yet (first-ever ingest for this branch) — there's
+  // nothing to serve immediately, so this one genuinely has to wait.
   return ingestVendorCatalog(vendor, branchId);
 }
+
+// Runs independently of any user request so a real person's "match item" or
+// list-open action is never the thing waiting on a 30-50s FTP re-ingest —
+// see ensureFreshCatalog above for the request-time half of this fix.
+// Only refreshes branches someone actually has active, not every branch
+// ever historically ingested.
+exports.refreshActiveVendorCatalogs = onSchedule(
+  { schedule: 'every 12 hours', region: 'europe-west1', timeoutSeconds: 540, memory: '512MiB' },
+  async () => {
+    const usersSnap = await db.ref('users').once('value');
+    const pairs = {};
+    usersSnap.forEach(userSnap => {
+      const profiles = userSnap.child('vendorProfiles').val() || {};
+      Object.values(profiles).forEach(p => {
+        if (p && p.active && VENDOR_IDS.includes(p.vendor) && p.branchId) {
+          pairs[`${p.vendor}:${p.branchId}`] = { vendor: p.vendor, branchId: p.branchId };
+        }
+      });
+    });
+    await Promise.all(Object.values(pairs).map(({ vendor, branchId }) =>
+      ingestVendorCatalog(vendor, branchId).catch(() => {})
+    ));
+  }
+);
 
 // Plain substring/token-overlap matching — no AI. Grocery names are literal
 // enough that this, combined with a human picking from the shortlist, is

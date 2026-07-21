@@ -1,6 +1,6 @@
     const { useState, useEffect, useRef } = React;
 
-    const VERSION = "v5.67";
+    const VERSION = "v5.68";
 
     // ── CONFIG ────────────────────────────────────────────────────────────────────
     const FIREBASE_CONFIG = {
@@ -3155,7 +3155,7 @@
               // Store even when the candidate list is empty — that means
               // "searched, found nothing" (show a manual-search prompt),
               // distinct from no entry at all, which means "not searched yet".
-              newCandidates[item.name] = { vendors: r.missingVendors, list: r.candidates };
+              newCandidates[item.name] = { vendors: r.missingVendors, allVendors: r.searchedVendors || r.missingVendors, list: r.candidates };
             } else if (r.missingVendors && r.missingVendors.length === 0) {
               resolvedNames.push(item.name);
             }
@@ -3321,7 +3321,7 @@
         fns.httpsCallable("resolveItemBarcodes")({ items: [revertedName], force: true }).then(function(res) {
           var r = (res.data.results || {})[revertedName];
           if (r && r.candidates && r.candidates.length > 0) {
-            setCandidatesByName(function(prev) { var next = Object.assign({}, prev); next[revertedName] = { vendors: r.missingVendors, list: r.candidates }; return next; });
+            setCandidatesByName(function(prev) { var next = Object.assign({}, prev); next[revertedName] = { vendors: r.missingVendors, allVendors: r.searchedVendors || r.missingVendors, list: r.candidates }; return next; });
             setPickerItem(Object.assign({}, item, cleared));
           } else {
             showToast("לא נמצאו התאמות נוספות");
@@ -3337,7 +3337,7 @@
           var r = (res.data.results || {})[q];
           setCandidatesByName(function(prev) {
             var next = Object.assign({}, prev);
-            next[pickerItem.name] = { vendors: (r && r.missingVendors) || VENDOR_IDS, list: (r && r.candidates) || [] };
+            next[pickerItem.name] = { vendors: (r && r.missingVendors) || VENDOR_IDS, allVendors: (r && r.searchedVendors) || (r && r.missingVendors) || VENDOR_IDS, list: (r && r.candidates) || [] };
             return next;
           });
           setPickerSearching(false);
@@ -3744,7 +3744,12 @@
               <div className="space-y-2 max-h-80 overflow-y-auto">
                 {(function() {
                   var entry = candidatesByName[pickerItem.name];
-                  var searchedVendors = (entry && entry.vendors) || [];
+                  // The wider set (active + any other chain with cached data)
+                  // for display — pickPriceCandidate below still only confirms
+                  // against entry.vendors (active-only), so picking a match
+                  // never writes a barcode-cache entry for a store you don't
+                  // actually shop at.
+                  var searchedVendors = (entry && entry.allVendors) || (entry && entry.vendors) || [];
                   var list = (entry && entry.list) || [];
                   return (
                     <React.Fragment>

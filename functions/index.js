@@ -1031,6 +1031,27 @@ exports.resolveItemBarcodes = onCall(
       catalogsByVendor[vendor] = await ensureFreshCatalog(vendor, p.branchId).catch(() => ({}));
     }));
 
+    // Widen the SEARCH (not the price comparison) to any other integrated
+    // chain that already has cached catalog data, even if it isn't one of
+    // this user's active comparison stores — a barcode identifies the same
+    // real product no matter where you shop, so bounding *matching* to only
+    // the active vendors' catalogs was hiding real, findable products just
+    // because nobody active on this account happens to shop at that chain.
+    // Read-only against whatever's already cached — never triggers a new
+    // FTP ingest for a chain nobody here uses, so this can't add ingest cost.
+    const extraCatalogsByVendor = {};
+    await Promise.all(VENDOR_IDS.filter(v => !catalogsByVendor[v]).map(async (vendor) => {
+      const idxSnap = await db.ref(`vendorCatalogIndex/${vendor}`).once('value');
+      const idx = idxSnap.val();
+      const anyBranch = idx && Object.keys(idx)[0];
+      if (!anyBranch) return;
+      const itemsSnap = await db.ref(`vendorCatalog/${vendor}/${anyBranch}/items`).once('value');
+      const catalogItems = itemsSnap.val();
+      if (catalogItems) extraCatalogsByVendor[vendor] = catalogItems;
+    }));
+    const searchCatalogsByVendor = Object.assign({}, catalogsByVendor, extraCatalogsByVendor);
+    const searchedVendors = Object.keys(searchCatalogsByVendor);
+
     const results = {};
     for (const rawName of items) {
       const name = String(rawName || '').trim();
@@ -1046,9 +1067,11 @@ exports.resolveItemBarcodes = onCall(
         results[name] = { barcodes, missingVendors: [] };
         continue;
       }
-      const missingCatalogs = {};
-      missingVendors.forEach(v => { missingCatalogs[v] = catalogsByVendor[v]; });
-      results[name] = { barcodes, missingVendors, candidates: fuzzyMatchCatalogs(name, missingCatalogs) };
+      // Candidates search the WIDER vendor set (active + any other chain
+      // with cached data) — missingVendors itself stays scoped to active
+      // vendors only, since that's what the client needs to know "still
+      // needs resolving for my own price comparison."
+      results[name] = { barcodes, missingVendors, searchedVendors, candidates: fuzzyMatchCatalogs(name, searchCatalogsByVendor) };
     }
     return { results };
   }

@@ -1,6 +1,6 @@
     const { useState, useEffect, useRef } = React;
 
-    const VERSION = "v5.62";
+    const VERSION = "v5.63";
 
     // ── CONFIG ────────────────────────────────────────────────────────────────────
     const FIREBASE_CONFIG = {
@@ -647,8 +647,14 @@
           {stickyToast.length > 0 && (
             <div onClick={() => setStickyToast([])}
               className="fixed bottom-24 left-1/2 -translate-x-1/2 w-11/12 max-w-md bg-amber-50 border border-amber-300 rounded-2xl px-4 py-3 z-50 shadow-lg cursor-pointer">
-              <p className="font-semibold text-amber-800 text-sm mb-1">כבר קיים ברשימה:</p>
-              <p className="text-amber-700 text-sm leading-relaxed">{stickyToast.join(" · ")}</p>
+              {stickyToast.map(function(block, i) {
+                return (
+                  <div key={i} className={i > 0 ? "mt-2 pt-2 border-t border-amber-200" : ""}>
+                    <p className="font-semibold text-amber-800 text-sm mb-1">{block.title}</p>
+                    <p className="text-amber-700 text-sm leading-relaxed">{block.lines.join(" · ")}</p>
+                  </div>
+                );
+              })}
               <p className="text-xs text-amber-400 text-center mt-2">לחץ לסגירה</p>
             </div>
           )}
@@ -4221,56 +4227,99 @@
 
       const saveItems = (itemsArr, cats) => {
         if (!itemsArr.length) return;
-
-        // Detect duplicates against active (not-done) items already in the list
-        var activeNames = existingItems
-          .filter(function(i) { return !i.done; })
-          .map(function(i) { return (i.name || "").trim().toLowerCase(); });
-        var dupeNames = [];
-        var toAdd = itemsArr.filter(function(item) {
-          var n = ((item.name || item.item || "").trim()).toLowerCase();
-          if (activeNames.indexOf(n) !== -1) { dupeNames.push((item.name || item.item || "").trim()); return false; }
-          return true;
-        });
-        if (dupeNames.length > 0) showStickyToast(dupeNames);
-        if (!toAdd.length) return;
-
         setSaving(true);
-        var catEmojis = {};
-        var validCats = new Set();
-        var activeCats = (cats && cats.length > 0) ? cats : categoriesRef.current;
-        activeCats.forEach(function(c) { catEmojis[c.label] = c.emoji; validCats.add(c.label); });
-        var now = Date.now();
-        var pos = 0;
-        function saveNext() {
-          if (pos >= toAdd.length) {
-            showToast(toAdd.length + " פריטים נוספו!");
-            setSaving(false);
-            onBack();
-            return;
-          }
-          var item = toAdd[pos++];
-          var aiCat = (item.category || "").trim();
-          var cat = validCats.has(aiCat) ? aiCat : "שונות";
-          db.ref("items/" + listId).push({
-            name:          ((item.name || item.item || "").trim()) || "פריט",
-            category:      cat,
-            categoryEmoji: catEmojis[cat] || "🛍️",
-            quantity:      parseFloat(item.quantity) || 1,
-            unit:          item.unit || "יחידות",
-            note:          item.note || "",
-            dueDate:       "",
-            done:          false,
-            addedBy:       user.uid,
-            addedByName:   user.displayName,
-            addedByColor:  getUserColor(user.uid),
-            createdAt:     now + pos
-          }).then(saveNext, function(err) {
-            showToast("שגיאה בשמירה: " + (err && err.message));
-            setSaving(false);
+
+        var activeExisting = existingItems.filter(function(i) { return !i.done; });
+        var names = itemsArr.map(function(item) { return ((item.name || item.item || "").trim()); }).filter(function(n) { return n; });
+
+        // Resolve each new item against the vendor catalogs *before* deciding
+        // whether to add it. Comparing raw typed text against existing
+        // items' current names missed real duplicates whenever an existing
+        // item had already been renamed to its catalog name (e.g. an
+        // existing "מרכך כביסה" that got renamed to a specific product name
+        // no longer textually matches a fresh "מרכך כביסה" being typed
+        // again) — a shared barcode is the only way to actually confirm two
+        // differently-worded items are the same product.
+        var resolvePromise = names.length > 0
+          ? fns.httpsCallable("resolveItemBarcodes")({ items: names }).then(function(res) { return res.data.results || {}; }).catch(function() { return {}; })
+          : Promise.resolve({});
+
+        resolvePromise.then(function(resolved) {
+          var skipped = [];
+          var similar = [];
+          var toAdd = [];
+
+          itemsArr.forEach(function(item) {
+            var rawName = ((item.name || item.item || "").trim());
+            if (!rawName) return;
+            var r = resolved[rawName];
+            var newBarcodes = (r && r.barcodes) || {};
+
+            // Stage 1: a shared barcode with an existing item is a confirmed
+            // duplicate (same product, regardless of how either was worded)
+            // — skip it entirely.
+            var isDupe = Object.keys(newBarcodes).some(function(v) {
+              var bc = newBarcodes[v].barcode;
+              return activeExisting.some(function(ex) { return itemVendorBarcode(ex, v) === bc; });
+            });
+            if (isDupe) { skipped.push(rawName); return; }
+
+            // Stage 2: no barcode match (either side may simply not be
+            // resolved yet) — fall back to comparing against each existing
+            // item's ORIGINAL typed name, not its current one. Still added,
+            // just flagged — this is a guess, not a confirmed duplicate.
+            var nLower = rawName.toLowerCase();
+            var similarExisting = activeExisting.find(function(ex) {
+              return ((ex.originalName || ex.name || "").trim().toLowerCase()) === nLower;
+            });
+            if (similarExisting) similar.push(rawName + ' (דומה ל-"' + similarExisting.name + '")');
+
+            toAdd.push(item);
           });
-        }
-        saveNext();
+
+          var blocks = [];
+          if (skipped.length > 0) blocks.push({ title: "כבר קיים ברשימה — לא נוסף:", lines: skipped });
+          if (similar.length > 0) blocks.push({ title: "נוסף, אך יש פריט דומה ברשימה:", lines: similar });
+          if (blocks.length > 0) showStickyToast(blocks);
+
+          if (!toAdd.length) { setSaving(false); return; }
+
+          var catEmojis = {};
+          var validCats = new Set();
+          var activeCats = (cats && cats.length > 0) ? cats : categoriesRef.current;
+          activeCats.forEach(function(c) { catEmojis[c.label] = c.emoji; validCats.add(c.label); });
+          var now = Date.now();
+          var pos = 0;
+          function saveNext() {
+            if (pos >= toAdd.length) {
+              showToast(toAdd.length + " פריטים נוספו!");
+              setSaving(false);
+              onBack();
+              return;
+            }
+            var item = toAdd[pos++];
+            var aiCat = (item.category || "").trim();
+            var cat = validCats.has(aiCat) ? aiCat : "שונות";
+            db.ref("items/" + listId).push({
+              name:          ((item.name || item.item || "").trim()) || "פריט",
+              category:      cat,
+              categoryEmoji: catEmojis[cat] || "🛍️",
+              quantity:      parseFloat(item.quantity) || 1,
+              unit:          item.unit || "יחידות",
+              note:          item.note || "",
+              dueDate:       "",
+              done:          false,
+              addedBy:       user.uid,
+              addedByName:   user.displayName,
+              addedByColor:  getUserColor(user.uid),
+              createdAt:     now + pos
+            }).then(saveNext, function(err) {
+              showToast("שגיאה בשמירה: " + (err && err.message));
+              setSaving(false);
+            });
+          }
+          saveNext();
+        });
       };
 
       const process = () => {

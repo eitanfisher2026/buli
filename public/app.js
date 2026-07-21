@@ -1,6 +1,6 @@
     const { useState, useEffect, useRef } = React;
 
-    const VERSION = "v5.70";
+    const VERSION = "v5.71";
 
     // ── CONFIG ────────────────────────────────────────────────────────────────────
     const FIREBASE_CONFIG = {
@@ -3600,7 +3600,7 @@
                 <button onClick={clearAllFilters} className="mt-4 text-sm text-blue-500 bg-blue-50 px-5 py-2 rounded-full">נקה פילטרים</button>
               </div>
             ) : viewMode === "table" && pricingEnabled && !isTasks && !isNotes ? (
-              <PriceComparisonTable items={orderByCategory(items.filter(function(i) { return !i.done; }))} activeProfiles={activeProfiles} priceMap={priceMap} />
+              <PriceComparisonTable items={orderByCategory(items.filter(function(i) { return !i.done; }))} activeProfiles={activeProfiles} priceMap={priceMap} canEditItem={canEditItem} onEditItem={editFn} />
             ) : (
               <>
                 {renderGroup(notDone)}
@@ -3795,7 +3795,7 @@
     // shows a price, but not "how many of my items are even in this basket."
     // Sticky first column + horizontal scroll so it still works on mobile
     // with several columns.
-    function PriceComparisonTable({ items, activeProfiles, priceMap }) {
+    function PriceComparisonTable({ items, activeProfiles, priceMap, canEditItem, onEditItem }) {
       var notDoneItems = items.filter(function(i) { return !i.done; });
       var doneItems = items.filter(function(i) { return i.done; });
       var ordered = notDoneItems.concat(doneItems);
@@ -3832,8 +3832,9 @@
                 var byId = {};
                 priced.forEach(function(e) { byId[e.profile.id] = e.price; });
                 var qty = item.quantity || 1;
+                var editable = !!(onEditItem && (!canEditItem || canEditItem(item)));
                 return (
-                  <tr key={item.id}>
+                  <tr key={item.id} className={editable ? "cursor-pointer active:bg-gray-50" : ""} onClick={editable ? function() { onEditItem(item); } : undefined}>
                     <td className={"sticky right-0 bg-white z-10 px-3 py-2 border-b border-gray-100 text-right " + (item.done ? "line-through text-gray-400" : "text-gray-800")}>
                       {item.name}
                       {qty !== 1 && <span className="text-gray-400"> ({qty})</span>}

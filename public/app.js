@@ -1,6 +1,6 @@
     const { useState, useEffect, useRef } = React;
 
-    const VERSION = "v5.72";
+    const VERSION = "v5.73";
 
     // ── CONFIG ────────────────────────────────────────────────────────────────────
     const FIREBASE_CONFIG = {
@@ -384,6 +384,20 @@
       return large
         ? <div className="spinner w-8 h-8 border-2 border-blue-600 border-t-transparent rounded-full" />
         : <div className="spinner w-5 h-5 border-2 border-white border-t-transparent rounded-full inline-block" />;
+    }
+    // Inline SVG barcode glyph (there's no real barcode emoji) — used on the
+    // "match item to a vendor barcode" actions instead of an emoji standing
+    // in for something it doesn't actually depict.
+    function BarcodeIcon({ className }) {
+      return (
+        <svg viewBox="0 0 32 20" className={className || "w-3.5 h-3.5"} fill="currentColor" aria-hidden="true">
+          <rect x="0" y="0" width="2" height="20" /><rect x="4" y="0" width="1" height="20" />
+          <rect x="7" y="0" width="3" height="20" /><rect x="12" y="0" width="1" height="20" />
+          <rect x="15" y="0" width="2" height="20" /><rect x="19" y="0" width="1" height="20" />
+          <rect x="22" y="0" width="3" height="20" /><rect x="27" y="0" width="1" height="20" />
+          <rect x="30" y="0" width="2" height="20" />
+        </svg>
+      );
     }
     // Animated cart — inline SVG (not a downloaded GIF/WebP) so the loading
     // screen itself costs zero extra network requests, matching this whole
@@ -3964,17 +3978,16 @@
               {/* Only surface the match action here for items with NO vendor
                   matched at all — once at least one is matched, seeing real
                   prices next to "still needs matching" reads as contradictory,
-                  so the remaining vendor gets handled from the edit dialog. */}
-              {!isTasks && !itemHasAnyBarcode(item) && priceCandidates && priceCandidates.list && priceCandidates.list.length > 0 && (
+                  so the remaining vendor gets handled from the edit dialog.
+                  Always the same label/icon whether or not the automatic
+                  search already found candidates — the action is identical
+                  (open the picker), only what's pre-loaded there differs,
+                  and two different buttons for that read as two different
+                  actions to a user. */}
+              {!isTasks && !itemHasAnyBarcode(item) && priceCandidates && priceCandidates.list && (
                 <button onClick={function(e) { e.stopPropagation(); onPickPrice(); }}
-                  className="text-xs text-blue-500 border border-blue-200 bg-blue-50 rounded-full px-2 py-0.5 mt-1">
-                  💰 התאם פריט
-                </button>
-              )}
-              {!isTasks && !itemHasAnyBarcode(item) && priceCandidates && priceCandidates.list && priceCandidates.list.length === 0 && (
-                <button onClick={function(e) { e.stopPropagation(); onPickPrice(); }}
-                  className="text-xs text-orange-600 border border-orange-200 bg-orange-50 rounded-full px-2 py-0.5 mt-1">
-                  ⚠ לא נמצא ברקוד — חפש ידנית
+                  className="text-xs text-blue-500 border border-blue-200 bg-blue-50 rounded-full px-2 py-0.5 mt-1 inline-flex items-center gap-1">
+                  <BarcodeIcon /> התאם פריט
                 </button>
               )}
             </div>
@@ -4082,8 +4095,8 @@
                     matching" reads as contradictory in the list view. */}
                 {itemHasAnyBarcode(item) && priceCandidates && priceCandidates.list && (
                   <button onClick={() => { onPickPrice(); onClose(); }}
-                    className="text-xs text-blue-600 font-medium block">
-                    {priceCandidates.list.length > 0 ? "🔍 השלם התאמה לרשת החסרה" : "⚠ לא נמצא ברקוד לרשת החסרה — חפש ידנית"}
+                    className="text-xs text-blue-600 font-medium inline-flex items-center gap-1">
+                    <BarcodeIcon /> השלם התאמה לרשת החסרה
                   </button>
                 )}
               </div>
@@ -4096,8 +4109,8 @@
                 </div>
               ) : priceCandidates && priceCandidates.list ? (
                 <button onClick={() => { onPickPrice(); onClose(); }}
-                  className={"w-full text-xs font-medium rounded-xl border px-3 py-2.5 " + (priceCandidates.list.length > 0 ? "text-blue-600 border-blue-200 bg-blue-50" : "text-orange-600 border-orange-200 bg-orange-50")}>
-                  {priceCandidates.list.length > 0 ? "💰 התאם פריט" : "⚠ לא נמצא ברקוד — חפש ידנית"}
+                  className="w-full text-xs font-medium rounded-xl border px-3 py-2.5 text-blue-600 border-blue-200 bg-blue-50 inline-flex items-center justify-center gap-1.5">
+                  <BarcodeIcon className="w-4 h-4" /> התאם פריט
                 </button>
               ) : null
             )}

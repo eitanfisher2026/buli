@@ -727,6 +727,16 @@ async function ingestVendorCatalog(vendor, branchId) {
   }
 }
 
+// Calendar-day comparison in Israel local time (not UTC, and not exact
+// hours) — "already refreshed today" should track the day the person
+// making the request experiences, not a UTC boundary that can flip mid-
+// afternoon in Israel.
+function sameIsraelDate(ts1, ts2) {
+  if (!ts1 || !ts2) return false;
+  const fmt = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Jerusalem', year: 'numeric', month: '2-digit', day: '2-digit' });
+  return fmt.format(new Date(ts1)) === fmt.format(new Date(ts2));
+}
+
 async function ensureFreshCatalog(vendor, branchId, force) {
   const metaSnap = await db.ref(`vendorCatalog/${vendor}/${branchId}/updatedAt`).once('value');
   const updatedAt = metaSnap.val();
@@ -1110,6 +1120,28 @@ exports.confirmItemBarcode = onCall(
 // cap-enforced active list so the client's rendering always matches exactly
 // what was actually priced, even if the client has more marked active than
 // the current admin cap allows.
+// Lets the client show "last updated" per active vendor branch before the
+// user commits to a force refresh — reads only the small vendorCatalogIndex
+// mirror (never the multi-MB item blobs), and is open to any authorized
+// user (not admin-only like listVendorCatalogs), since this only ever
+// covers the caller's own active profiles.
+exports.getActiveCatalogTimestamps = onCall(
+  { timeoutSeconds: 30, memory: '128MiB', region: 'europe-west1' },
+  async (request) => {
+    await requireAuthorized(request);
+    const activeProfiles = await getUserActiveProfiles(request.auth.uid);
+    const cache = {};
+    const timestamps = await Promise.all(activeProfiles.map(async (p) => {
+      const key = `${p.vendor}:${p.branchId}`;
+      if (!cache[key]) {
+        cache[key] = db.ref(`vendorCatalogIndex/${p.vendor}/${p.branchId}/updatedAt`).once('value').then(s => s.val() || null);
+      }
+      return { id: p.id, vendor: p.vendor, branchId: p.branchId, updatedAt: await cache[key] };
+    }));
+    return { timestamps };
+  }
+);
+
 exports.getBasketPrices = onCall(
   { timeoutSeconds: 300, memory: '1GiB', region: 'europe-west1' },
   async (request) => {
@@ -1124,18 +1156,38 @@ exports.getBasketPrices = onCall(
 
     if (force) {
       // Explicit "רענן מחירים" action — a real re-fetch from the vendor is
-      // exactly what was asked for, so the cost/latency here is expected.
-      // Dedupe by (vendor,branchId) so two profiles sharing one branch
-      // don't trigger the 30-50s re-ingest twice.
+      // exactly what was asked for, so the cost/latency here is expected...
+      // but only once per calendar day per branch. Re-ingesting a catalog
+      // that was already refreshed today (by a previous click, or by the
+      // scheduled job) burns a 30-50s FTP fetch for zero new data, so that
+      // case serves the already-cached items instead and reports back that
+      // nothing changed. Dedupe by (vendor,branchId) so two profiles
+      // sharing one branch don't trigger the re-ingest (or the check) twice.
       const catalogByBranch = {};
+      const refreshedBranches = [];
+      const skippedBranches = [];
       await Promise.all(relevantProfiles.map(async (p) => {
         const key = `${p.vendor}:${p.branchId}`;
-        if (!catalogByBranch[key]) catalogByBranch[key] = ingestVendorCatalog(p.vendor, p.branchId).catch(() => ({}));
+        if (!catalogByBranch[key]) {
+          catalogByBranch[key] = (async () => {
+            const metaSnap = await db.ref(`vendorCatalogIndex/${p.vendor}/${p.branchId}/updatedAt`).once('value');
+            if (sameIsraelDate(metaSnap.val(), Date.now())) {
+              skippedBranches.push(key);
+              const itemsSnap = await db.ref(`vendorCatalog/${p.vendor}/${p.branchId}/items`).once('value');
+              return itemsSnap.val() || {};
+            }
+            refreshedBranches.push(key);
+            return ingestVendorCatalog(p.vendor, p.branchId).catch(() => ({}));
+          })();
+        }
         const items = await catalogByBranch[key];
         prices[p.id] = {};
         barcodesByVendor[p.vendor].forEach(barcode => { prices[p.id][barcode] = items[barcode]?.price ?? null; });
       }));
-      return { prices, profiles: activeProfiles };
+      return {
+        prices, profiles: activeProfiles,
+        refreshResult: { refreshedCount: refreshedBranches.length, skippedSameDayCount: skippedBranches.length },
+      };
     }
 
     // Default path runs on every list open — must never download a whole

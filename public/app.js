@@ -1,6 +1,6 @@
     const { useState, useEffect, useRef } = React;
 
-    const VERSION = "v5.78";
+    const VERSION = "v5.79";
 
     // ── CONFIG ────────────────────────────────────────────────────────────────────
     const FIREBASE_CONFIG = {
@@ -3011,7 +3011,7 @@
       };
       const fetchPrices = (barcodesByVendor, force) => {
         var hasAny = Object.keys(barcodesByVendor || {}).some(function(v) { return barcodesByVendor[v] && barcodesByVendor[v].length > 0; });
-        if (!hasAny) return Promise.resolve();
+        if (!hasAny) return Promise.resolve(null);
         return fns.httpsCallable("getBasketPrices")({ barcodesByVendor: barcodesByVendor, force: !!force }).then(function(res) {
           var byProfile = res.data.prices || {};
           var nextProfiles = res.data.profiles || activeProfiles;
@@ -3025,7 +3025,8 @@
           var now = Date.now();
           setList(function(prev) { return prev ? Object.assign({}, prev, { pricesRefreshedAt: now }) : prev; });
           db.ref("lists/" + listId + "/pricesRefreshedAt").set(now);
-        }).catch(function() {});
+          return res.data.refreshResult || null;
+        }).catch(function() { return null; });
       };
 
       // getBasketPrices is what actually returns `profiles` (the server's
@@ -3050,13 +3051,62 @@
       const [pricesLoading, setPricesLoading] = useState(false);
       const [viewMode, setViewMode] = useState(function() { return localStorage.getItem("buli_view_mode") || "list"; }); // "list" | "table" — table is pricing-only
       useEffect(function() { localStorage.setItem("buli_view_mode", viewMode); }, [viewMode]);
+
+      // null | { loading: bool, rows: [{id, vendor, branchId, updatedAt}] } —
+      // shown before any force refresh actually runs, so the cost (a real
+      // re-fetch from the vendor, ~30-50s) is visible up front instead of
+      // just happening silently, and the user can scope it to one vendor
+      // instead of always paying for all of them.
+      const [refreshDialog, setRefreshDialog] = useState(null);
+
+      const reportRefreshResult = function(result) {
+        if (result && result.refreshedCount === 0 && result.skippedSameDayCount > 0) {
+          showToast("לא בוצע עדכון — המחירים כבר עודכנו היום");
+        } else {
+          showToast("המחירים עודכנו");
+        }
+      };
+
       const refreshAllPrices = () => {
         var barcodesByVendor = collectBarcodesByVendor(items.filter(itemHasAnyBarcode));
         if (Object.keys(barcodesByVendor).length === 0) { showToast("אין פריטים עם ברקוד לרענון"); return; }
+        setRefreshDialog(null);
         setPricesRefreshing(true);
-        fetchPrices(barcodesByVendor, true).then(function() {
+        fetchPrices(barcodesByVendor, true).then(function(result) {
           setPricesRefreshing(false);
-          showToast("המחירים עודכנו");
+          reportRefreshResult(result);
+        });
+      };
+
+      const refreshVendorPrices = (vendorId) => {
+        var all = collectBarcodesByVendor(items.filter(itemHasAnyBarcode));
+        var only = {};
+        if (all[vendorId] && all[vendorId].length > 0) only[vendorId] = all[vendorId];
+        if (!only[vendorId]) { showToast("אין פריטים עם ברקוד לרשת הזו"); return; }
+        setRefreshDialog(null);
+        setPricesRefreshing(true);
+        fetchPrices(only, true).then(function(result) {
+          setPricesRefreshing(false);
+          reportRefreshResult(result);
+        });
+      };
+
+      const openRefreshDialog = () => {
+        var barcodesByVendor = collectBarcodesByVendor(items.filter(itemHasAnyBarcode));
+        if (Object.keys(barcodesByVendor).length === 0) { showToast("אין פריטים עם ברקוד לרענון"); return; }
+        setRefreshDialog({ loading: true, rows: [] });
+        fns.httpsCallable("getActiveCatalogTimestamps")().then(function(res) {
+          var ts = res.data.timestamps || [];
+          var rows = activeProfiles
+            .filter(function(p) { return barcodesByVendor[p.vendor] && barcodesByVendor[p.vendor].length > 0; })
+            .map(function(p) {
+              var t = ts.find(function(x) { return x.id === p.id; });
+              return { id: p.id, vendor: p.vendor, branchId: p.branchId, updatedAt: t ? t.updatedAt : null };
+            });
+          setRefreshDialog({ loading: false, rows: rows });
+        }, function(e) {
+          setRefreshDialog(null);
+          showToast("שגיאה: " + (e && e.message || "?"));
         });
       };
 
@@ -3582,7 +3632,7 @@
 
           {pricingEnabled && !isTasks && !isNotes && (
             <div className="flex items-center justify-between bg-white border-b border-gray-100 px-4 py-1.5 flex-shrink-0">
-              <button onClick={refreshAllPrices} disabled={pricesRefreshing}
+              <button onClick={openRefreshDialog} disabled={pricesRefreshing}
                 className="text-xs text-blue-600 font-medium flex items-center gap-1 disabled:opacity-50">
                 {pricesRefreshing ? <Spinner /> : "🔄"} רענן מחירים
               </button>
@@ -3667,6 +3717,44 @@
           {noteEdit && <NoteEditModal item={noteEdit} onSave={saveNoteEdit} onClose={function() { setNoteEdit(null); }} />}
           {taskEdit && <TaskEditModal item={taskEdit} onChange={setTaskEdit} onSave={saveTaskEdit} onDelete={deleteTask} onClose={() => setTaskEdit(null)} />}
           {confirmDialog && <ConfirmDialog message={confirmDialog.message} confirmLabel={confirmDialog.confirmLabel} onConfirm={confirmDialog.onConfirm} onClose={function() { setConfirmDialog(null); }} />}
+
+          {refreshDialog && (
+            <Modal onClose={function() { setRefreshDialog(null); }}>
+              <h3 className="text-lg font-bold text-center mb-2">רענון מחירים</h3>
+              <p className="text-xs text-gray-500 text-center mb-4">
+                רענון מושך מחיר עדכני ישירות מהרשת ועשוי לקחת עד דקה לכל רשת — לכן יש לו עלות. רשת שכבר עודכנה היום לא תיטען שוב.
+              </p>
+              {refreshDialog.loading ? (
+                <div className="flex justify-center py-6"><Spinner /></div>
+              ) : (
+                <div className="space-y-2 mb-4">
+                  {refreshDialog.rows.map(function(row) {
+                    return (
+                      <div key={row.id} className="flex items-center justify-between bg-gray-50 rounded-xl px-3 py-2.5">
+                        <div className="text-right">
+                          <div className="text-sm font-medium text-gray-700">{profileLabel(row, refreshDialog.rows)}</div>
+                          <div className="text-xs text-gray-400">
+                            {row.updatedAt ? "עודכן: " + formatRefreshTime(row.updatedAt) : "מעולם לא נטען"}
+                          </div>
+                        </div>
+                        <button onClick={function() { refreshVendorPrices(row.vendor); }}
+                          className="text-xs text-blue-600 font-medium border border-blue-200 bg-blue-50 rounded-full px-3 py-1.5 flex-shrink-0">
+                          רענן
+                        </button>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+              <button onClick={refreshAllPrices} disabled={refreshDialog.loading}
+                className="w-full bg-blue-600 text-white py-3.5 rounded-2xl font-semibold disabled:opacity-40">
+                🔄 רענן הכל
+              </button>
+              <button onClick={function() { setRefreshDialog(null); }} className="w-full mt-2 py-3 text-gray-400 text-sm font-medium">
+                ביטול
+              </button>
+            </Modal>
+          )}
 
           {showProfilePicker && (
             <Modal onClose={function() { setShowProfilePicker(false); }}>

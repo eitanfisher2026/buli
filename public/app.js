@@ -1,6 +1,6 @@
     const { useState, useEffect, useRef } = React;
 
-    const VERSION = "v5.71";
+    const VERSION = "v5.72";
 
     // ── CONFIG ────────────────────────────────────────────────────────────────────
     const FIREBASE_CONFIG = {
@@ -3625,7 +3625,7 @@
           )}
 
           {editItem && <EditItemModal item={editItem} categories={categories} onChange={setEditItem} onSave={saveEdit} onResetMatch={handleResetMatch} pricingEnabled={pricingEnabled}
-            priceCandidates={candidatesByName[editItem.name]} onPickPrice={() => setPickerItem(editItem)} onClose={() => setEditItem(null)} />}
+            priceCandidates={candidatesByName[editItem.name]} onPickPrice={() => setPickerItem(editItem)} isResolving={resolvingNames.has(editItem.name)} onClose={() => setEditItem(null)} />}
           {noteEdit && <NoteEditModal item={noteEdit} onSave={saveNoteEdit} onClose={function() { setNoteEdit(null); }} />}
           {taskEdit && <TaskEditModal item={taskEdit} onChange={setTaskEdit} onSave={saveTaskEdit} onDelete={deleteTask} onClose={() => setTaskEdit(null)} />}
           {confirmDialog && <ConfirmDialog message={confirmDialog.message} confirmLabel={confirmDialog.confirmLabel} onConfirm={confirmDialog.onConfirm} onClose={function() { setConfirmDialog(null); }} />}
@@ -4039,7 +4039,7 @@
       );
     }
 
-    function EditItemModal({ item, categories, onChange, onSave, onResetMatch, pricingEnabled, priceCandidates, onPickPrice, onClose }) {
+    function EditItemModal({ item, categories, onChange, onSave, onResetMatch, pricingEnabled, priceCandidates, onPickPrice, isResolving, onClose }) {
       return (
         <Modal onClose={onClose}>
           <h3 className="text-lg font-bold text-center mb-4">עריכת פריט</h3>
@@ -4087,6 +4087,19 @@
                   </button>
                 )}
               </div>
+            )}
+            {pricingEnabled && !itemHasAnyBarcode(item) && (
+              isResolving && !priceCandidates ? (
+                <div className="bg-blue-50 border border-blue-100 rounded-xl p-3 flex items-center gap-2">
+                  <span className="inline-block w-3 h-3 border-2 border-blue-300 border-t-blue-600 rounded-full animate-spin"></span>
+                  <span className="text-xs text-gray-500">מחפש התאמה בסניפים...</span>
+                </div>
+              ) : priceCandidates && priceCandidates.list ? (
+                <button onClick={() => { onPickPrice(); onClose(); }}
+                  className={"w-full text-xs font-medium rounded-xl border px-3 py-2.5 " + (priceCandidates.list.length > 0 ? "text-blue-600 border-blue-200 bg-blue-50" : "text-orange-600 border-orange-200 bg-orange-50")}>
+                  {priceCandidates.list.length > 0 ? "💰 התאם פריט" : "⚠ לא נמצא ברקוד — חפש ידנית"}
+                </button>
+              ) : null
             )}
             <div className="grid grid-cols-2 gap-2">
               <div>

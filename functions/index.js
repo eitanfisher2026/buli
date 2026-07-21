@@ -446,33 +446,39 @@ exports.deleteVendorCatalog = onCall(
   }
 );
 
+async function resolveUserExtra(email) {
+  const uid = await resolveUidByEmail(email);
+  let nickname = null, pricingEnabled = false, lastLogin = null;
+  if (uid) {
+    const [nickSnap, pricingSnap, lastLoginSnap] = await Promise.all([
+      db.ref(`users/${uid}/nickname`).once('value'),
+      db.ref(`users/${uid}/pricingEnabled`).once('value'),
+      db.ref(`users/${uid}/lastLogin`).once('value'),
+    ]);
+    nickname = nickSnap.val() || null;
+    pricingEnabled = !!pricingSnap.val();
+    lastLogin = lastLoginSnap.val() || null;
+  }
+  return { nickname, pricingEnabled, lastLogin };
+}
+
 exports.listAuthorizedUsers = onCall(
   { timeoutSeconds: 30, memory: '128MiB', region: 'europe-west1' },
   async (request) => {
     const role = await requireAuthorized(request);
-    requireAdmin(role);
+    const email = request.auth.token.email;
+    // Regular users only get their own row — the roster/add/remove view is admin-only.
+    if (role !== 'admin') {
+      const extra = await resolveUserExtra(email);
+      return { self: Object.assign({ email, role }, extra) };
+    }
     const snap = await db.ref('authorizedUsers').once('value');
     const val = snap.val() || {};
-    const resolveExtra = async (email) => {
-      const uid = await resolveUidByEmail(email);
-      let nickname = null, pricingEnabled = false, lastLogin = null;
-      if (uid) {
-        const [nickSnap, pricingSnap, lastLoginSnap] = await Promise.all([
-          db.ref(`users/${uid}/nickname`).once('value'),
-          db.ref(`users/${uid}/pricingEnabled`).once('value'),
-          db.ref(`users/${uid}/lastLogin`).once('value'),
-        ]);
-        nickname = nickSnap.val() || null;
-        pricingEnabled = !!pricingSnap.val();
-        lastLogin = lastLoginSnap.val() || null;
-      }
-      return { nickname, pricingEnabled, lastLogin };
-    };
     const users = await Promise.all(Object.values(val).map(async (u) => {
-      return Object.assign({}, u, await resolveExtra(u.email));
+      return Object.assign({}, u, await resolveUserExtra(u.email));
     }));
     users.sort((a, b) => (a.email || '').localeCompare(b.email || ''));
-    const ownerExtra = await resolveExtra(OWNER_EMAIL);
+    const ownerExtra = await resolveUserExtra(OWNER_EMAIL);
     return {
       owner: OWNER_EMAIL, ownerNickname: ownerExtra.nickname,
       ownerPricingEnabled: ownerExtra.pricingEnabled, ownerLastLogin: ownerExtra.lastLogin, users,
@@ -484,9 +490,10 @@ exports.setUserNickname = onCall(
   { timeoutSeconds: 30, memory: '128MiB', region: 'europe-west1' },
   async (request) => {
     const role = await requireAuthorized(request);
-    requireAdmin(role);
     const { email: rawEmail, nickname: rawNickname } = request.data || {};
     if (!rawEmail || typeof rawEmail !== 'string') throw new HttpsError('invalid-argument', 'email required');
+    const isSelf = rawEmail.trim().toLowerCase() === (request.auth.token.email || '').toLowerCase();
+    if (!isSelf) requireAdmin(role);
     const uid = await resolveUidByEmail(rawEmail);
     if (!uid) throw new HttpsError('not-found', 'That person has not signed in yet');
     const nickname = (typeof rawNickname === 'string' ? rawNickname.trim() : '').slice(0, 40);
@@ -1153,9 +1160,10 @@ exports.setUserPricingEnabled = onCall(
   { timeoutSeconds: 30, memory: '128MiB', region: 'europe-west1' },
   async (request) => {
     const role = await requireAuthorized(request);
-    requireAdmin(role);
     const { email: rawEmail, enabled } = request.data || {};
     if (!rawEmail || typeof rawEmail !== 'string') throw new HttpsError('invalid-argument', 'email required');
+    const isSelf = rawEmail.trim().toLowerCase() === (request.auth.token.email || '').toLowerCase();
+    if (!isSelf) requireAdmin(role);
     const uid = await resolveUidByEmail(rawEmail);
     if (!uid) throw new HttpsError('not-found', 'That person has not signed in yet');
     await db.ref(`users/${uid}/pricingEnabled`).set(!!enabled);

@@ -1,6 +1,6 @@
     const { useState, useEffect, useRef } = React;
 
-    const VERSION = "v5.69";
+    const VERSION = "v5.70";
 
     // ── CONFIG ────────────────────────────────────────────────────────────────────
     const FIREBASE_CONFIG = {
@@ -735,7 +735,6 @@
       const [majorListId, setMajorListIdState] = useState(function() {
         try { var m = JSON.parse(localStorage.getItem("buli_major_list")); return m ? m.id : null; } catch(e) { return null; }
       });
-      const [showShortcutGuide, setShowShortcutGuide] = useState(false);
       const [showSettings, setShowSettings] = useState(false);
       const [showAISettings, setShowAISettings] = useState(false);
       const [notesSeparator, setNotesSeparator] = useState(function() { return localStorage.getItem("buli_notes_separator") || "הבא"; });
@@ -891,6 +890,7 @@
       const [showUsers,   setShowUsers]   = useState(false);
       const [usersLoading, setUsersLoading] = useState(false);
       const [authUsers,   setAuthUsers]   = useState([]);
+      const [selfUserInfo, setSelfUserInfo] = useState(null);
       const [ownerEmail,  setOwnerEmail]  = useState("");
       const [ownerPricingEnabled, setOwnerPricingEnabled] = useState(false);
       const [ownerNickname, setOwnerNickname] = useState("");
@@ -903,11 +903,15 @@
       const loadAuthUsers = () => {
         setUsersLoading(true);
         fns.httpsCallable("listAuthorizedUsers")().then(function(res) {
-          setOwnerEmail(res.data.owner || "");
-          setOwnerPricingEnabled(!!res.data.ownerPricingEnabled);
-          setOwnerNickname(res.data.ownerNickname || "");
-          setOwnerLastLogin(res.data.ownerLastLogin || null);
-          setAuthUsers(res.data.users || []);
+          if (res.data.self) {
+            setSelfUserInfo(res.data.self);
+          } else {
+            setOwnerEmail(res.data.owner || "");
+            setOwnerPricingEnabled(!!res.data.ownerPricingEnabled);
+            setOwnerNickname(res.data.ownerNickname || "");
+            setOwnerLastLogin(res.data.ownerLastLogin || null);
+            setAuthUsers(res.data.users || []);
+          }
           setUsersLoading(false);
         }, function(e) {
           setUserMsg("⚠ " + e.message);
@@ -1349,8 +1353,7 @@
         onRename:        function() { startRename(l.id); },
         onDelete:        function() { deleteList(l.id); },
         isMajor:         majorListId === l.id,
-        onSetMajor:      function() { setMajor(l.id, l.name); },
-        onShowShortcut:  function(e) { e.stopPropagation(); setMenuId(null); setShowShortcutGuide(true); }
+        onSetMajor:      function() { setMajor(l.id, l.name); }
       }; };
 
       var noteCardProps = function(l) { return {
@@ -1512,54 +1515,9 @@
                   </div>
                 )}
               </div>
-              {isRealAdmin && (
-                <button onClick={function() { setShowSettings(false); onToggleSimulate(!simulating); }}
-                  className="w-full text-right px-3 py-3 text-sm text-gray-700 hover:bg-gray-50 rounded-xl flex items-center gap-3 mb-2 bg-gray-50">
-                  <span className="text-lg w-7 text-center">👁️</span>
-                  <span className="flex-1">{simulating ? "חזרה לתצוגת מנהל" : "צפה כמשתמש רגיל"}</span>
-                  {simulating && <span className="text-xs text-blue-500 font-semibold">פעיל</span>}
-                </button>
-              )}
-              <div className="space-y-1">
-                {canInstall && (
-                  <button onClick={function() { setShowSettings(false); installApp(); }} className="w-full text-right px-3 py-3 text-sm text-gray-700 hover:bg-gray-50 rounded-xl flex items-center gap-3">
-                    <span className="text-lg w-7 text-center">📲</span><span>התקן אפליקציה</span>
-                  </button>
-                )}
-                <button onClick={function() { setShowSettings(false); shareApp(); }} className="w-full text-right px-3 py-3 text-sm text-gray-700 hover:bg-gray-50 rounded-xl flex items-center gap-3">
-                  <span className="text-lg w-7 text-center">🔗</span><span>שתף את בולי</span>
-                </button>
-                <button onClick={function() { setShowSettings(false); setShowShortcutGuide(true); }} className="w-full text-right px-3 py-3 text-sm text-gray-700 hover:bg-gray-50 rounded-xl flex items-center gap-3">
-                  <span className="text-lg w-7 text-center">📱</span><span>קיצור דרך לרשימה ראשית</span>
-                </button>
-                <button onClick={toggleAutoOpen} className="w-full text-right px-3 py-3 text-sm text-gray-700 hover:bg-gray-50 rounded-xl flex items-center gap-3">
-                  <span className="text-lg w-7 text-center">🚀</span>
-                  <span className="flex-1">פתח רשימה ראשית בהפעלה</span>
-                  <span className={`w-11 h-6 rounded-full transition-colors flex-shrink-0 flex items-center px-0.5 ${autoOpenMajor ? "bg-blue-500" : "bg-gray-300"}`}>
-                    <span className={`w-5 h-5 bg-white rounded-full shadow transition-transform ${autoOpenMajor ? "translate-x-5" : "translate-x-0"}`} />
-                  </span>
-                </button>
-                <div className="border-t border-gray-100 my-1" />
-                <button onClick={function() { setShowSettings(false); onContacts(); }} className="w-full text-right px-3 py-3 text-sm text-gray-700 hover:bg-gray-50 rounded-xl flex items-center gap-3">
-                  <span className="text-lg w-7 text-center">👥</span><span>אנשי קשר</span>
-                </button>
-                <button onClick={function() { setShowSettings(false); onCategories(); }} className="w-full text-right px-3 py-3 text-sm text-gray-700 hover:bg-gray-50 rounded-xl flex items-center gap-3">
-                  <span className="text-lg w-7 text-center">⚙️</span><span>קטגוריות וחנויות</span>
-                </button>
-                <div className="px-3 py-2.5 flex items-center gap-3">
-                  <span className="text-lg w-7 text-center">📝</span>
-                  <span className="flex-1 text-sm text-gray-700">מילת מעבר בתפריטים</span>
-                  <input value={notesSeparator} onChange={function(e) {
-                    var val = e.target.value;
-                    setNotesSeparator(val);
-                    if (val.trim()) localStorage.setItem("buli_notes_separator", val.trim());
-                  }} dir="rtl" maxLength={20}
-                    className="w-20 border border-gray-200 rounded-lg px-2 py-1 text-sm text-center focus:outline-none focus:border-blue-400 text-gray-700" />
-                </div>
-              </div>
 
               {/* ── AI Provider ─────────────────────────────────────────────────── */}
-              <div className="mt-4">
+              <div className="mt-1">
                 <button onClick={function() { setShowAISettings(function(o) { return !o; }); }}
                   className={"w-full flex items-center justify-between px-3 py-3 rounded-xl border transition " + (showAISettings ? "bg-white border-blue-200" : "bg-gray-50 border-transparent hover:bg-gray-100")}>
                   <div className="flex items-center gap-3">
@@ -1653,6 +1611,50 @@
                     <button onClick={saveAISettings} className="w-full bg-blue-600 text-white py-3 rounded-2xl font-semibold">שמור</button>
                   </div>
                 )}
+              </div>
+
+              {isRealAdmin && (
+                <button onClick={function() { setShowSettings(false); onToggleSimulate(!simulating); }}
+                  className="w-full text-right px-3 py-3 text-sm text-gray-700 hover:bg-gray-50 rounded-xl flex items-center gap-3 mb-2 bg-gray-50">
+                  <span className="text-lg w-7 text-center">👁️</span>
+                  <span className="flex-1">{simulating ? "חזרה לתצוגת מנהל" : "צפה כמשתמש רגיל"}</span>
+                  {simulating && <span className="text-xs text-blue-500 font-semibold">פעיל</span>}
+                </button>
+              )}
+              <div className="space-y-1">
+                {canInstall && (
+                  <button onClick={function() { setShowSettings(false); installApp(); }} className="w-full text-right px-3 py-3 text-sm text-gray-700 hover:bg-gray-50 rounded-xl flex items-center gap-3">
+                    <span className="text-lg w-7 text-center">📲</span><span>התקן אפליקציה</span>
+                  </button>
+                )}
+                <button onClick={function() { setShowSettings(false); shareApp(); }} className="w-full text-right px-3 py-3 text-sm text-gray-700 hover:bg-gray-50 rounded-xl flex items-center gap-3">
+                  <span className="text-lg w-7 text-center">🔗</span><span>שתף את בולי</span>
+                </button>
+                <button onClick={toggleAutoOpen} className="w-full text-right px-3 py-3 text-sm text-gray-700 hover:bg-gray-50 rounded-xl flex items-center gap-3">
+                  <span className="text-lg w-7 text-center">🚀</span>
+                  <span className="flex-1">פתח רשימה ראשית בהפעלה</span>
+                  <span className={`w-11 h-6 rounded-full transition-colors flex-shrink-0 flex items-center px-0.5 ${autoOpenMajor ? "bg-blue-500" : "bg-gray-300"}`}>
+                    <span className={`w-5 h-5 bg-white rounded-full shadow transition-transform ${autoOpenMajor ? "translate-x-5" : "translate-x-0"}`} />
+                  </span>
+                </button>
+                <div className="border-t border-gray-100 my-1" />
+                <button onClick={function() { setShowSettings(false); onContacts(); }} className="w-full text-right px-3 py-3 text-sm text-gray-700 hover:bg-gray-50 rounded-xl flex items-center gap-3">
+                  <span className="text-lg w-7 text-center">👥</span><span>אנשי קשר</span>
+                </button>
+                <button onClick={function() { setShowSettings(false); onCategories(); }} className="w-full text-right px-3 py-3 text-sm text-gray-700 hover:bg-gray-50 rounded-xl flex items-center gap-3">
+                  <span className="text-lg w-7 text-center">⚙️</span><span>קטגוריות וחנויות</span>
+                </button>
+                <div className="px-3 py-2.5 flex items-center gap-3">
+                  <span className="text-lg w-7 text-center">📝</span>
+                  <span className="flex-1 text-sm text-gray-700">מילת מעבר בתפריטים</span>
+                  <input value={notesSeparator} readOnly={!isAdmin} onChange={function(e) {
+                    if (!isAdmin) return;
+                    var val = e.target.value;
+                    setNotesSeparator(val);
+                    if (val.trim()) localStorage.setItem("buli_notes_separator", val.trim());
+                  }} dir="rtl" maxLength={20}
+                    className={"w-20 border rounded-lg px-2 py-1 text-sm text-center focus:outline-none " + (isAdmin ? "border-gray-200 focus:border-blue-400 text-gray-700" : "border-gray-100 bg-gray-50 text-gray-500")} />
+                </div>
               </div>
 
               {/* ── Price comparison branches ───────────────────────────────────── */}
@@ -1802,97 +1804,120 @@
                 </div>
               )}
 
-              {/* ── Manage Users (admin only) ───────────────────────────────────── */}
-              {isAdmin && (
-                <div className="mt-3">
-                  <button onClick={function() { setShowUsers(function(o) { if (!o) loadAuthUsers(); return !o; }); }}
-                    className={"w-full flex items-center justify-between px-3 py-3 rounded-xl border transition " + (showUsers ? "bg-white border-blue-200" : "bg-gray-50 border-transparent hover:bg-gray-100")}>
-                    <div className="flex items-center gap-3">
-                      <span className="text-lg w-7 text-center">🔑</span>
-                      <div className="text-right">
-                        <div className="text-sm font-semibold text-gray-700">ניהול משתמשים</div>
-                        <div className="text-xs text-gray-400">מי יכול להשתמש בבולי</div>
-                      </div>
+              {/* ── Manage Users (admins see everyone; regular users see only themselves) ── */}
+              <div className="mt-3">
+                <button onClick={function() { setShowUsers(function(o) { if (!o) loadAuthUsers(); return !o; }); }}
+                  className={"w-full flex items-center justify-between px-3 py-3 rounded-xl border transition " + (showUsers ? "bg-white border-blue-200" : "bg-gray-50 border-transparent hover:bg-gray-100")}>
+                  <div className="flex items-center gap-3">
+                    <span className="text-lg w-7 text-center">🔑</span>
+                    <div className="text-right">
+                      <div className="text-sm font-semibold text-gray-700">ניהול משתמשים</div>
+                      <div className="text-xs text-gray-400">{isAdmin ? "מי יכול להשתמש בבולי" : "הפרטים שלך"}</div>
                     </div>
-                    <span className="text-gray-400 text-xs flex-shrink-0">{showUsers ? "▲ הסתר" : "▼ הצג"}</span>
-                  </button>
-                  {showUsers && (
-                    <div className="mt-2 bg-white border border-gray-100 rounded-2xl p-4">
-                      {usersLoading ? (
-                        <div className="flex justify-center py-6"><Spinner /></div>
-                      ) : (
-                        <div>
+                  </div>
+                  <span className="text-gray-400 text-xs flex-shrink-0">{showUsers ? "▲ הסתר" : "▼ הצג"}</span>
+                </button>
+                {showUsers && (
+                  <div className="mt-2 bg-white border border-gray-100 rounded-2xl p-4">
+                    {usersLoading ? (
+                      <div className="flex justify-center py-6"><Spinner /></div>
+                    ) : !isAdmin ? (
+                      <div>
+                        {selfUserInfo && (
                           <div className="bg-gray-50 rounded-xl px-3 py-2 mb-2">
                             <div className="flex items-center justify-between mb-1.5">
-                              <span className="text-sm text-gray-700 truncate">{ownerEmail}</span>
-                              <span className="text-xs font-bold text-green-500 uppercase flex-shrink-0">בעלים</span>
+                              <span className="text-sm text-gray-700 truncate">{selfUserInfo.email}</span>
+                              <span className="text-xs font-bold text-gray-400 uppercase flex-shrink-0">{selfUserInfo.role === "admin" ? "מנהל" : "משתמש"}</span>
                             </div>
                             <div className="text-xs text-gray-400 mb-1.5">
-                              {ownerLastLogin ? "התחבר לאחרונה: " + formatRefreshTime(ownerLastLogin) : "מעולם לא התחבר"}
+                              {selfUserInfo.lastLogin ? "התחבר לאחרונה: " + formatRefreshTime(selfUserInfo.lastLogin) : "מעולם לא התחבר"}
                             </div>
                             <div className="flex items-center gap-2">
-                              <input key={"owner:" + ownerNickname} type="text" defaultValue={ownerNickname}
+                              <input key={"self:" + selfUserInfo.nickname} type="text" defaultValue={selfUserInfo.nickname || ""}
                                 placeholder="כינוי (יוצג ברשימת שיתוף)" dir="rtl" disabled={userBusy}
-                                onBlur={function(e) { var v = e.target.value.trim(); if (v !== ownerNickname) handleSaveNickname(ownerEmail, v); }}
+                                onBlur={function(e) { var v = e.target.value.trim(); if (v !== (selfUserInfo.nickname || "")) handleSaveNickname(selfUserInfo.email, v); }}
                                 className="flex-1 min-w-0 border border-gray-200 rounded-lg px-2 py-1 text-xs bg-white focus:outline-none focus:border-blue-400" />
-                              <button onClick={function() { handleTogglePricing(ownerEmail, !ownerPricingEnabled); }} disabled={userBusy} title="השוואת מחירים"
-                                className={"text-xs border rounded-full px-2 py-1 disabled:opacity-40 flex-shrink-0 " + (ownerPricingEnabled ? "text-green-600 border-green-200 bg-green-50" : "text-gray-400 border-gray-200 bg-white")}>
-                                💰{ownerPricingEnabled ? "" : "🚫"}
+                              <button onClick={function() { handleTogglePricing(selfUserInfo.email, !selfUserInfo.pricingEnabled); }} disabled={userBusy} title="השוואת מחירים"
+                                className={"text-xs border rounded-full px-2 py-1 disabled:opacity-40 flex-shrink-0 " + (selfUserInfo.pricingEnabled ? "text-green-600 border-green-200 bg-green-50" : "text-gray-400 border-gray-200 bg-white")}>
+                                💰{selfUserInfo.pricingEnabled ? "" : "🚫"}
                               </button>
                             </div>
                           </div>
-                          {authUsers.length === 0 ? (
-                            <p className="text-xs text-gray-400 px-3 py-2 mb-2">אין עדיין משתמשים נוספים</p>
-                          ) : authUsers.map(function(u) {
-                            return (
-                              <div key={u.email} className="bg-gray-50 rounded-xl px-3 py-2 mb-2">
-                                <div className="flex items-center justify-between mb-1.5">
-                                  <span className="text-sm text-gray-700 truncate">{u.email}</span>
-                                  <button onClick={function() { handleRemoveUser(u.email); }} disabled={userBusy}
-                                    className="text-xs text-red-500 border border-red-200 rounded-full px-2 py-1 disabled:opacity-40 flex-shrink-0">הסר</button>
-                                </div>
-                                <div className="text-xs text-gray-400 mb-1.5">
-                                  {u.lastLogin ? "התחבר לאחרונה: " + formatRefreshTime(u.lastLogin) : "מעולם לא התחבר"}
-                                </div>
-                                <div className="flex items-center gap-2">
-                                  <input key={u.email + ":" + (u.nickname || "")} type="text" defaultValue={u.nickname || ""}
-                                    placeholder="כינוי (יוצג ברשימת שיתוף)" dir="rtl" disabled={userBusy}
-                                    onBlur={function(e) { var v = e.target.value.trim(); if (v !== (u.nickname || "")) handleSaveNickname(u.email, v); }}
-                                    className="flex-1 min-w-0 border border-gray-200 rounded-lg px-2 py-1 text-xs bg-white focus:outline-none focus:border-blue-400" />
-                                  <select value={u.role} disabled={userBusy}
-                                    onChange={function(e) { handleChangeRole(u.email, e.target.value); }}
-                                    className={"text-xs font-bold uppercase border rounded-lg px-1.5 py-1 bg-white flex-shrink-0 " + (u.role === "admin" ? "text-blue-500 border-blue-200" : "text-gray-500 border-gray-200")}>
-                                    <option value="user">User</option>
-                                    <option value="admin">Admin</option>
-                                  </select>
-                                  <button onClick={function() { handleTogglePricing(u.email, !u.pricingEnabled); }} disabled={userBusy} title="השוואת מחירים עבור המשתמש הזה"
-                                    className={"text-xs border rounded-full px-2 py-1 disabled:opacity-40 flex-shrink-0 " + (u.pricingEnabled ? "text-green-600 border-green-200 bg-green-50" : "text-gray-400 border-gray-200 bg-white")}>
-                                    💰{u.pricingEnabled ? "" : "🚫"}
-                                  </button>
-                                </div>
-                              </div>
-                            );
-                          })}
-                          <div className="flex gap-2 mt-3">
-                            <input type="email" value={newUserEmail} onChange={function(e) { setNewUserEmail(e.target.value); }}
-                              placeholder="name@example.com" dir="ltr"
-                              className="flex-1 border border-gray-200 rounded-xl px-3 py-2 text-sm text-left focus:outline-none focus:border-blue-400"
-                              onKeyDown={function(e) { if (e.key === "Enter") handleAddUser(); }} />
-                            <select value={newUserRole} onChange={function(e) { setNewUserRole(e.target.value); }}
-                              className="border border-gray-200 rounded-xl px-2 py-2 text-sm">
-                              <option value="user">User</option>
-                              <option value="admin">Admin</option>
-                            </select>
+                        )}
+                        {userMsg && <p className={"text-xs text-center mt-2 " + (userMsg.indexOf("✓") === 0 ? "text-green-500" : "text-red-500")}>{userMsg}</p>}
+                      </div>
+                    ) : (
+                      <div>
+                        <div className="bg-gray-50 rounded-xl px-3 py-2 mb-2">
+                          <div className="flex items-center justify-between mb-1.5">
+                            <span className="text-sm text-gray-700 truncate">{ownerEmail}</span>
+                            <span className="text-xs font-bold text-green-500 uppercase flex-shrink-0">בעלים</span>
                           </div>
-                          <button onClick={handleAddUser} disabled={!newUserEmail.trim() || userBusy}
-                            className="w-full bg-blue-600 text-white py-3 rounded-2xl font-semibold mt-3 disabled:opacity-40">הוסף</button>
-                          {userMsg && <p className={"text-xs text-center mt-2 " + (userMsg.indexOf("✓") === 0 ? "text-green-500" : "text-red-500")}>{userMsg}</p>}
+                          <div className="text-xs text-gray-400 mb-1.5">
+                            {ownerLastLogin ? "התחבר לאחרונה: " + formatRefreshTime(ownerLastLogin) : "מעולם לא התחבר"}
+                          </div>
+                          <div className="flex items-center gap-2">
+                            <input key={"owner:" + ownerNickname} type="text" defaultValue={ownerNickname}
+                              placeholder="כינוי (יוצג ברשימת שיתוף)" dir="rtl" disabled={userBusy}
+                              onBlur={function(e) { var v = e.target.value.trim(); if (v !== ownerNickname) handleSaveNickname(ownerEmail, v); }}
+                              className="flex-1 min-w-0 border border-gray-200 rounded-lg px-2 py-1 text-xs bg-white focus:outline-none focus:border-blue-400" />
+                            <button onClick={function() { handleTogglePricing(ownerEmail, !ownerPricingEnabled); }} disabled={userBusy} title="השוואת מחירים"
+                              className={"text-xs border rounded-full px-2 py-1 disabled:opacity-40 flex-shrink-0 " + (ownerPricingEnabled ? "text-green-600 border-green-200 bg-green-50" : "text-gray-400 border-gray-200 bg-white")}>
+                              💰{ownerPricingEnabled ? "" : "🚫"}
+                            </button>
+                          </div>
                         </div>
-                      )}
-                    </div>
-                  )}
-                </div>
-              )}
+                        {authUsers.length === 0 ? (
+                          <p className="text-xs text-gray-400 px-3 py-2 mb-2">אין עדיין משתמשים נוספים</p>
+                        ) : authUsers.map(function(u) {
+                          return (
+                            <div key={u.email} className="bg-gray-50 rounded-xl px-3 py-2 mb-2">
+                              <div className="flex items-center justify-between mb-1.5">
+                                <span className="text-sm text-gray-700 truncate">{u.email}</span>
+                                <button onClick={function() { handleRemoveUser(u.email); }} disabled={userBusy}
+                                  className="text-xs text-red-500 border border-red-200 rounded-full px-2 py-1 disabled:opacity-40 flex-shrink-0">הסר</button>
+                              </div>
+                              <div className="text-xs text-gray-400 mb-1.5">
+                                {u.lastLogin ? "התחבר לאחרונה: " + formatRefreshTime(u.lastLogin) : "מעולם לא התחבר"}
+                              </div>
+                              <div className="flex items-center gap-2">
+                                <input key={u.email + ":" + (u.nickname || "")} type="text" defaultValue={u.nickname || ""}
+                                  placeholder="כינוי (יוצג ברשימת שיתוף)" dir="rtl" disabled={userBusy}
+                                  onBlur={function(e) { var v = e.target.value.trim(); if (v !== (u.nickname || "")) handleSaveNickname(u.email, v); }}
+                                  className="flex-1 min-w-0 border border-gray-200 rounded-lg px-2 py-1 text-xs bg-white focus:outline-none focus:border-blue-400" />
+                                <select value={u.role} disabled={userBusy}
+                                  onChange={function(e) { handleChangeRole(u.email, e.target.value); }}
+                                  className={"text-xs font-bold uppercase border rounded-lg px-1.5 py-1 bg-white flex-shrink-0 " + (u.role === "admin" ? "text-blue-500 border-blue-200" : "text-gray-500 border-gray-200")}>
+                                  <option value="user">User</option>
+                                  <option value="admin">Admin</option>
+                                </select>
+                                <button onClick={function() { handleTogglePricing(u.email, !u.pricingEnabled); }} disabled={userBusy} title="השוואת מחירים עבור המשתמש הזה"
+                                  className={"text-xs border rounded-full px-2 py-1 disabled:opacity-40 flex-shrink-0 " + (u.pricingEnabled ? "text-green-600 border-green-200 bg-green-50" : "text-gray-400 border-gray-200 bg-white")}>
+                                  💰{u.pricingEnabled ? "" : "🚫"}
+                                </button>
+                              </div>
+                            </div>
+                          );
+                        })}
+                        <div className="flex gap-2 mt-3">
+                          <input type="email" value={newUserEmail} onChange={function(e) { setNewUserEmail(e.target.value); }}
+                            placeholder="name@example.com" dir="ltr"
+                            className="flex-1 border border-gray-200 rounded-xl px-3 py-2 text-sm text-left focus:outline-none focus:border-blue-400"
+                            onKeyDown={function(e) { if (e.key === "Enter") handleAddUser(); }} />
+                          <select value={newUserRole} onChange={function(e) { setNewUserRole(e.target.value); }}
+                            className="border border-gray-200 rounded-xl px-2 py-2 text-sm">
+                            <option value="user">User</option>
+                            <option value="admin">Admin</option>
+                          </select>
+                        </div>
+                        <button onClick={handleAddUser} disabled={!newUserEmail.trim() || userBusy}
+                          className="w-full bg-blue-600 text-white py-3 rounded-2xl font-semibold mt-3 disabled:opacity-40">הוסף</button>
+                        {userMsg && <p className={"text-xs text-center mt-2 " + (userMsg.indexOf("✓") === 0 ? "text-green-500" : "text-red-500")}>{userMsg}</p>}
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
 
               {/* ── Usage & Costs ────────────────────────────────────────────────── */}
               <div className="mt-3 mb-2">
@@ -2062,88 +2087,6 @@
             </Modal>
           )}
 
-          {/* Shortcut guide — device-aware */}
-          {showShortcutGuide && (function() {
-            var ua = navigator.userAgent || "";
-            var isIOS = /iPhone|iPad|iPod/i.test(ua) && !window.MSStream;
-            var isAndroid = /Android/i.test(ua);
-            var isSamsung = isAndroid && /Samsung|SM-[A-Z]/i.test(ua);
-            var copyUrl = function() {
-              navigator.clipboard.writeText("https://buli-8fdf9.web.app/?open=major").then(function() { showToast("הקישור הועתק! 🔗"); }, function() { showToast("העתק: buli-8fdf9.web.app/?open=major"); });
-            };
-            var urlBox = (
-              <div className="bg-blue-50 rounded-2xl px-4 py-3 mb-4 flex items-center justify-between gap-2">
-                <span className="text-xs text-blue-500 font-mono break-all">buli-8fdf9.web.app/?open=major</span>
-                <button onClick={copyUrl} className="bg-blue-600 text-white text-xs px-3 py-1.5 rounded-xl flex-shrink-0 font-semibold">העתק</button>
-              </div>
-            );
-            var androidSteps = isSamsung ? (
-              <div className="space-y-2 mb-4">
-                <div className="bg-yellow-50 border border-yellow-200 rounded-2xl px-4 py-3">
-                  <p className="font-semibold text-gray-800 text-sm mb-2">Samsung Galaxy — כפתור הצד</p>
-                  <ol className="text-xs text-gray-600 space-y-1 list-decimal list-inside">
-                    <li>פתח <strong>הגדרות</strong> ← <strong>תכונות מתקדמות</strong> ← <strong>מקש הצד</strong></li>
-                    <li>תחת "לחיצה כפולה" בחר <strong>הפעל אפליקציות מהירות</strong></li>
-                    <li>בחר <strong>Chrome</strong> כאפליקציה</li>
-                    <li>לחץ פעמיים על כפתור הצד ← Chrome נפתח ← הקלד את הכתובת</li>
-                  </ol>
-                  <p className="text-xs text-gray-400 mt-2">* לגישה מהירה יותר: הוסף קיצור דרך למסך הבית (ראה למטה)</p>
-                </div>
-                <div className="bg-gray-50 rounded-2xl px-4 py-3">
-                  <p className="font-semibold text-gray-800 text-sm mb-2">קיצור דרך במסך הבית (הכי קל)</p>
-                  <ol className="text-xs text-gray-600 space-y-1 list-decimal list-inside">
-                    <li>העתק את הקישור למעלה</li>
-                    <li>פתח <strong>Chrome</strong> ← הדבק בשורת הכתובת</li>
-                    <li>תפריט ⋮ ← <strong>הוסף למסך הבית</strong></li>
-                    <li>תן שם "בולי ראשי" ← לחץ <strong>הוסף</strong></li>
-                  </ol>
-                </div>
-              </div>
-            ) : (
-              <div className="space-y-2 mb-4">
-                <div className="bg-gray-50 rounded-2xl px-4 py-3">
-                  <p className="font-semibold text-gray-800 text-sm mb-2">קיצור דרך במסך הבית</p>
-                  <ol className="text-xs text-gray-600 space-y-1 list-decimal list-inside">
-                    <li>העתק את הקישור למעלה</li>
-                    <li>פתח <strong>Chrome</strong> ← הדבק בשורת הכתובת</li>
-                    <li>תפריט ⋮ ← <strong>הוסף למסך הבית</strong></li>
-                    <li>תן שם "בולי ראשי" ← לחץ <strong>הוסף</strong></li>
-                  </ol>
-                </div>
-              </div>
-            );
-            var iosSteps = (
-              <div className="space-y-2 mb-4">
-                <div className="bg-yellow-50 border border-yellow-200 rounded-2xl px-4 py-3">
-                  <p className="font-semibold text-gray-800 text-sm mb-2">iPhone 15 ומעלה — כפתור הפעולה</p>
-                  <ol className="text-xs text-gray-600 space-y-1 list-decimal list-inside">
-                    <li>פתח אפליקציית <strong>קיצורי דרך</strong></li>
-                    <li>לחץ <strong>+</strong> ← <strong>הוסף פעולה</strong> ← חפש "פתח כתובת URL"</li>
-                    <li>הדבק את הקישור ← שמור בשם "בולי ראשי"</li>
-                    <li><strong>הגדרות</strong> ← <strong>כפתור פעולה</strong> ← <strong>קיצור דרך</strong> ← בחר "בולי ראשי"</li>
-                  </ol>
-                </div>
-                <div className="bg-gray-50 rounded-2xl px-4 py-3">
-                  <p className="font-semibold text-gray-800 text-sm mb-2">כל iPhone — הקשה על הגב</p>
-                  <ol className="text-xs text-gray-600 space-y-1 list-decimal list-inside">
-                    <li>צור קיצור דרך כנ"ל (שלבים 1–3)</li>
-                    <li><strong>הגדרות</strong> ← <strong>נגישות</strong> ← <strong>מגע</strong> ← <strong>הקשה על הגב</strong></li>
-                    <li>בחר <strong>הקשה כפולה</strong> ← <strong>קיצורי דרך</strong> ← "בולי ראשי"</li>
-                  </ol>
-                </div>
-              </div>
-            );
-            return (
-              <Modal onClose={() => setShowShortcutGuide(false)}>
-                <h3 className="text-xl font-bold text-center mb-1">קיצור דרך לרשימה ראשית 📱</h3>
-                <p className="text-sm text-gray-400 text-center mb-4">פתח את הרשימה הראשית ישירות מהטלפון</p>
-                {urlBox}
-                {isIOS ? iosSteps : androidSteps}
-                <button onClick={() => setShowShortcutGuide(false)} className="w-full bg-blue-600 text-white py-4 rounded-2xl font-semibold">הבנתי</button>
-              </Modal>
-            );
-          })()}
-
           {confirmDialog && <ConfirmDialog message={confirmDialog.message} confirmLabel={confirmDialog.confirmLabel} onConfirm={confirmDialog.onConfirm} onClose={function() { setConfirmDialog(null); }} />}
 
           {editingNoteInstance && (
@@ -2229,7 +2172,7 @@
       );
     }
 
-    function ListCard({ list, userId, onOpen, menuOpen, onMenuToggle, onMarkDone, onRestore, onTogglePrivacy, onRename, onDelete, isDone, isMajor, onSetMajor, onShowShortcut, onEdit }) {
+    function ListCard({ list, userId, onOpen, menuOpen, onMenuToggle, onMarkDone, onRestore, onTogglePrivacy, onRename, onDelete, isDone, isMajor, onSetMajor, onEdit }) {
       const isOwner = list.ownerId === userId;
       var dateStr = list.dinnerDate
         ? formatDinnerDate(list.dinnerDate)
@@ -2238,9 +2181,7 @@
         <div className="relative">
           <div className={`w-full bg-white rounded-2xl p-4 flex items-center gap-3 shadow-sm border transition cursor-pointer ${isMajor ? "border-yellow-300 bg-yellow-50/30" : "border-gray-100 hover:border-blue-200"}`} onClick={onOpen}>
             {isMajor && (
-              <button onClick={onShowShortcut}
-                className="text-lg flex-shrink-0 leading-none"
-                title="רשימה ראשית — לחץ להגדרת קיצור דרך">⭐</button>
+              <span className="text-lg flex-shrink-0 leading-none" title="רשימה ראשית">⭐</span>
             )}
             <div className="flex-1 min-w-0 text-right">
               <div className={`font-semibold truncate ${isDone ? "line-through text-gray-400" : "text-gray-800"}`}>{list.name}</div>
@@ -2267,11 +2208,6 @@
               {!isDone && !isMajor && onSetMajor && (
                 <button onClick={onSetMajor} className="w-full text-right px-4 py-3 text-sm text-gray-700 hover:bg-gray-50 flex items-center gap-2">
                   <span>⭐</span><span>הגדר כראשי</span>
-                </button>
-              )}
-              {!isDone && isMajor && onShowShortcut && (
-                <button onClick={onShowShortcut} className="w-full text-right px-4 py-3 text-sm text-gray-700 hover:bg-gray-50 flex items-center gap-2">
-                  <span>📱</span><span>קיצור דרך לכפתור הצד</span>
                 </button>
               )}
               {isOwner && onRename && (

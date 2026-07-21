@@ -1,6 +1,6 @@
     const { useState, useEffect, useRef } = React;
 
-    const VERSION = "v5.74";
+    const VERSION = "v5.75";
 
     // ── CONFIG ────────────────────────────────────────────────────────────────────
     const FIREBASE_CONFIG = {
@@ -3925,7 +3925,8 @@
               <Checkbox checked={!!item.done} onChange={() => onToggle(item)} />
             </span>
             <div className="flex-1 min-w-0">
-              <span className={`font-medium text-sm ${item.done ? "line-through text-gray-400" : "text-gray-800"}`}>{item.name}</span>
+              <span onClick={!isTasks && canEdit ? function(e) { e.stopPropagation(); onEdit(); } : undefined}
+                className={`font-medium text-sm ${item.done ? "line-through text-gray-400" : "text-gray-800"} ${!isTasks && canEdit ? "cursor-pointer" : ""}`}>{item.name}</span>
               {currentUserId && item.addedBy && item.addedBy !== currentUserId && (
                 <span style={{color: item.addedByColor || getUserColor(item.addedBy)}} className="block text-xs font-medium mt-0.5">
                   ● {item.addedByName ? item.addedByName.split(" ")[0] : ""}

@@ -1,6 +1,6 @@
     const { useState, useEffect, useRef } = React;
 
-    const VERSION = "v5.73";
+    const VERSION = "v5.74";
 
     // ── CONFIG ────────────────────────────────────────────────────────────────────
     const FIREBASE_CONFIG = {
@@ -3361,7 +3361,7 @@
         if (filterPerson === "others" && item.addedBy === user.uid) return false;
         if (filterStatus === "done"    && !item.done) return false;
         if (filterStatus === "pending" &&  item.done) return false;
-        if (filterVendorProfile === "noBarcode" && itemMissingVendors(item, activeVendorIds).length === 0) return false;
+        if (filterVendorProfile === "noBarcode" && itemHasAnyBarcode(item)) return false;
         if (filterVendorProfile !== "all" && filterVendorProfile !== "noBarcode") {
           var prof = activeProfiles.find(function(p) { return p.id === filterVendorProfile; });
           if (prof) {

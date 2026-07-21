@@ -1,6 +1,6 @@
     const { useState, useEffect, useRef } = React;
 
-    const VERSION = "v5.75";
+    const VERSION = "v5.77";
 
     // ── CONFIG ────────────────────────────────────────────────────────────────────
     const FIREBASE_CONFIG = {
@@ -523,6 +523,23 @@
               <path d="M1 5l3.5 3.5L11 1" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
             </svg>
           )}
+        </button>
+      );
+    }
+    // Shopping-item "in the basket" toggle — an empty basket outline, filled
+    // with an item silhouette once checked, instead of a generic checkbox.
+    // Same checked/onChange contract as Checkbox so it drops in wherever an
+    // item's done-state is toggled.
+    function BasketToggle({ checked, onChange }) {
+      return (
+        <button type="button" onClick={onChange}
+          className="w-8 h-8 flex-shrink-0 flex items-center justify-center" aria-label="סמן כנלקח">
+          <svg viewBox="0 0 24 24" className="w-6 h-6">
+            <path d="M8 8 10 4h4l2 4" fill="none" stroke={checked ? "#2563eb" : "#9ca3af"} strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
+            <path d="M4 8h16l-1.4 9.8a2 2 0 0 1-2 1.7H7.4a2 2 0 0 1-2-1.7L4 8Z"
+              fill={checked ? "#dbeafe" : "white"} stroke={checked ? "#2563eb" : "#9ca3af"} strokeWidth="1.6" strokeLinejoin="round" />
+            {checked && <circle cx="12" cy="13.5" r="2.6" fill="#2563eb" />}
+          </svg>
         </button>
       );
     }
@@ -3849,7 +3866,7 @@
                 var editable = !!(onEditItem && (!canEditItem || canEditItem(item)));
                 return (
                   <tr key={item.id} className={editable ? "cursor-pointer active:bg-gray-50" : ""} onClick={editable ? function() { onEditItem(item); } : undefined}>
-                    <td className={"sticky right-0 bg-white z-10 px-3 py-2 border-b border-gray-100 text-right " + (item.done ? "line-through text-gray-400" : "text-gray-800")}>
+                    <td className={"sticky right-0 bg-white z-10 px-3 py-2 border-b border-gray-100 text-right " + (item.done ? "line-through text-gray-400" : (editable ? "text-blue-600 underline decoration-blue-200 underline-offset-2" : "text-gray-800"))}>
                       {item.name}
                       {qty !== 1 && <span className="text-gray-400"> ({qty})</span>}
                     </td>
@@ -3921,12 +3938,14 @@
         <div className="bg-white rounded-xl border border-gray-100 overflow-hidden">
           <div className={`flex items-center gap-2 px-3 py-2.5 ${isTasks && canEdit ? "cursor-pointer active:bg-gray-50" : ""}`}
                onClick={isTasks && canEdit ? onEdit : undefined}>
-            <span onClick={isTasks ? function(e){e.stopPropagation();} : undefined}>
-              <Checkbox checked={!!item.done} onChange={() => onToggle(item)} />
-            </span>
+            {isTasks && (
+              <span onClick={function(e){e.stopPropagation();}}>
+                <Checkbox checked={!!item.done} onChange={() => onToggle(item)} />
+              </span>
+            )}
             <div className="flex-1 min-w-0">
               <span onClick={!isTasks && canEdit ? function(e) { e.stopPropagation(); onEdit(); } : undefined}
-                className={`font-medium text-sm ${item.done ? "line-through text-gray-400" : "text-gray-800"} ${!isTasks && canEdit ? "cursor-pointer" : ""}`}>{item.name}</span>
+                className={`font-medium text-sm ${item.done ? "line-through text-gray-400" : (!isTasks && canEdit ? "text-blue-600 underline decoration-blue-200 underline-offset-2" : "text-gray-800")} ${!isTasks && canEdit ? "cursor-pointer" : ""}`}>{item.name}</span>
               {currentUserId && item.addedBy && item.addedBy !== currentUserId && (
                 <span style={{color: item.addedByColor || getUserColor(item.addedBy)}} className="block text-xs font-medium mt-0.5">
                   ● {item.addedByName ? item.addedByName.split(" ")[0] : ""}
@@ -3992,11 +4011,15 @@
                 </button>
               )}
             </div>
+            {!isTasks && (
+              <span onClick={function(e){e.stopPropagation();}}>
+                <BasketToggle checked={!!item.done} onChange={() => onToggle(item)} />
+              </span>
+            )}
             {!isTasks && qty ? (
               <span className="text-xs font-medium text-gray-500 bg-gray-100 px-2 py-0.5 rounded-full flex-shrink-0 min-w-12 text-center">{qty}</span>
             ) : !isTasks ? <span className="w-12" /> : null}
-            {!isTasks && canEdit && <button onClick={function(e){e.stopPropagation(); onEdit();}} className="text-gray-300 hover:text-blue-500 flex-shrink-0 text-sm px-0.5">✏️</button>}
-            {!isTasks && canEdit && <button onClick={function(e){e.stopPropagation(); onDelete(item.id);}} className="text-gray-300 hover:text-red-400 flex-shrink-0 text-base leading-none px-0.5">🗑️</button>}
+            {!isTasks && canEdit && <button onClick={function(e){e.stopPropagation(); onDelete(item.id);}} className="text-red-400 hover:text-red-600 flex-shrink-0 text-lg leading-none px-0.5 font-bold">✕</button>}
             {isTasks && canEdit && <span className="text-gray-300 text-base flex-shrink-0">›</span>}
           </div>
           {editingNote && (

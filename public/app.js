@@ -1,6 +1,6 @@
     const { useState, useEffect, useRef } = React;
 
-    const VERSION = "v5.60";
+    const VERSION = "v5.61";
 
     // ── CONFIG ────────────────────────────────────────────────────────────────────
     const FIREBASE_CONFIG = {
@@ -2872,6 +2872,7 @@
       const [pickerQuery,     setPickerQuery]      = useState("");
       const [pickerSearching, setPickerSearching]  = useState(false);
       const [resolveBusy,     setResolveBusy]     = useState(false);
+      const itemsListenerRef = useRef(null); // { ref, cb } for the live items subscription below
 
       const loadList = function() {
         setLoadError(null);
@@ -2906,13 +2907,28 @@
           tick();
         }, tick);
 
-        db.ref("items/" + listId).once("value").then(function(snap) {
+        // Live, not once — items change from other places while this list is
+        // open (AddScreen pushing new items, another device, a family member
+        // editing the shared list concurrently), and a one-time read had no
+        // way to reflect any of that without leaving and re-entering the
+        // list. Scoped to just the one list on screen, detached on unmount
+        // and re-attached (via loadList itself being idempotent, see below)
+        // on retry from the load-error screen.
+        if (itemsListenerRef.current) {
+          itemsListenerRef.current.ref.off("value", itemsListenerRef.current.cb);
+          itemsListenerRef.current = null;
+        }
+        var itemsTicked = false;
+        var itemsRef = db.ref("items/" + listId);
+        function onItemsSnapshot(snap) {
           var arr = [];
           snap.forEach(function(c) { arr.push(Object.assign({ id: c.key }, c.val())); });
           arr.sort(function(a, b) { return (a.createdAt || 0) - (b.createdAt || 0); });
           setItems(arr);
-          tick();
-        }, tick);
+          if (!itemsTicked) { itemsTicked = true; tick(); }
+        }
+        itemsRef.on("value", onItemsSnapshot, tick);
+        itemsListenerRef.current = { ref: itemsRef, cb: onItemsSnapshot };
 
         fns.httpsCallable("listTeamMembers")().then(function(res) {
           var others = (res.data.members || []).filter(function(m) { return m.uid !== user.uid; });
@@ -2933,7 +2949,15 @@
           setPricingEnabled(!!snap.val());
         });
       };
-      useEffect(function() { loadList(); }, []);
+      useEffect(function() {
+        loadList();
+        return function() {
+          if (itemsListenerRef.current) {
+            itemsListenerRef.current.ref.off("value", itemsListenerRef.current.cb);
+            itemsListenerRef.current = null;
+          }
+        };
+      }, []);
 
       // Picking a shop to filter by also switches the category order to
       // whichever named profile matches that shop (so aisle order lines up

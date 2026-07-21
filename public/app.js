@@ -1,6 +1,6 @@
     const { useState, useEffect, useRef } = React;
 
-    const VERSION = "v5.63";
+    const VERSION = "v5.64";
 
     // ── CONFIG ────────────────────────────────────────────────────────────────────
     const FIREBASE_CONFIG = {
@@ -706,12 +706,19 @@
       // next "back to menu" reuses the pre-mutation snapshot (prewarmHomeData
       // only re-fetches when the cache is empty) — this was why adding/removing
       // a list looked like it needed a full page reload to actually show up.
+      //
+      // The cache write happens directly here, synchronously, NOT inside the
+      // setLists updater callback — creating a list immediately navigates
+      // away to AddScreen in the very same tick (see onCreateShoppingList
+      // below), and when a setState call and a navigation-away both land in
+      // the same batch, React can unmount HomeScreen before ever invoking
+      // its queued updater, silently dropping a cache write placed there.
+      // A plain module-level assignment has no such dependency on whether
+      // the component sticks around to render again.
       const updateLists = function(updater) {
-        setLists(function(prev) {
-          var next = typeof updater === "function" ? updater(prev) : updater;
-          if (homeDataCache) homeDataCache = Object.assign({}, homeDataCache, { lists: next });
-          return next;
-        });
+        var next = typeof updater === "function" ? updater(lists) : updater;
+        if (homeDataCache) homeDataCache = Object.assign({}, homeDataCache, { lists: next });
+        setLists(next);
       };
       const [loadError,  setLoadError]  = useState(null);
       const [editTask,   setEditTask]   = useState(null);

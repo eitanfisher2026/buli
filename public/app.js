@@ -1,6 +1,6 @@
     const { useState, useEffect, useRef } = React;
 
-    const VERSION = "v5.59";
+    const VERSION = "v5.60";
 
     // ── CONFIG ────────────────────────────────────────────────────────────────────
     const FIREBASE_CONFIG = {
@@ -696,6 +696,17 @@
       const tasksListId = "tasks_" + user.uid;
       const [lists,      setLists]      = useState(function() { return homeDataCache ? homeDataCache.lists : null; });
       const [tasks,      setTasks]      = useState(function() { return homeDataCache ? homeDataCache.tasks : null; });
+      // Every local mutation of `lists` must also update homeDataCache, or the
+      // next "back to menu" reuses the pre-mutation snapshot (prewarmHomeData
+      // only re-fetches when the cache is empty) — this was why adding/removing
+      // a list looked like it needed a full page reload to actually show up.
+      const updateLists = function(updater) {
+        setLists(function(prev) {
+          var next = typeof updater === "function" ? updater(prev) : updater;
+          if (homeDataCache) homeDataCache = Object.assign({}, homeDataCache, { lists: next });
+          return next;
+        });
+      };
       const [loadError,  setLoadError]  = useState(null);
       const [editTask,   setEditTask]   = useState(null);
       const [menuId,     setMenuId]     = useState(null);
@@ -1119,7 +1130,7 @@
         var newList = { name: autoName, type: "shopping", isPrivate: false, done: false, ownerId: user.uid, ownerName: user.displayName, sharedWith: {}, createdAt: now };
         var newListId = db.ref("lists").push().key;
         db.ref().update({ ["lists/" + newListId]: newList, ["listsByUser/" + user.uid + "/" + newListId]: true }).then(function() {
-          setLists(function(prev) { return [Object.assign({ id: newListId }, newList)].concat(prev || []); });
+          updateLists(function(prev) { return [Object.assign({ id: newListId }, newList)].concat(prev || []); });
           onCreateShoppingList(newListId, autoName);
         }, function() { showToast("שגיאה ביצירת הרשימה"); });
       };
@@ -1139,7 +1150,7 @@
         var newList = { name: autoName, type: "notes", isPrivate: true, done: false, ownerId: user.uid, ownerName: user.displayName, sharedWith: {}, createdAt: now, dinnerDate: nextFriday(now), dinersCount: lastDiners };
         var newListId = db.ref("lists").push().key;
         db.ref().update({ ["lists/" + newListId]: newList, ["listsByUser/" + user.uid + "/" + newListId]: true }).then(function() {
-          setLists(function(prev) { return [Object.assign({ id: newListId }, newList)].concat(prev || []); });
+          updateLists(function(prev) { return [Object.assign({ id: newListId }, newList)].concat(prev || []); });
           onCreateNotesList(newListId, autoName);
         }, function() { showToast("שגיאה ביצירת התפריט"); });
       };
@@ -1161,14 +1172,14 @@
       const markListDone = (id) => {
         var now = Date.now();
         var newLists = (lists || []).map(function(l) { return l.id === id ? Object.assign({}, l, { done: true, doneAt: now }) : l; });
-        setLists(newLists);
+        updateLists(newLists);
         reassignMajorIfNeeded(newLists);
         setMenuId(null); showToast("הרשימה סומנה כהושלמה");
         db.ref("lists/" + id).update({ done: true, doneAt: now });
       };
 
       const restoreList = (id) => {
-        setLists(function(prev) { return prev ? prev.map(function(l) { return l.id === id ? Object.assign({}, l, { done: false, doneAt: null }) : l; }) : []; });
+        updateLists(function(prev) { return prev ? prev.map(function(l) { return l.id === id ? Object.assign({}, l, { done: false, doneAt: null }) : l; }) : []; });
         setMenuId(null);
         db.ref("lists/" + id).update({ done: false, doneAt: null });
       };
@@ -1176,7 +1187,7 @@
       const saveNoteInstance = function(id, name, date, dinersCount, note) {
         var count = parseInt(dinersCount, 10) || 12;
         localStorage.setItem("buli_last_diners_count", count);
-        setLists(function(prev) { return prev.map(function(l) { return l.id === id ? Object.assign({}, l, { name: name, dinnerDate: date, dinersCount: count, note: note }) : l; }); });
+        updateLists(function(prev) { return prev.map(function(l) { return l.id === id ? Object.assign({}, l, { name: name, dinnerDate: date, dinersCount: count, note: note }) : l; }); });
         db.ref("lists/" + id).update({ name: name.trim(), dinnerDate: date, dinersCount: count, note: note || "" });
         setEditingNoteInstance(null);
       };
@@ -1188,7 +1199,7 @@
           message: "למחוק את הרשימה וכל הפריטים שלה?",
           onConfirm: function() {
             var newLists = (lists || []).filter(function(l) { return l.id !== id; });
-            setLists(newLists);
+            updateLists(newLists);
             reassignMajorIfNeeded(newLists);
             showToast("הרשימה נמחקה");
             var updates = {};
@@ -1211,7 +1222,7 @@
       const confirmRename = () => {
         if (!renameName.trim() || !renameId) return;
         var newName = renameName.trim();
-        setLists(function(prev) { return prev ? prev.map(function(l) { return l.id === renameId ? Object.assign({}, l, { name: newName }) : l; }) : []; });
+        updateLists(function(prev) { return prev ? prev.map(function(l) { return l.id === renameId ? Object.assign({}, l, { name: newName }) : l; }) : []; });
         db.ref("lists/" + renameId).update({ name: newName });
         setRenameId(null); showToast("שם הרשימה עודכן");
       };
@@ -1219,7 +1230,7 @@
       const togglePrivacy = (id) => {
         var list = (lists || []).find(function(l) { return l.id === id; });
         var nowPrivate = list ? !list.isPrivate : true;
-        setLists(function(prev) { return prev ? prev.map(function(l) { return l.id === id ? Object.assign({}, l, { isPrivate: nowPrivate }) : l; }) : []; });
+        updateLists(function(prev) { return prev ? prev.map(function(l) { return l.id === id ? Object.assign({}, l, { isPrivate: nowPrivate }) : l; }) : []; });
         setMenuId(null);
         db.ref("lists/" + id).update({ isPrivate: nowPrivate });
         showToast(nowPrivate ? "הרשימה עכשיו פרטית 🔒" : "הרשימה עכשיו שיתופית 👥");
@@ -1639,7 +1650,7 @@
                     <div className="flex items-center gap-3">
                       <span className="text-lg w-7 text-center">💰</span>
                       <div className="text-right">
-                        <div className="text-sm font-semibold text-gray-700">השוואת מחירים</div>
+                        <div className="text-sm font-semibold text-gray-700">רשתות מזון להשוואת מחירים</div>
                         <div className="text-xs text-gray-400">הסניפים שלי</div>
                       </div>
                     </div>
@@ -3008,6 +3019,24 @@
           db.ref("lists/" + listId + "/pricesRefreshedAt").set(now);
         }).catch(function() {});
       };
+
+      // getBasketPrices is what actually returns `profiles` (the server's
+      // capped, validated view of this user's active vendor branches) — but
+      // fetchPrices only ever calls it when there's a barcode to price. On a
+      // list where nothing has matched a vendor's catalog yet (e.g. brand
+      // new, or item names that just don't match), that call never fires, so
+      // activeProfiles silently stays [] and the table shows "no active
+      // branches" even though the user has real active profiles configured.
+      // This bootstraps it directly, once, independent of pricing.
+      useEffect(function() {
+        if (!pricingEnabled || activeProfiles.length > 0) return;
+        fns.httpsCallable("getBasketPrices")({ barcodesByVendor: {}, force: false }).then(function(res) {
+          if (res.data.profiles && res.data.profiles.length > 0) {
+            setActiveProfiles(res.data.profiles);
+            priceCacheByList[listId] = Object.assign({}, priceCacheByList[listId], { activeProfiles: res.data.profiles });
+          }
+        }).catch(function() {});
+      }, [pricingEnabled]);
 
       const [pricesRefreshing, setPricesRefreshing] = useState(false);
       const [pricesLoading, setPricesLoading] = useState(false);

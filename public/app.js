@@ -1,6 +1,6 @@
     const { useState, useEffect, useRef } = React;
 
-    const VERSION = "v5.61";
+    const VERSION = "v5.62";
 
     // ── CONFIG ────────────────────────────────────────────────────────────────────
     const FIREBASE_CONFIG = {
@@ -2872,6 +2872,10 @@
       const [pickerQuery,     setPickerQuery]      = useState("");
       const [pickerSearching, setPickerSearching]  = useState(false);
       const [resolveBusy,     setResolveBusy]     = useState(false);
+      // Item names currently being looked up against vendor catalogs — lets
+      // ItemRow show "מחפש התאמה..." instead of nothing while the "match
+      // item" button hasn't appeared yet but real work is happening.
+      const [resolvingNames,  setResolvingNames]  = useState(function() { return new Set(); });
       const itemsListenerRef = useRef(null); // { ref, cb } for the live items subscription below
 
       const loadList = function() {
@@ -3101,7 +3105,21 @@
 
         var unresolved = items.filter(function(i) { return itemMissingVendors(i, activeVendorIds).length > 0 && i.name && i.name.trim(); });
         if (unresolved.length === 0) return;
-        fns.httpsCallable("resolveItemBarcodes")({ items: unresolved.map(function(i) { return i.name; }) }).then(function(res) {
+        var unresolvedNames = unresolved.map(function(i) { return i.name; });
+        setResolvingNames(function(prev) {
+          var next = new Set(prev);
+          unresolvedNames.forEach(function(n) { next.add(n); });
+          return next;
+        });
+        var clearResolving = function() {
+          setResolvingNames(function(prev) {
+            var next = new Set(prev);
+            unresolvedNames.forEach(function(n) { next.delete(n); });
+            return next;
+          });
+        };
+        fns.httpsCallable("resolveItemBarcodes")({ items: unresolvedNames }).then(function(res) {
+          clearResolving();
           var results = res.data.results || {};
           var newlyResolved = [];
           var newCandidates = {};
@@ -3137,7 +3155,7 @@
               return next;
             });
           }
-        }).catch(function() {});
+        }).catch(function() { clearResolving(); });
         // eslint-disable-next-line react-hooks/exhaustive-deps
       }, [pricingEnabled, items.length, unresolvedSignature]);
 
@@ -3423,7 +3441,7 @@
             <div className="space-y-2">
               {[...arr].sort((a,b) => (a.name||"").localeCompare(b.name||"","he")).map(item =>
                 <ItemRow key={item.id} item={item} canEdit={canEditItem(item)} onToggle={toggle} onDelete={remove} onEdit={() => editFn(item)} onUpdateNote={updateNote} isTasks={false} currentUserId={user.uid}
-                  priceMap={priceMap} activeProfiles={activeProfiles} singleShopId={singleShopId} priceCandidates={candidatesByName[item.name]} onPickPrice={() => setPickerItem(item)} />
+                  priceMap={priceMap} activeProfiles={activeProfiles} singleShopId={singleShopId} priceCandidates={candidatesByName[item.name]} onPickPrice={() => setPickerItem(item)} isResolving={resolvingNames.has(item.name)} />
               )}
             </div>
           );
@@ -3445,7 +3463,7 @@
             </div>
             <div className="space-y-2">
               {group.items.map(item => <ItemRow key={item.id} item={item} canEdit={canEditItem(item)} onToggle={toggle} onDelete={remove} onEdit={() => editFn(item)} onUpdateNote={updateNote} isTasks={false} currentUserId={user.uid}
-                  priceMap={priceMap} activeProfiles={activeProfiles} singleShopId={singleShopId} priceCandidates={candidatesByName[item.name]} onPickPrice={() => setPickerItem(item)} />)}
+                  priceMap={priceMap} activeProfiles={activeProfiles} singleShopId={singleShopId} priceCandidates={candidatesByName[item.name]} onPickPrice={() => setPickerItem(item)} isResolving={resolvingNames.has(item.name)} />)}
             </div>
           </div>
         ));
@@ -3886,7 +3904,7 @@
       );
     }
 
-    function ItemRow({ item, canEdit, onToggle, onDelete, onEdit, onUpdateNote, isTasks, currentUserId, priceMap, activeProfiles, singleShopId, priceCandidates, onPickPrice }) {
+    function ItemRow({ item, canEdit, onToggle, onDelete, onEdit, onUpdateNote, isTasks, currentUserId, priceMap, activeProfiles, singleShopId, priceCandidates, onPickPrice, isResolving }) {
       const [editingNote, setEditingNote] = useState(false);
       const [noteVal,     setNoteVal]     = useState(item.note || "");
 
@@ -3946,6 +3964,15 @@
                     );
                   })}
                 </div>
+              )}
+              {/* Without this, there's a silent gap between adding an item
+                  and the match button appearing — looks like nothing is
+                  happening, when really the catalog lookup is in flight. */}
+              {!isTasks && !itemHasAnyBarcode(item) && isResolving && !priceCandidates && (
+                <span className="text-xs text-gray-400 flex items-center gap-1 mt-1">
+                  <span className="inline-block w-2.5 h-2.5 border-2 border-gray-300 border-t-gray-500 rounded-full animate-spin"></span>
+                  מחפש התאמה בסניפים...
+                </span>
               )}
               {/* Only surface the match action here for items with NO vendor
                   matched at all — once at least one is matched, seeing real

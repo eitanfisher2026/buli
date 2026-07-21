@@ -1,6 +1,6 @@
     const { useState, useEffect, useRef } = React;
 
-    const VERSION = "v5.66";
+    const VERSION = "v5.67";
 
     // ── CONFIG ────────────────────────────────────────────────────────────────────
     const FIREBASE_CONFIG = {
@@ -3761,7 +3761,13 @@
                             <div className="text-xs text-gray-500 mb-0.5">
                               {c.manufacturer ? ("יצרן/מותג: " + c.manufacturer + " · ") : ""}ברקוד: {c.barcode}
                             </div>
-                            <div className="text-xs text-gray-400 mb-1">{c.unit}</div>
+                            {/* "יחידות" (generic "units") is the default for
+                                anything sold by the piece — true for most
+                                products, so it adds no distinguishing info.
+                                A real size/weight ("100 גרם", "מיליליטר") does. */}
+                            {c.unit && c.unit !== "יחידות" && (
+                              <div className="text-xs text-gray-400 mb-1">{c.unit}</div>
+                            )}
                             <div className="flex items-center gap-1.5 flex-wrap">
                               {searchedVendors.map(function(v) {
                                 var meta = VENDOR_LIST.find(function(x) { return x.id === v; });

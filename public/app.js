@@ -1,6 +1,6 @@
     const { useState, useEffect, useRef } = React;
 
-    const VERSION = "v5.64";
+    const VERSION = "v5.65";
 
     // ── CONFIG ────────────────────────────────────────────────────────────────────
     const FIREBASE_CONFIG = {
@@ -4181,6 +4181,16 @@
       const heldRef        = useRef(false);
       const categoriesRef  = useRef(DEFAULT_CATEGORIES);
       useEffect(function() { if (categories.length > 0) categoriesRef.current = categories; }, [categories]);
+      // Loaded once on mount instead of re-reading on every "process" click —
+      // AI settings don't change mid-session, so that was a fully avoidable
+      // round-trip stacked in front of the actual (much slower) AI call
+      // every single time, including on retries after an error.
+      const aiSettingsRef = useRef(undefined); // undefined = not loaded yet, null = loaded but unset
+      useEffect(function() {
+        db.ref("users/" + user.uid + "/ai").once("value").then(function(snap) {
+          aiSettingsRef.current = snap.val() || null;
+        }, function() { aiSettingsRef.current = null; });
+      }, [user.uid]);
 
       useEffect(function() {
         if (!isTasks) {
@@ -4334,8 +4344,10 @@
         if (!t) return;
         setProcessing(true); setError("");
         var catsSnapshot = categoriesRef.current.slice();
-        db.ref("users/" + user.uid + "/ai").once("value").then(function(snap) {
-          var ai = snap.val();
+        var loadAi = aiSettingsRef.current !== undefined
+          ? Promise.resolve(aiSettingsRef.current)
+          : db.ref("users/" + user.uid + "/ai").once("value").then(function(snap) { return snap.val() || null; });
+        loadAi.then(function(ai) {
           if (!ai || !ai.provider) {
             setError("יש להגדיר ספק AI תחילה — הגדרות ← הגדרות AI");
             setProcessing(false);

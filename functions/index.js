@@ -811,8 +811,17 @@ async function getUserActiveProfiles(uid) {
 
 function scoreCatalogName(name, q, qTokens) {
   const nameTokens = name.split(' ').filter(Boolean);
-  const overlap = qTokens.filter(t => nameTokens.includes(t)).length;
   if (name === q) return 100;
+  // Hebrew grocery names lead with the primary category noun ("מלפפון
+  // בייבי" — cucumber, then "baby" as a size/variety qualifier). For a
+  // multi-word query, a candidate that doesn't contain that lead noun at
+  // all is a different product, even if it shares a common modifier word
+  // with dozens of unrelated items — "בייבי" alone pulls in baby cheese,
+  // baby shampoo, baby oil... none of which are the cucumber being
+  // searched for. Matching only the modifier isn't a match worth showing,
+  // so this is an exclusion, not just a lower score tier.
+  if (qTokens.length > 1 && !nameTokens.includes(qTokens[0])) return null;
+  const overlap = qTokens.filter(t => nameTokens.includes(t)).length;
   // Matching ALL query words is a different tier from matching SOME of
   // them — a multi-word query like "בשר קצוץ" (chopped meat) must not
   // score the same for a candidate that only matches "קצוץ" (chopped —

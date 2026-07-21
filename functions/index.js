@@ -695,10 +695,12 @@ async function ingestVendorCatalog(vendor, branchId) {
       const barcode = String(item.ItemCode ?? '').trim();
       const price = parseFloat(item.ItemPrice);
       if (!barcode || !Number.isFinite(price)) continue;
+      const manufacturer = String(item.ManufactureName ?? '').trim();
       items[barcode] = {
         name: String(item.ItemName ?? '').trim(),
         price,
         unit: String(item.UnitOfMeasure ?? item.UnitQty ?? '').trim(),
+        manufacturer: manufacturer === 'לא ידוע' ? '' : manufacturer,
       };
     }
     const sizeBytes = Buffer.byteLength(JSON.stringify(items));
@@ -841,6 +843,14 @@ function scoreCatalogName(name, q, qTokens) {
     else if (nameTokens[0] === qTokens[0]) score += 10;
     return score;
   }
+  // For a multi-word query, a PARTIAL match (some but not all words) is
+  // exactly what let real-but-unrelated products through — "מלפפון מלח"
+  // (pickled cucumber) and "דאב סטיק מלפפון ותה" (a cucumber-scented
+  // deodorant stick) both share the lead word "מלפפון" with a "מלפפון
+  // בייבי" (baby cucumber) search, but neither is what was searched for.
+  // Only a single-word query gets the softer overlap/substring tiers below
+  // — a multi-word query either matches completely or isn't a result.
+  if (qTokens.length > 1) return null;
   if (overlap > 0) return 15 + Math.round((overlap / qTokens.length) * 15);
   // Whole-word overlap must outrank raw substring containment — Hebrew
   // roots embed into unrelated words (e.g. "חלב" milk is a literal
@@ -869,7 +879,7 @@ function fuzzyMatchCatalogs(query, catalogsByVendor) {
       const score = scoreCatalogName(name, q, qTokens);
       if (score === null) continue;
       if (!byBarcode[barcode]) {
-        byBarcode[barcode] = { barcode, name: item.name, unit: item.unit, bestScore: -1, prices: {} };
+        byBarcode[barcode] = { barcode, name: item.name, unit: item.unit, manufacturer: item.manufacturer || '', bestScore: -1, prices: {} };
       }
       const entry = byBarcode[barcode];
       entry.prices[vendor] = item.price;
@@ -877,6 +887,7 @@ function fuzzyMatchCatalogs(query, catalogsByVendor) {
         entry.bestScore = score;
         entry.name = item.name;
         entry.unit = item.unit;
+        entry.manufacturer = item.manufacturer || '';
       }
     }
   }
@@ -901,6 +912,7 @@ function fuzzyMatchCatalogs(query, catalogsByVendor) {
     barcode: entry.barcode,
     name: entry.name,
     unit: entry.unit,
+    manufacturer: entry.manufacturer,
     score: entry.bestScore + (vendorNames.length > 1 && vendorNames.every(v => entry.prices[v] != null) ? 20 : 0),
     prices: entry.prices,
   }));

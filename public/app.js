@@ -1,6 +1,6 @@
     const { useState, useEffect, useRef } = React;
 
-    const VERSION = "v5.65";
+    const VERSION = "v5.66";
 
     // ── CONFIG ────────────────────────────────────────────────────────────────────
     const FIREBASE_CONFIG = {
@@ -3730,7 +3730,7 @@
           {pickerItem && (
             <Modal onClose={() => setPickerItem(null)}>
               <h3 className="text-lg font-bold text-center mb-1">בחר מוצר עבור "{pickerItem.name}"</h3>
-              <p className="text-xs text-gray-400 text-center mb-3">בחר את ההתאמה המדויקת כדי לראות מחיר</p>
+              <p className="text-xs text-gray-400 text-center mb-3">יצרן וברקוד מזהים את המוצר המדויק — המחיר רק עוזר לוודא שזה נמכר אצלך</p>
               <div className="flex gap-2 mb-3">
                 <input value={pickerQuery} onChange={function(e) { setPickerQuery(e.target.value); }}
                   onKeyDown={function(e) { if (e.key === "Enter") refineSearch(); }}
@@ -3754,6 +3754,13 @@
                           <button key={c.barcode} onClick={() => pickPriceCandidate(pickerItem, c)} disabled={resolveBusy}
                             className={"w-full text-right rounded-xl px-3 py-2.5 disabled:opacity-50 " + (allFound ? "bg-green-50 hover:bg-green-100 border border-green-200" : "bg-gray-50 hover:bg-gray-100")}>
                             <div className="text-sm font-medium text-gray-800">{c.name}</div>
+                            {/* Manufacturer + barcode is what actually tells two
+                                similar-sounding candidates apart — price doesn't
+                                help decide which product this is, only whether
+                                it's worth picking once you already know. */}
+                            <div className="text-xs text-gray-500 mb-0.5">
+                              {c.manufacturer ? ("יצרן/מותג: " + c.manufacturer + " · ") : ""}ברקוד: {c.barcode}
+                            </div>
                             <div className="text-xs text-gray-400 mb-1">{c.unit}</div>
                             <div className="flex items-center gap-1.5 flex-wrap">
                               {searchedVendors.map(function(v) {

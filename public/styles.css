@@ -11,3 +11,10 @@
     input, textarea, select { font-family: inherit; }
     ::-webkit-scrollbar { width: 4px; }
     ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 4px; }
+
+    @media print {
+      .no-print { display: none !important; }
+      .print-only { display: block !important; }
+      .print-list-root { height: auto !important; }
+      .print-items-area { overflow: visible !important; height: auto !important; padding-bottom: 1rem !important; }
+    }

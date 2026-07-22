@@ -1,6 +1,6 @@
     const { useState, useEffect, useRef } = React;
 
-    const VERSION = "v5.80";
+    const VERSION = "v5.81";
 
     // ── CONFIG ────────────────────────────────────────────────────────────────────
     const FIREBASE_CONFIG = {
@@ -760,7 +760,10 @@
 
       const _isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) && !window.MSStream;
       const _isInstalled = window.matchMedia('(display-mode: standalone)').matches || !!window.navigator.standalone;
-      const [canInstall, setCanInstall] = useState(!_isInstalled && (!!window.__installPrompt || _isIOS));
+      // Show the install option to every role, not just whichever device happened to
+      // have already fired the native beforeinstallprompt — browsers that never fire
+      // it (or haven't yet) fall back to the generic on-screen guide below.
+      const [canInstall, setCanInstall] = useState(!_isInstalled);
       const [showInstallGuide, setShowInstallGuide] = useState(false);
 
       const [majorListId, setMajorListIdState] = useState(function() {
@@ -886,7 +889,9 @@
         if (!vendor || !branchId) return;
         var alreadySaved = Object.values(vendorProfiles).some(function(p) { return p && p.vendor === vendor && String(p.branchId) === String(branchId); });
         if (alreadySaved) { showToast("הסניף כבר ברשימה שלך"); return; }
-        db.ref("users/" + user.uid + "/vendorProfiles").push({ vendor: vendor, branchId: branchId, active: false, addedAt: Date.now() });
+        var canActivate = activeVendorProfileCount < maxActiveVendors;
+        db.ref("users/" + user.uid + "/vendorProfiles").push({ vendor: vendor, branchId: branchId, active: canActivate, addedAt: Date.now() });
+        if (!canActivate) showToast("הסניף נוסף, אך לא הופעל — הגעת למגבלת " + maxActiveVendors + " סניפים פעילים");
         setNewProfileVendorInput(""); setVendorRequestSent(false);
         setNewProfileBranchId("");
       };
@@ -2193,34 +2198,64 @@
             </Modal>
           )}
 
-          {/* iOS install guide */}
+          {/* Install guide — iOS/Safari gets exact steps; every other browser
+              that hasn't (yet) fired the native beforeinstallprompt gets a
+              generic pointer, so the option is still useful instead of a dead end. */}
           {showInstallGuide && (
             <Modal onClose={() => setShowInstallGuide(false)}>
               <h3 className="text-xl font-bold text-center mb-1">הוסף למסך הבית 📲</h3>
-              <p className="text-sm text-gray-400 text-center mb-5">בצע את הצעדים הבאים בספארי</p>
-              <div className="space-y-3 mb-5">
-                <div className="flex items-center gap-3 bg-gray-50 rounded-2xl px-4 py-3">
-                  <span className="text-2xl w-8 text-center flex-shrink-0">1</span>
-                  <div>
-                    <p className="font-semibold text-gray-800 text-sm">לחץ על כפתור השיתוף</p>
-                    <p className="text-xs text-gray-400">הסמל <span className="font-bold">↑</span> בתחתית המסך</p>
+              <p className="text-sm text-gray-400 text-center mb-5">
+                {_isIOS ? "בצע את הצעדים הבאים בספארי" : "בצע את הצעדים הבאים בדפדפן"}
+              </p>
+              {_isIOS ? (
+                <div className="space-y-3 mb-5">
+                  <div className="flex items-center gap-3 bg-gray-50 rounded-2xl px-4 py-3">
+                    <span className="text-2xl w-8 text-center flex-shrink-0">1</span>
+                    <div>
+                      <p className="font-semibold text-gray-800 text-sm">לחץ על כפתור השיתוף</p>
+                      <p className="text-xs text-gray-400">הסמל <span className="font-bold">↑</span> בתחתית המסך</p>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-3 bg-gray-50 rounded-2xl px-4 py-3">
+                    <span className="text-2xl w-8 text-center flex-shrink-0">2</span>
+                    <div>
+                      <p className="font-semibold text-gray-800 text-sm">גלול ובחר</p>
+                      <p className="text-xs text-gray-400">"הוסף למסך הבית"</p>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-3 bg-gray-50 rounded-2xl px-4 py-3">
+                    <span className="text-2xl w-8 text-center flex-shrink-0">3</span>
+                    <div>
+                      <p className="font-semibold text-gray-800 text-sm">לחץ "הוסף"</p>
+                      <p className="text-xs text-gray-400">האפליקציה תופיע במסך הבית</p>
+                    </div>
                   </div>
                 </div>
-                <div className="flex items-center gap-3 bg-gray-50 rounded-2xl px-4 py-3">
-                  <span className="text-2xl w-8 text-center flex-shrink-0">2</span>
-                  <div>
-                    <p className="font-semibold text-gray-800 text-sm">גלול ובחר</p>
-                    <p className="text-xs text-gray-400">"הוסף למסך הבית"</p>
+              ) : (
+                <div className="space-y-3 mb-5">
+                  <div className="flex items-center gap-3 bg-gray-50 rounded-2xl px-4 py-3">
+                    <span className="text-2xl w-8 text-center flex-shrink-0">1</span>
+                    <div>
+                      <p className="font-semibold text-gray-800 text-sm">פתח את תפריט הדפדפן</p>
+                      <p className="text-xs text-gray-400">שלוש הנקודות ⋮ למעלה, או תפריט ההגדרות</p>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-3 bg-gray-50 rounded-2xl px-4 py-3">
+                    <span className="text-2xl w-8 text-center flex-shrink-0">2</span>
+                    <div>
+                      <p className="font-semibold text-gray-800 text-sm">חפש</p>
+                      <p className="text-xs text-gray-400">"התקן אפליקציה" או "הוסף למסך הבית"</p>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-3 bg-gray-50 rounded-2xl px-4 py-3">
+                    <span className="text-2xl w-8 text-center flex-shrink-0">3</span>
+                    <div>
+                      <p className="font-semibold text-gray-800 text-sm">אשר את ההתקנה</p>
+                      <p className="text-xs text-gray-400">האפליקציה תופיע במסך הבית</p>
+                    </div>
                   </div>
                 </div>
-                <div className="flex items-center gap-3 bg-gray-50 rounded-2xl px-4 py-3">
-                  <span className="text-2xl w-8 text-center flex-shrink-0">3</span>
-                  <div>
-                    <p className="font-semibold text-gray-800 text-sm">לחץ "הוסף"</p>
-                    <p className="text-xs text-gray-400">האפליקציה תופיע במסך הבית</p>
-                  </div>
-                </div>
-              </div>
+              )}
               <button onClick={() => setShowInstallGuide(false)} className="w-full bg-blue-600 text-white py-4 rounded-2xl font-semibold">הבנתי</button>
             </Modal>
           )}
@@ -3530,13 +3565,16 @@
       const singleShopProfile = singleShopId ? activeProfiles.find(function(p) { return p.id === singleShopId; }) : null;
 
       return (
-        <div className="bg-gray-50 flex flex-col" style={{height:"100dvh"}}>
-          <div className="bg-blue-600 text-white px-4 pt-10 pb-3 flex-shrink-0">
+        <div className="bg-gray-50 flex flex-col print-list-root" style={{height:"100dvh"}}>
+          <div className="bg-blue-600 text-white px-4 pt-10 pb-3 flex-shrink-0 no-print">
             <div className="flex items-center gap-3" dir="ltr">
-              <button onClick={onBack} className="flex items-center gap-1 text-white font-semibold text-sm bg-white/20 px-3 py-1.5 rounded-full flex-shrink-0">
+              <button onClick={function() { if (viewMode === "table") { setViewMode("list"); } else { onBack(); } }} className="flex items-center gap-1 text-white font-semibold text-sm bg-white/20 px-3 py-1.5 rounded-full flex-shrink-0">
                 <span className="text-lg leading-none">‹</span><span>חזרה</span>
               </button>
               <h1 className="flex-1 text-lg font-bold truncate text-right">{list.name}</h1>
+              {!isNotes && !isTasks && (
+                <button onClick={() => window.print()} className="text-sm bg-white/20 px-3 py-1 rounded-full flex-shrink-0" title="הדפס / ייצוא ל-PDF">🖨️</button>
+              )}
               {isOwner && !list.isPrivate && !isNotes && (
                 <button onClick={openShare} className="text-sm bg-white/20 px-3 py-1 rounded-full flex-shrink-0">שתף</button>
               )}
@@ -3656,7 +3694,7 @@
           </div>
 
           {pricingEnabled && !isTasks && !isNotes && (
-            <div className="flex items-center justify-between bg-white border-b border-gray-100 px-4 py-1.5 flex-shrink-0">
+            <div className="flex items-center justify-between bg-white border-b border-gray-100 px-4 py-1.5 flex-shrink-0 no-print">
               <button onClick={openRefreshDialog} disabled={pricesRefreshing}
                 className="text-xs text-blue-600 font-medium flex items-center gap-1 disabled:opacity-50">
                 {pricesRefreshing ? <Spinner /> : "🔄"} רענן מחירים
@@ -3678,7 +3716,14 @@
             </div>
           )}
 
-          <div className="flex-1 overflow-y-auto p-4 pb-28">
+          {!isNotes && !isTasks && (
+            <div className="hidden print-only px-4 pt-4 pb-2">
+              <h1 className="text-xl font-bold text-right">{list.name}</h1>
+              <p className="text-xs text-gray-500 text-right mt-1">{new Date().toLocaleDateString("he-IL")}</p>
+            </div>
+          )}
+
+          <div className="flex-1 overflow-y-auto p-4 pb-28 print-items-area">
             {isNotes ? (
               notesSorted.length === 0 ? (
                 <div className="text-center py-20 text-gray-400">
@@ -3732,7 +3777,7 @@
           </div>
 
           {canAddItems && !(viewMode === "table" && pricingEnabled && !isTasks && !isNotes) && (
-            <button onClick={() => onAdd(list.type, list.name)} className="fixed bottom-6 left-1/2 -translate-x-1/2 bg-blue-600 text-white px-8 py-4 rounded-2xl shadow-xl font-semibold text-base flex items-center gap-2">
+            <button onClick={() => onAdd(list.type, list.name)} className="fixed bottom-6 left-1/2 -translate-x-1/2 bg-blue-600 text-white px-8 py-4 rounded-2xl shadow-xl font-semibold text-base flex items-center gap-2 no-print">
               <span className="text-xl font-light">+</span> {isTasks ? "הוסף מטלה" : isNotes ? "הוסף מנות" : "הוסף פריטים"}
             </button>
           )}

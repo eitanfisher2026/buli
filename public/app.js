@@ -1,6 +1,6 @@
     const { useState, useEffect, useRef } = React;
 
-    const VERSION = "v5.81";
+    const VERSION = "v5.82";
 
     // ── CONFIG ────────────────────────────────────────────────────────────────────
     const FIREBASE_CONFIG = {
@@ -757,6 +757,9 @@
       const [showDone,   setShowDone]   = useState(false);
       const [renameId,   setRenameId]   = useState(null);
       const [renameName, setRenameName] = useState("");
+      const [duplicateId,   setDuplicateId]   = useState(null);
+      const [duplicateName, setDuplicateName] = useState("");
+      const [duplicating, setDuplicating] = useState(false);
 
       const _isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) && !window.MSStream;
       const _isInstalled = window.matchMedia('(display-mode: standalone)').matches || !!window.navigator.standalone;
@@ -1281,6 +1284,52 @@
         setRenameId(null); showToast("שם הרשימה עודכן");
       };
 
+      const startDuplicate = (id) => {
+        var list = (lists || []).find(function(l) { return l.id === id; });
+        setDuplicateId(id); setDuplicateName(list ? "עותק של " + list.name : ""); setMenuId(null);
+      };
+
+      const confirmDuplicate = () => {
+        if (!duplicateName.trim() || !duplicateId || duplicating) return;
+        var original = (lists || []).find(function(l) { return l.id === duplicateId; });
+        if (!original) { setDuplicateId(null); return; }
+        setDuplicating(true);
+        var newName = duplicateName.trim();
+        var newId = db.ref("lists").push().key;
+        // Copy every field from the original except the ones that must be
+        // fresh for a new, unshared list: id (client-side only, never stored),
+        // sharedWith (a duplicate starts private to whoever made it), name,
+        // ownership/creation time, and completion state.
+        var newListData = Object.assign({}, original);
+        delete newListData.id;
+        delete newListData.sharedWith;
+        newListData.name = newName;
+        newListData.ownerId = user.uid;
+        newListData.createdAt = Date.now();
+        newListData.done = false;
+
+        db.ref("items/" + duplicateId).once("value").then(function(snap) {
+          var items = snap.val() || {};
+          var updates = {};
+          updates["lists/" + newId] = newListData;
+          updates["listsByUser/" + user.uid + "/" + newId] = true;
+          // Items are copied exactly as they are — same name, note, and
+          // checked/unchecked state — just filed under new item keys.
+          Object.keys(items).forEach(function(itemId) {
+            var newItemKey = db.ref("items/" + newId).push().key;
+            updates["items/" + newId + "/" + newItemKey] = items[itemId];
+          });
+          return db.ref().update(updates);
+        }).then(function() {
+          updateLists(function(prev) { return (prev || []).concat([Object.assign({ id: newId }, newListData)]); });
+          setDuplicateId(null); setDuplicating(false);
+          showToast("הרשימה שוכפלה");
+        }, function(err) {
+          setDuplicating(false);
+          showToast("שגיאה בשכפול: " + (err && err.message || "?"));
+        });
+      };
+
       const togglePrivacy = (id) => {
         var list = (lists || []).find(function(l) { return l.id === id; });
         var nowPrivate = list ? !list.isPrivate : true;
@@ -1388,6 +1437,7 @@
         onRestore:       function() { restoreList(l.id); },
         onTogglePrivacy: function() { togglePrivacy(l.id); },
         onRename:        function() { startRename(l.id); },
+        onDuplicate:     function() { startDuplicate(l.id); },
         onDelete:        function() { deleteList(l.id); },
         isMajor:         majorListId === l.id,
         onSetMajor:      function() { setMajor(l.id, l.name); }
@@ -1515,6 +1565,20 @@
               <button onClick={confirmRename} disabled={!renameName.trim()}
                 className="w-full bg-blue-600 text-white py-4 rounded-2xl font-semibold text-lg disabled:opacity-40">
                 שמור
+              </button>
+            </Modal>
+          )}
+
+          {/* Duplicate list modal */}
+          {duplicateId && (
+            <Modal onClose={() => { if (!duplicating) setDuplicateId(null); }}>
+              <h3 className="text-lg font-bold text-center mb-4">שכפול רשימה</h3>
+              <input value={duplicateName} onChange={e => setDuplicateName(e.target.value)} autoFocus
+                onKeyDown={e => e.key === "Enter" && confirmDuplicate()}
+                className="w-full border border-gray-200 rounded-xl px-4 py-3 text-right focus:outline-none focus:border-blue-400 mb-4" />
+              <button onClick={confirmDuplicate} disabled={!duplicateName.trim() || duplicating}
+                className="w-full bg-blue-600 text-white py-4 rounded-2xl font-semibold text-lg disabled:opacity-40">
+                {duplicating ? "משכפל..." : "שכפל"}
               </button>
             </Modal>
           )}
@@ -2263,7 +2327,7 @@
       );
     }
 
-    function ListCard({ list, userId, onOpen, menuOpen, onMenuToggle, onMarkDone, onRestore, onTogglePrivacy, onRename, onDelete, isDone, isMajor, onSetMajor, onEdit }) {
+    function ListCard({ list, userId, onOpen, menuOpen, onMenuToggle, onMarkDone, onRestore, onTogglePrivacy, onRename, onDuplicate, onDelete, isDone, isMajor, onSetMajor, onEdit }) {
       const isOwner = list.ownerId === userId;
       var dateStr = list.dinnerDate
         ? formatDinnerDate(list.dinnerDate)
@@ -2304,6 +2368,11 @@
               {isOwner && onRename && (
                 <button onClick={onRename} className="w-full text-right px-4 py-3 text-sm text-gray-700 hover:bg-gray-50 flex items-center gap-2">
                   <span>✏️</span><span>שנה שם</span>
+                </button>
+              )}
+              {onDuplicate && (
+                <button onClick={onDuplicate} className="w-full text-right px-4 py-3 text-sm text-gray-700 hover:bg-gray-50 flex items-center gap-2">
+                  <span>📋</span><span>שכפל רשימה</span>
                 </button>
               )}
               {onEdit && (

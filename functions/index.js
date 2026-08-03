@@ -613,8 +613,20 @@ const VENDORS = {
   keshet: { ftpUser: 'Keshet' }, // קשת טעמים — same Cerberus platform, verified 2026-07-19
   yohananof: { ftpUser: 'yohananof' }, // יוחננוף — same Cerberus platform, verified 2026-07-19
   superYuda: { ftpUser: 'yuda_ho', ftpPassword: 'Yud@147' }, // סופר יודה — same Cerberus platform but a real (non-blank) password, verified 2026-08-03
+  // שופרסל (both שופרסל שלי and שופרסל דיל — and every other sub-brand —
+  // live in this one chain's feed, distinguished only by SubChainName, so
+  // ingesting it covers all of them with no extra code) does NOT use the
+  // shared Cerberus FTP platform the other vendors do. It publishes its own
+  // paginated HTML file listing at prices.shufersal.co.il, where each row
+  // links to a time-limited signed Azure Blob URL. The XML *schema* inside
+  // those files is identical to every other vendor's (same government-
+  // mandated price-transparency format) — only the fetch mechanism differs.
+  // Verified live 2026-08-03 (store 39 "שלי ת"א- ברזיל", ברזיל 15).
+  shufersal: { http: true },
 };
 const FTP_HOST = 'url.retail.publishedprices.co.il';
+const SHUFERSAL_BASE_URL = 'https://prices.shufersal.co.il';
+const SHUFERSAL_CAT_ID = { stores: 5, priceFull: 2 };
 // Only vendors a brand-new user should start with pre-seeded (matches the
 // two branches this app originally shipped with). A vendor added later
 // (like Keshet) is opt-in only — everyone must explicitly add it via the
@@ -662,88 +674,160 @@ async function ftpDownloadBuffer(client, fileName) {
   return Buffer.concat(chunks);
 }
 
-async function ftpDownloadXmlObject(client, fileEntry) {
-  let buf = await ftpDownloadBuffer(client, fileEntry.name);
-  if (fileEntry.name.endsWith('.gz')) buf = require('zlib').gunzipSync(buf);
+function parseXmlBuffer(buf, isGz) {
+  if (isGz) buf = require('zlib').gunzipSync(buf);
   const { XMLParser } = require('fast-xml-parser');
   const parser = new XMLParser({ ignoreAttributes: false });
   return parser.parse(decodeXmlBuffer(buf));
 }
 
+async function ftpDownloadXmlObject(client, fileEntry) {
+  const buf = await ftpDownloadBuffer(client, fileEntry.name);
+  return parseXmlBuffer(buf, fileEntry.name.endsWith('.gz'));
+}
+
+// ── Shufersal (HTTP, not FTP — see the VENDORS comment above) ──────────────
+function httpGet(url) {
+  return new Promise((resolve, reject) => {
+    require('https').get(url, (res) => {
+      if (res.statusCode < 200 || res.statusCode >= 300) {
+        reject(new Error(`HTTP ${res.statusCode} fetching ${url}`));
+        res.resume();
+        return;
+      }
+      const chunks = [];
+      res.on('data', (c) => chunks.push(c));
+      res.on('end', () => resolve(Buffer.concat(chunks)));
+      res.on('error', reject);
+    }).on('error', reject);
+  });
+}
+
+// Lists files for one category (5 = stores, 2 = PriceFull), optionally
+// scoped to a single store. Only reads the first page — in practice both
+// the whole-chain stores listing and a single-store price listing return
+// one row, so there's nothing to paginate through for how this is used.
+async function shufersalListFiles(catId, storeId) {
+  const qs = storeId ? `catID=${catId}&storeId=${storeId}` : `catID=${catId}`;
+  const html = (await httpGet(`${SHUFERSAL_BASE_URL}/FileObject/UpdateCategory?${qs}`)).toString('utf8');
+  const matches = [...html.matchAll(/href="(https:\/\/pricesprodpublic[^"]+\.gz\?[^"]*)"/g)];
+  return matches.map((m) => {
+    const url = m[1].replace(/&amp;/g, '&');
+    const name = decodeURIComponent(url.split('/').pop().split('?')[0]);
+    return { name, url };
+  });
+}
+
+async function shufersalDownloadXmlObject(fileEntry) {
+  const buf = await httpGet(fileEntry.url);
+  return parseXmlBuffer(buf, /\.gz(\?|$)/i.test(fileEntry.url) || fileEntry.name.endsWith('.gz'));
+}
+
+// Shared by every vendor regardless of fetch mechanism — the government-
+// mandated XML schema itself is identical across all of them.
+function branchesFromStoresXml(obj) {
+  const root = obj.Root || {};
+  const branches = {};
+  for (const subChain of asArray(root.SubChains?.SubChain)) {
+    for (const s of asArray(subChain.Stores?.Store)) {
+      const id = String(s.StoreID ?? '').padStart(3, '0');
+      if (!id || id === '000') continue;
+      branches[id] = {
+        name: String(s.StoreName ?? '').trim() || `Store ${id}`,
+        address: String(s.Address ?? '').replace(/&#x0?[dDaA];/g, '').replace(/[\r\n]+/g, '').trim(),
+        city: String(s.City ?? '').trim(),
+      };
+    }
+  }
+  return branches;
+}
+
+function itemsFromPriceXml(obj) {
+  const root = obj.Root || {};
+  const items = {};
+  for (const item of asArray(root.Items?.Item)) {
+    const barcode = String(item.ItemCode ?? '').trim();
+    const price = parseFloat(item.ItemPrice);
+    if (!barcode || !Number.isFinite(price)) continue;
+    const manufacturer = String(item.ManufactureName ?? '').trim();
+    items[barcode] = {
+      name: String(item.ItemName ?? '').trim(),
+      price,
+      unit: String(item.UnitOfMeasure ?? item.UnitQty ?? '').trim(),
+      manufacturer: manufacturer === 'לא ידוע' ? '' : manufacturer,
+    };
+  }
+  return items;
+}
+
 // Refreshes vendorBranches/{vendor} from the chain's own Stores file. Branches
 // change rarely, so — unlike prices — this only runs when the cache is empty.
 async function ingestVendorBranches(vendor) {
-  const client = await ftpConnect(vendor);
-  try {
-    const list = await client.list();
-    const storeFiles = list.filter(f => /^stores/i.test(f.name)).sort((a, b) => b.name.localeCompare(a.name));
+  let obj;
+  if (VENDORS[vendor].http) {
+    const files = await shufersalListFiles(SHUFERSAL_CAT_ID.stores);
+    const storeFiles = files.filter(f => /^stores/i.test(f.name)).sort((a, b) => b.name.localeCompare(a.name));
     if (storeFiles.length === 0) return null;
-    const obj = await ftpDownloadXmlObject(client, storeFiles[0]);
-    const root = obj.Root || {};
-    const branches = {};
-    for (const subChain of asArray(root.SubChains?.SubChain)) {
-      for (const s of asArray(subChain.Stores?.Store)) {
-        const id = String(s.StoreID ?? '').padStart(3, '0');
-        if (!id || id === '000') continue;
-        branches[id] = {
-          name: String(s.StoreName ?? '').trim() || `Store ${id}`,
-          address: String(s.Address ?? '').replace(/&#x0?[dDaA];/g, '').replace(/[\r\n]+/g, '').trim(),
-          city: String(s.City ?? '').trim(),
-        };
-      }
+    obj = await shufersalDownloadXmlObject(storeFiles[0]);
+  } else {
+    const client = await ftpConnect(vendor);
+    try {
+      const list = await client.list();
+      const storeFiles = list.filter(f => /^stores/i.test(f.name)).sort((a, b) => b.name.localeCompare(a.name));
+      if (storeFiles.length === 0) return null;
+      obj = await ftpDownloadXmlObject(client, storeFiles[0]);
+    } finally {
+      client.close();
     }
-    if (Object.keys(branches).length === 0) return null;
-    await db.ref(`vendorBranches/${vendor}`).set(branches);
-    return branches;
-  } finally {
-    client.close();
   }
+  const branches = branchesFromStoresXml(obj);
+  if (Object.keys(branches).length === 0) return null;
+  await db.ref(`vendorBranches/${vendor}`).set(branches);
+  return branches;
 }
 
 // Refreshes vendorCatalog/{vendor}/{branchId} from that branch's latest full
 // price snapshot. Writes the whole catalog in one .set() — cheap in RTDB
 // regardless of item count (bills by bytes, not by write count).
 async function ingestVendorCatalog(vendor, branchId, uid, email) {
-  const client = await ftpConnect(vendor);
-  try {
-    const list = await client.list();
-    const branchFiles = list.filter(f => f.name.includes(`-${branchId}-`));
-    let candidates = branchFiles.filter(f => /pricefull/i.test(f.name));
-    if (candidates.length === 0) candidates = branchFiles.filter(f => /price/i.test(f.name));
+  let obj;
+  if (VENDORS[vendor].http) {
+    const files = await shufersalListFiles(SHUFERSAL_CAT_ID.priceFull, parseInt(branchId, 10));
+    let candidates = files.filter(f => /pricefull/i.test(f.name));
+    if (candidates.length === 0) candidates = files.filter(f => /price/i.test(f.name));
     candidates.sort((a, b) => b.name.localeCompare(a.name));
     const pick = candidates[0];
     if (!pick) throw new HttpsError('not-found', `No price file found for ${vendor} branch ${branchId}`);
-
-    const obj = await ftpDownloadXmlObject(client, pick);
-    const root = obj.Root || {};
-    const items = {};
-    for (const item of asArray(root.Items?.Item)) {
-      const barcode = String(item.ItemCode ?? '').trim();
-      const price = parseFloat(item.ItemPrice);
-      if (!barcode || !Number.isFinite(price)) continue;
-      const manufacturer = String(item.ManufactureName ?? '').trim();
-      items[barcode] = {
-        name: String(item.ItemName ?? '').trim(),
-        price,
-        unit: String(item.UnitOfMeasure ?? item.UnitQty ?? '').trim(),
-        manufacturer: manufacturer === 'לא ידוע' ? '' : manufacturer,
-      };
+    obj = await shufersalDownloadXmlObject(pick);
+  } else {
+    const client = await ftpConnect(vendor);
+    try {
+      const list = await client.list();
+      const branchFiles = list.filter(f => f.name.includes(`-${branchId}-`));
+      let candidates = branchFiles.filter(f => /pricefull/i.test(f.name));
+      if (candidates.length === 0) candidates = branchFiles.filter(f => /price/i.test(f.name));
+      candidates.sort((a, b) => b.name.localeCompare(a.name));
+      const pick = candidates[0];
+      if (!pick) throw new HttpsError('not-found', `No price file found for ${vendor} branch ${branchId}`);
+      obj = await ftpDownloadXmlObject(client, pick);
+    } finally {
+      client.close();
     }
-    const sizeBytes = Buffer.byteLength(JSON.stringify(items));
-    const updatedAt = Date.now();
-    const payload = { items, updatedAt, sizeBytes };
-    // A tiny sibling index (metadata only, never the item blobs) so the
-    // admin "loaded branches" panel can list every branch ever ingested
-    // without paying to read any of the real (multi-MB) catalog data.
-    await db.ref().update({
-      [`vendorCatalog/${vendor}/${branchId}`]: payload,
-      [`vendorCatalogIndex/${vendor}/${branchId}`]: { updatedAt, sizeBytes, itemCount: Object.keys(items).length },
-    });
-    await recordPricingUsage({ catalogWriteBytes: sizeBytes, catalogRefreshCount: 1 }, uid, email);
-    return items;
-  } finally {
-    client.close();
   }
+
+  const items = itemsFromPriceXml(obj);
+  const sizeBytes = Buffer.byteLength(JSON.stringify(items));
+  const updatedAt = Date.now();
+  const payload = { items, updatedAt, sizeBytes };
+  // A tiny sibling index (metadata only, never the item blobs) so the
+  // admin "loaded branches" panel can list every branch ever ingested
+  // without paying to read any of the real (multi-MB) catalog data.
+  await db.ref().update({
+    [`vendorCatalog/${vendor}/${branchId}`]: payload,
+    [`vendorCatalogIndex/${vendor}/${branchId}`]: { updatedAt, sizeBytes, itemCount: Object.keys(items).length },
+  });
+  await recordPricingUsage({ catalogWriteBytes: sizeBytes, catalogRefreshCount: 1 }, uid, email);
+  return items;
 }
 
 // Calendar-day comparison in Israel local time (not UTC, and not exact

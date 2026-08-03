@@ -1,6 +1,6 @@
     const { useState, useEffect, useRef } = React;
 
-    const VERSION = "v5.83";
+    const VERSION = "v5.85";
 
     // ── CONFIG ────────────────────────────────────────────────────────────────────
     const FIREBASE_CONFIG = {
@@ -760,6 +760,15 @@
       const [duplicateId,   setDuplicateId]   = useState(null);
       const [duplicateName, setDuplicateName] = useState("");
       const [duplicating, setDuplicating] = useState(false);
+      const [copySourceList,   setCopySourceList]   = useState(null);
+      const [copyItems,        setCopyItems]        = useState([]);
+      const [copyItemsLoading, setCopyItemsLoading] = useState(false);
+      const [showCopyPicker,   setShowCopyPicker]   = useState(false);
+      const [copySelectedIds,  setCopySelectedIds]  = useState([]);
+      const [showCopyDest,     setShowCopyDest]     = useState(false);
+      const [copyNewListMode,  setCopyNewListMode]  = useState(false);
+      const [copyNewListName,  setCopyNewListName]  = useState("");
+      const [copyBusy,         setCopyBusy]         = useState(false);
 
       const _isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) && !window.MSStream;
       const _isInstalled = window.matchMedia('(display-mode: standalone)').matches || !!window.navigator.standalone;
@@ -1330,6 +1339,101 @@
         });
       };
 
+      const startCopyItems = (id) => {
+        var list = (lists || []).find(function(l) { return l.id === id; });
+        if (!list) return;
+        setMenuId(null);
+        setCopySourceList(list);
+        setCopySelectedIds([]);
+        setCopyItemsLoading(true);
+        setShowCopyPicker(true);
+        db.ref("items/" + id).once("value").then(function(snap) {
+          var arr = [];
+          snap.forEach(function(c) { arr.push(Object.assign({ id: c.key }, c.val())); });
+          arr.sort(function(a, b) { return (a.createdAt || 0) - (b.createdAt || 0); });
+          setCopyItems(arr);
+          setCopyItemsLoading(false);
+        }, function() {
+          setCopyItemsLoading(false);
+          showToast("שגיאה בטעינת הפריטים");
+        });
+      };
+      const toggleCopySelect = (id) => {
+        setCopySelectedIds(function(prev) {
+          return prev.indexOf(id) === -1 ? prev.concat(id) : prev.filter(function(x) { return x !== id; });
+        });
+      };
+      const confirmCopySelection = () => {
+        if (copySelectedIds.length === 0) return;
+        setShowCopyPicker(false);
+        setCopyNewListMode(false);
+        setCopyNewListName("");
+        setShowCopyDest(true);
+      };
+      // Same-type, not-done, and either owned or add-permitted — a copy is
+      // just adding items, so "own" (add-only) role is enough; "view" isn't.
+      const copyDestOptions = function() {
+        return (lists || []).filter(function(l) {
+          return copySourceList && l.id !== copySourceList.id && l.type !== "notes" && !l.done &&
+            (l.ownerId === user.uid || (l.sharedWith && (l.sharedWith[user.uid] === "edit" || l.sharedWith[user.uid] === "own")));
+        });
+      };
+      const copyItemsToDest = (destId) => {
+        if (copyBusy) return;
+        setCopyBusy(true);
+        var updates = {};
+        copySelectedIds.forEach(function(id) {
+          var item = copyItems.find(function(i) { return i.id === id; });
+          if (!item) return;
+          var newKey = db.ref("items/" + destId).push().key;
+          var copy = Object.assign({}, item);
+          delete copy.id;
+          updates["items/" + destId + "/" + newKey] = copy;
+        });
+        db.ref().update(updates).then(function() {
+          setCopyBusy(false);
+          setShowCopyDest(false);
+          setCopySourceList(null);
+          setCopySelectedIds([]);
+          setCopyItems([]);
+          showToast(copySelectedIds.length + " פריטים הועתקו");
+        }, function(err) {
+          setCopyBusy(false);
+          showToast("שגיאה בהעתקה: " + (err && err.message || "?"));
+        });
+      };
+      const createListAndCopyItems = () => {
+        var name = copyNewListName.trim();
+        if (!name || copyBusy) return;
+        setCopyBusy(true);
+        var now = Date.now();
+        var newList = { name: name, type: "shopping", isPrivate: false, done: false, ownerId: user.uid, ownerName: user.displayName, sharedWith: {}, createdAt: now };
+        var newListId = db.ref("lists").push().key;
+        var updates = {};
+        updates["lists/" + newListId] = newList;
+        updates["listsByUser/" + user.uid + "/" + newListId] = true;
+        copySelectedIds.forEach(function(id) {
+          var item = copyItems.find(function(i) { return i.id === id; });
+          if (!item) return;
+          var newKey = db.ref("items/" + newListId).push().key;
+          var copy = Object.assign({}, item);
+          delete copy.id;
+          updates["items/" + newListId + "/" + newKey] = copy;
+        });
+        db.ref().update(updates).then(function() {
+          setCopyBusy(false);
+          setShowCopyDest(false);
+          setCopySourceList(null);
+          setCopySelectedIds([]);
+          setCopyItems([]);
+          updateLists(function(prev) { return (prev || []).concat([Object.assign({ id: newListId }, newList)]); });
+          showToast(copySelectedIds.length + ' פריטים הועתקו אל "' + name + '"');
+        }, function(err) {
+          setCopyBusy(false);
+          showToast("שגיאה ביצירת הרשימה: " + (err && err.message || "?"));
+        });
+      };
+
       const togglePrivacy = (id) => {
         var list = (lists || []).find(function(l) { return l.id === id; });
         var nowPrivate = list ? !list.isPrivate : true;
@@ -1438,6 +1542,7 @@
         onTogglePrivacy: function() { togglePrivacy(l.id); },
         onRename:        function() { startRename(l.id); },
         onDuplicate:     function() { startDuplicate(l.id); },
+        onCopyItems:     function() { startCopyItems(l.id); },
         onDelete:        function() { deleteList(l.id); },
         isMajor:         majorListId === l.id,
         onSetMajor:      function() { setMajor(l.id, l.name); }
@@ -1580,6 +1685,84 @@
                 className="w-full bg-blue-600 text-white py-4 rounded-2xl font-semibold text-lg disabled:opacity-40">
                 {duplicating ? "משכפל..." : "שכפל"}
               </button>
+            </Modal>
+          )}
+
+          {/* Copy items to another list — step 1: pick items */}
+          {showCopyPicker && (
+            <Modal onClose={() => setShowCopyPicker(false)}>
+              <h3 className="text-lg font-bold text-center mb-1">בחר פריטים להעתקה</h3>
+              <p className="text-xs text-gray-400 text-center mb-3">{copySelectedIds.length} נבחרו</p>
+              {copyItemsLoading ? (
+                <div className="flex justify-center py-6"><Spinner /></div>
+              ) : (
+                <div className="space-y-2 max-h-80 overflow-y-auto mb-4">
+                  {copyItems.map(function(item) {
+                    var sel = copySelectedIds.indexOf(item.id) !== -1;
+                    return (
+                      <button key={item.id} onClick={function() { toggleCopySelect(item.id); }}
+                        className={"w-full flex items-center gap-3 px-3 py-2.5 rounded-xl border text-right transition " + (sel ? "bg-blue-50 border-blue-400" : "bg-white border-gray-200")}>
+                        <span className={`w-5 h-5 rounded border-2 flex-shrink-0 flex items-center justify-center transition ${sel ? "bg-blue-600 border-blue-600" : "border-gray-400 bg-white"}`}>
+                          {sel && (
+                            <svg className="w-3 h-3 text-white" viewBox="0 0 12 10" fill="none">
+                              <path d="M1 5l3.5 3.5L11 1" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+                            </svg>
+                          )}
+                        </span>
+                        <span className={"flex-1 min-w-0 truncate text-sm font-medium " + (item.done ? "line-through text-gray-400" : "text-gray-800")}>{item.name}</span>
+                      </button>
+                    );
+                  })}
+                  {copyItems.length === 0 && (
+                    <p className="text-center text-gray-400 text-sm py-4">אין פריטים ברשימה</p>
+                  )}
+                </div>
+              )}
+              <div className="flex gap-2">
+                <button onClick={confirmCopySelection} disabled={copySelectedIds.length === 0}
+                  className="flex-1 bg-blue-600 text-white py-3.5 rounded-2xl font-semibold disabled:opacity-40">
+                  אישור{copySelectedIds.length > 0 ? " (" + copySelectedIds.length + ")" : ""}
+                </button>
+                <button onClick={() => setShowCopyPicker(false)} className="flex-1 py-3.5 text-gray-500 font-medium rounded-2xl border border-gray-200">
+                  ביטול
+                </button>
+              </div>
+            </Modal>
+          )}
+
+          {/* Copy items to another list — step 2: pick (or create) destination */}
+          {showCopyDest && (
+            <Modal onClose={() => setShowCopyDest(false)}>
+              <h3 className="text-lg font-bold text-center mb-4">העתק {copySelectedIds.length} פריטים אל</h3>
+              <div className="space-y-2 max-h-72 overflow-y-auto mb-3">
+                {copyDestOptions().map(function(l) {
+                  return (
+                    <button key={l.id} onClick={function() { copyItemsToDest(l.id); }} disabled={copyBusy}
+                      className="w-full text-right px-4 py-3 rounded-xl border border-gray-200 bg-white hover:bg-gray-50 text-sm font-medium text-gray-800 disabled:opacity-50 truncate">
+                      {l.name}
+                    </button>
+                  );
+                })}
+                {copyDestOptions().length === 0 && (
+                  <p className="text-center text-gray-400 text-sm py-2">אין רשימות אחרות זמינות</p>
+                )}
+              </div>
+              {copyNewListMode ? (
+                <div className="flex gap-2">
+                  <input value={copyNewListName} onChange={function(e) { setCopyNewListName(e.target.value); }} autoFocus
+                    placeholder="שם הרשימה החדשה" dir="rtl"
+                    className="flex-1 border border-gray-200 rounded-xl px-3 py-2.5 text-sm text-right focus:outline-none focus:border-blue-400" />
+                  <button onClick={createListAndCopyItems} disabled={!copyNewListName.trim() || copyBusy}
+                    className="bg-blue-600 text-white text-sm px-4 py-2.5 rounded-xl font-medium disabled:opacity-40 flex-shrink-0 flex items-center justify-center">
+                    {copyBusy ? <Spinner /> : "צור והעתק"}
+                  </button>
+                </div>
+              ) : (
+                <button onClick={function() { setCopyNewListMode(true); }}
+                  className="w-full text-sm text-blue-600 font-medium border border-blue-200 bg-blue-50 rounded-xl px-3 py-3 flex items-center justify-center gap-1.5">
+                  <span>➕</span><span>רשימה חדשה</span>
+                </button>
+              )}
             </Modal>
           )}
 
@@ -2327,7 +2510,7 @@
       );
     }
 
-    function ListCard({ list, userId, onOpen, menuOpen, onMenuToggle, onMarkDone, onRestore, onTogglePrivacy, onRename, onDuplicate, onDelete, isDone, isMajor, onSetMajor, onEdit }) {
+    function ListCard({ list, userId, onOpen, menuOpen, onMenuToggle, onMarkDone, onRestore, onTogglePrivacy, onRename, onDuplicate, onCopyItems, onDelete, isDone, isMajor, onSetMajor, onEdit }) {
       const isOwner = list.ownerId === userId;
       var dateStr = list.dinnerDate
         ? formatDinnerDate(list.dinnerDate)
@@ -2373,6 +2556,11 @@
               {onDuplicate && (
                 <button onClick={onDuplicate} className="w-full text-right px-4 py-3 text-sm text-gray-700 hover:bg-gray-50 flex items-center gap-2">
                   <span>📋</span><span>שכפל רשימה</span>
+                </button>
+              )}
+              {onCopyItems && (
+                <button onClick={onCopyItems} className="w-full text-right px-4 py-3 text-sm text-gray-700 hover:bg-gray-50 flex items-center gap-2">
+                  <span>📤</span><span>העתק פריטים לרשימה אחרת</span>
                 </button>
               )}
               {onEdit && (
@@ -2955,15 +3143,6 @@
       const [shareEmail,       setShareEmail]       = useState("");
       const [shareRole,        setShareRole]        = useState("edit");
       const [sharing,          setSharing]          = useState(false);
-      const [showListMenu,     setShowListMenu]     = useState(false);
-      const [showCopyPicker,   setShowCopyPicker]   = useState(false);
-      const [copySelectedIds,  setCopySelectedIds]  = useState([]);
-      const [showCopyDest,     setShowCopyDest]     = useState(false);
-      const [copyDestLists,    setCopyDestLists]    = useState(null);
-      const [copyDestLoading,  setCopyDestLoading]  = useState(false);
-      const [copyNewListMode,  setCopyNewListMode]  = useState(false);
-      const [copyNewListName,  setCopyNewListName]  = useState("");
-      const [copyBusy,         setCopyBusy]         = useState(false);
       const [filterStatus, setFilterStatus] = useState(function() { return localStorage.getItem("buli_filter_status") || "all"; });
       const [filterPerson, setFilterPerson] = useState(function() { return localStorage.getItem("buli_filter_person") || "all"; });
       // "all" | "noBarcode" | a profile id — which vendor branch an item must
@@ -3537,95 +3716,6 @@
       const isTasks = list.type === "tasks";
       const isNotes = list.type === "notes";
 
-      // Copying items to another list only makes sense between regular
-      // shopping lists — tasks is a single per-user list (nowhere else of
-      // that type to copy to) and notes/menu lists have their own required
-      // fields (dinnerDate etc.) a generic "new list" here doesn't fill in.
-      const canCopyItems = !isTasks && !isNotes;
-
-      const startCopyPicker = function() {
-        setShowListMenu(false);
-        setCopySelectedIds([]);
-        setShowCopyPicker(true);
-      };
-      const toggleCopySelect = function(id) {
-        setCopySelectedIds(function(prev) {
-          return prev.indexOf(id) === -1 ? prev.concat(id) : prev.filter(function(x) { return x !== id; });
-        });
-      };
-      const confirmCopySelection = function() {
-        if (copySelectedIds.length === 0) return;
-        setShowCopyPicker(false);
-        setCopyNewListMode(false);
-        setCopyNewListName("");
-        setShowCopyDest(true);
-        if (copyDestLists === null) {
-          setCopyDestLoading(true);
-          loadMyListsFor(user.uid).then(function(all) {
-            var eligible = all.filter(function(l) {
-              return l.id !== listId && l.type !== "tasks" && l.type !== "notes" && !l.done &&
-                (l.ownerId === user.uid || (l.sharedWith && (l.sharedWith[user.uid] === "edit" || l.sharedWith[user.uid] === "own")));
-            });
-            setCopyDestLists(eligible);
-            setCopyDestLoading(false);
-          }, function() {
-            setCopyDestLoading(false);
-            showToast("שגיאה בטעינת הרשימות");
-          });
-        }
-      };
-      const copyItemsToDest = function(destId) {
-        if (copyBusy) return;
-        setCopyBusy(true);
-        var updates = {};
-        copySelectedIds.forEach(function(id) {
-          var item = items.find(function(i) { return i.id === id; });
-          if (!item) return;
-          var newKey = db.ref("items/" + destId).push().key;
-          var copy = Object.assign({}, item);
-          delete copy.id;
-          updates["items/" + destId + "/" + newKey] = copy;
-        });
-        db.ref().update(updates).then(function() {
-          setCopyBusy(false);
-          setShowCopyDest(false);
-          setCopySelectedIds([]);
-          showToast(copySelectedIds.length + " פריטים הועתקו");
-        }, function(err) {
-          setCopyBusy(false);
-          showToast("שגיאה בהעתקה: " + (err && err.message || "?"));
-        });
-      };
-      const createListAndCopyItems = function() {
-        var name = copyNewListName.trim();
-        if (!name || copyBusy) return;
-        setCopyBusy(true);
-        var now = Date.now();
-        var newList = { name: name, type: "shopping", isPrivate: false, done: false, ownerId: user.uid, ownerName: user.displayName, sharedWith: {}, createdAt: now };
-        var newListId = db.ref("lists").push().key;
-        var updates = {};
-        updates["lists/" + newListId] = newList;
-        updates["listsByUser/" + user.uid + "/" + newListId] = true;
-        copySelectedIds.forEach(function(id) {
-          var item = items.find(function(i) { return i.id === id; });
-          if (!item) return;
-          var newKey = db.ref("items/" + newListId).push().key;
-          var copy = Object.assign({}, item);
-          delete copy.id;
-          updates["items/" + newListId + "/" + newKey] = copy;
-        });
-        db.ref().update(updates).then(function() {
-          setCopyBusy(false);
-          setShowCopyDest(false);
-          setCopySelectedIds([]);
-          setCopyDestLists(function(prev) { return (prev || []).concat([Object.assign({ id: newListId }, newList)]); });
-          showToast(copySelectedIds.length + ' פריטים הועתקו אל "' + name + '"');
-        }, function(err) {
-          setCopyBusy(false);
-          showToast("שגיאה ביצירת הרשימה: " + (err && err.message || "?"));
-        });
-      };
-
       const notesSorted = isNotes ? [...items].sort(function(a,b) { return (a.order||0)-(b.order||0); }) : [];
       const moveNoteItem = function(id, dir) {
         var idx = notesSorted.findIndex(function(i) { return i.id === id; });
@@ -3733,7 +3823,7 @@
       const singleShopProfile = singleShopId ? activeProfiles.find(function(p) { return p.id === singleShopId; }) : null;
 
       return (
-        <div className="bg-gray-50 flex flex-col print-list-root" style={{height:"100dvh"}} onClick={() => setShowListMenu(false)}>
+        <div className="bg-gray-50 flex flex-col print-list-root" style={{height:"100dvh"}}>
           <div className="bg-blue-600 text-white px-4 pt-10 pb-3 flex-shrink-0 no-print">
             <div className="flex items-center gap-3" dir="ltr">
               <button onClick={function() { if (viewMode === "table") { setViewMode("list"); } else { onBack(); } }} className="flex items-center gap-1 text-white font-semibold text-sm bg-white/20 px-3 py-1.5 rounded-full flex-shrink-0">
@@ -3745,19 +3835,6 @@
               )}
               {isOwner && !list.isPrivate && !isNotes && (
                 <button onClick={openShare} className="text-sm bg-white/20 px-3 py-1 rounded-full flex-shrink-0">שתף</button>
-              )}
-              {canCopyItems && items.length > 0 && (
-                <div className="relative flex-shrink-0">
-                  <button onClick={function(e) { e.stopPropagation(); setShowListMenu(function(p) { return !p; }); }}
-                    className="text-sm bg-white/20 w-7 h-7 rounded-full flex items-center justify-center">⋮</button>
-                  {showListMenu && (
-                    <div className="absolute left-0 top-full mt-1 bg-white rounded-xl shadow-xl border border-gray-100 z-20 overflow-hidden min-w-52 text-right" dir="rtl" onClick={e => e.stopPropagation()}>
-                      <button onClick={startCopyPicker} className="w-full text-right px-4 py-3 text-sm text-gray-700 hover:bg-gray-50 flex items-center gap-2">
-                        <span>📤</span><span>העתק פריטים לרשימה אחרת</span>
-                      </button>
-                    </div>
-                  )}
-                </div>
               )}
             </div>
             <div className="flex items-center justify-between mt-2" dir="ltr">
@@ -4154,78 +4231,6 @@
                 className="w-full bg-blue-600 text-white py-4 rounded-2xl font-semibold disabled:opacity-40 flex items-center justify-center gap-2">
                 {sharing ? <Spinner /> : "שתף"}
               </button>
-            </Modal>
-          )}
-
-          {showCopyPicker && (
-            <Modal onClose={() => setShowCopyPicker(false)}>
-              <h3 className="text-lg font-bold text-center mb-1">בחר פריטים להעתקה</h3>
-              <p className="text-xs text-gray-400 text-center mb-3">{copySelectedIds.length} נבחרו</p>
-              <div className="space-y-2 max-h-80 overflow-y-auto mb-4">
-                {items.map(function(item) {
-                  var sel = copySelectedIds.indexOf(item.id) !== -1;
-                  return (
-                    <button key={item.id} onClick={function() { toggleCopySelect(item.id); }}
-                      className={"w-full flex items-center gap-3 px-3 py-2.5 rounded-xl border text-right transition " + (sel ? "bg-blue-50 border-blue-400" : "bg-white border-gray-200")}>
-                      <span onClick={function(e) { e.stopPropagation(); toggleCopySelect(item.id); }}>
-                        <Checkbox checked={sel} onChange={function() { toggleCopySelect(item.id); }} />
-                      </span>
-                      <span className={"flex-1 min-w-0 truncate text-sm font-medium " + (item.done ? "line-through text-gray-400" : "text-gray-800")}>{item.name}</span>
-                    </button>
-                  );
-                })}
-                {items.length === 0 && (
-                  <p className="text-center text-gray-400 text-sm py-4">אין פריטים ברשימה</p>
-                )}
-              </div>
-              <div className="flex gap-2">
-                <button onClick={confirmCopySelection} disabled={copySelectedIds.length === 0}
-                  className="flex-1 bg-blue-600 text-white py-3.5 rounded-2xl font-semibold disabled:opacity-40">
-                  אישור{copySelectedIds.length > 0 ? " (" + copySelectedIds.length + ")" : ""}
-                </button>
-                <button onClick={() => setShowCopyPicker(false)} className="flex-1 py-3.5 text-gray-500 font-medium rounded-2xl border border-gray-200">
-                  ביטול
-                </button>
-              </div>
-            </Modal>
-          )}
-
-          {showCopyDest && (
-            <Modal onClose={() => setShowCopyDest(false)}>
-              <h3 className="text-lg font-bold text-center mb-4">העתק {copySelectedIds.length} פריטים אל</h3>
-              {copyDestLoading ? (
-                <div className="flex justify-center py-6"><Spinner /></div>
-              ) : (
-                <div className="space-y-2 max-h-72 overflow-y-auto mb-3">
-                  {(copyDestLists || []).map(function(l) {
-                    return (
-                      <button key={l.id} onClick={function() { copyItemsToDest(l.id); }} disabled={copyBusy}
-                        className="w-full text-right px-4 py-3 rounded-xl border border-gray-200 bg-white hover:bg-gray-50 text-sm font-medium text-gray-800 disabled:opacity-50 truncate">
-                        {l.name}
-                      </button>
-                    );
-                  })}
-                  {(copyDestLists || []).length === 0 && (
-                    <p className="text-center text-gray-400 text-sm py-2">אין רשימות אחרות זמינות</p>
-                  )}
-                </div>
-              )}
-              {copyNewListMode ? (
-                <div className="flex gap-2">
-                  <input value={copyNewListName} onChange={function(e) { setCopyNewListName(e.target.value); }} autoFocus
-                    placeholder="שם הרשימה החדשה" dir="rtl"
-                    className="flex-1 border border-gray-200 rounded-xl px-3 py-2.5 text-sm text-right focus:outline-none focus:border-blue-400" />
-                  <button onClick={createListAndCopyItems} disabled={!copyNewListName.trim() || copyBusy}
-                    className="bg-blue-600 text-white text-sm px-4 py-2.5 rounded-xl font-medium disabled:opacity-40 flex-shrink-0 flex items-center justify-center">
-                    {copyBusy ? <Spinner /> : "צור והעתק"}
-                  </button>
-                </div>
-              ) : (
-                <button onClick={function() { setCopyNewListMode(true); }}
-                  className="w-full text-sm text-blue-600 font-medium border border-blue-200 bg-blue-50 rounded-xl px-3 py-3 flex items-center justify-center gap-1.5">
-                  <span>➕</span><span>רשימה חדשה</span>
-                </button>
-              )}
             </Modal>
           )}
 

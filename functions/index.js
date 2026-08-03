@@ -612,7 +612,11 @@ const VENDORS = {
   osherAd: { ftpUser: 'osherad' },
   keshet: { ftpUser: 'Keshet' }, // קשת טעמים — same Cerberus platform, verified 2026-07-19
   yohananof: { ftpUser: 'yohananof' }, // יוחננוף — same Cerberus platform, verified 2026-07-19
-  superYuda: { ftpUser: 'yuda_ho', ftpPassword: 'Yud@147' }, // סופר יודה — same Cerberus platform but a real (non-blank) password, verified 2026-08-03
+  // סופר יודה — same Cerberus platform, real (non-blank) password, AND its
+  // files live under /Yuda instead of the FTP root every other vendor here
+  // uses (confirmed live via CWD → "250 Change directory ok"). Without this,
+  // client.list() silently listed the empty root and produced zero branches.
+  superYuda: { ftpUser: 'yuda_ho', ftpPassword: 'Yud@147', ftpPath: '/Yuda' }, // verified 2026-08-03
   // שופרסל (both שופרסל שלי and שופרסל דיל — and every other sub-brand —
   // live in this one chain's feed, distinguished only by SubChainName, so
   // ingesting it covers all of them with no extra code) does NOT use the
@@ -663,6 +667,7 @@ async function ftpConnect(vendor) {
     secure: true,
     secureOptions: { rejectUnauthorized: false },
   });
+  if (VENDORS[vendor].ftpPath) await client.cd(VENDORS[vendor].ftpPath);
   return client;
 }
 

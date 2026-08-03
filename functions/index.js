@@ -952,7 +952,13 @@ function fuzzyMatchCatalogs(query, catalogsByVendor) {
     prices: entry.prices,
   }));
   list.sort((a, b) => b.score - a.score);
-  return list.slice(0, 10);
+  // A generic single-word query ("במבה") legitimately matches dozens of real
+  // SKUs (every flavor and every pack size), most of which tie on score —
+  // capping too low was dropping real matches (multipacks in particular)
+  // essentially at random, since the tie-break was just catalog insertion
+  // order. The picker modal already scrolls, so there's no UI reason to cut
+  // this tight.
+  return list.slice(0, 40);
 }
 
 exports.getVendorBranches = onCall(

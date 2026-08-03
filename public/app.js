@@ -1,6 +1,6 @@
     const { useState, useEffect, useRef } = React;
 
-    const VERSION = "v5.88";
+    const VERSION = "v5.89";
 
     // ── CONFIG ────────────────────────────────────────────────────────────────────
     const FIREBASE_CONFIG = {
@@ -2534,14 +2534,20 @@
         : (list.createdAt ? (function(){ var d = new Date(list.createdAt); return d.getDate()+"/"+(d.getMonth()+1)+"/"+d.getFullYear(); })() : "");
 
       // Cards near the bottom of the screen had this menu open downward and
-      // run off-screen. Flipping upward alone isn't enough either — a card
-      // near the TOP has just as little room above it, which clipped the
-      // menu at the screen edge the other way instead. So: pick whichever
-      // side (above/below the button) actually has more room, and cap the
-      // menu to that measured space with internal scrolling as a fallback,
-      // so it's never clipped by the viewport in either direction.
+      // run off-screen. Flipping upward alone wasn't enough either — the
+      // list of cards sits inside its own scrolling container, and a
+      // position:absolute menu anchored inside it gets silently clipped by
+      // that container's own top edge (above the fixed header) no matter
+      // how much room the viewport itself actually has above the button —
+      // that clipping, not a wrong height estimate, was hiding the first
+      // few rows with no way to scroll to them.
+      //
+      // Fixed positioning in real viewport pixel coordinates escapes that
+      // ancestor entirely, so the menu can only ever be bounded by the
+      // actual screen edges — which the maxHeight/overflow-y-auto below
+      // already handle safely.
       const menuBtnRef = React.useRef(null);
-      const [menuLayout, setMenuLayout] = React.useState({ openUpward: false, maxHeight: null });
+      const [menuLayout, setMenuLayout] = React.useState(null);
       const handleMenuToggle = function(e) {
         if (!menuOpen && menuBtnRef.current) {
           var rect = menuBtnRef.current.getBoundingClientRect();
@@ -2549,7 +2555,13 @@
           var spaceAbove = rect.top;
           var upward = spaceBelow < 320 && spaceAbove > spaceBelow;
           var available = (upward ? spaceAbove : spaceBelow) - 16;
-          setMenuLayout({ openUpward: upward, maxHeight: Math.max(140, available) });
+          setMenuLayout({
+            openUpward: upward,
+            maxHeight: Math.max(140, available),
+            left: Math.max(8, rect.right - 180),
+            top: upward ? null : rect.bottom + 4,
+            bottom: upward ? (window.innerHeight - rect.top + 4) : null,
+          });
         }
         onMenuToggle(e);
       };
@@ -2580,9 +2592,14 @@
             </div>
             <button ref={menuBtnRef} onClick={handleMenuToggle} className="text-gray-400 text-xl px-1 hover:text-gray-600 flex-shrink-0">⋮</button>
           </div>
-          {menuOpen && (
-            <div className={"absolute left-2 bg-white rounded-xl shadow-xl border border-gray-100 z-20 overflow-y-auto min-w-44 " + (menuLayout.openUpward ? "bottom-full mb-1" : "top-full mt-1")}
-              style={{ maxHeight: menuLayout.maxHeight ? menuLayout.maxHeight + "px" : undefined }}
+          {menuOpen && menuLayout && (
+            <div className="fixed bg-white rounded-xl shadow-xl border border-gray-100 z-20 overflow-y-auto min-w-44"
+              style={{
+                left: menuLayout.left,
+                top: menuLayout.top != null ? menuLayout.top : undefined,
+                bottom: menuLayout.bottom != null ? menuLayout.bottom : undefined,
+                maxHeight: menuLayout.maxHeight + "px",
+              }}
               onClick={e => e.stopPropagation()}>
               {!isDone && !isMajor && onSetMajor && (
                 <button onClick={onSetMajor} className="w-full text-right px-4 py-3 text-sm text-gray-700 hover:bg-gray-50 flex items-center gap-2">

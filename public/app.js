@@ -1,6 +1,6 @@
     const { useState, useEffect, useRef } = React;
 
-    const VERSION = "v5.95";
+    const VERSION = "v5.96";
 
     // ── CONFIG ────────────────────────────────────────────────────────────────────
     const FIREBASE_CONFIG = {
@@ -933,6 +933,7 @@
         if (alreadySaved) { showToast("הסניף כבר ברשימה שלך"); return; }
         var canActivate = activeVendorProfileCount < maxActiveVendors;
         db.ref("users/" + user.uid + "/vendorProfiles").push({ vendor: vendor, branchId: branchId, active: canActivate, addedAt: Date.now() });
+        priceCacheByList = {}; // see toggleVendorProfileActive for why
         if (!canActivate) showToast("הסניף נוסף, אך לא הופעל — הגעת למגבלת " + maxActiveVendors + " סניפים פעילים");
         setNewProfileVendorInput(""); setVendorRequestSent(false);
         setNewProfileBranchId("");
@@ -940,6 +941,7 @@
 
       const removeVendorProfile = function(profileId) {
         db.ref("users/" + user.uid + "/vendorProfiles/" + profileId).remove();
+        priceCacheByList = {}; // see toggleVendorProfileActive for why
       };
 
       const toggleVendorProfileActive = function(profileId) {
@@ -950,6 +952,14 @@
           return;
         }
         db.ref("users/" + user.uid + "/vendorProfiles/" + profileId + "/active").set(!p.active);
+        // Every list caches its own last-known active-profiles snapshot for
+        // the tab's lifetime (see the comment on priceCacheByList) so
+        // reopening a list doesn't always re-fetch. That's stale the moment
+        // the active set actually changes — without this, a list opened
+        // before this change kept showing however many profiles existed at
+        // the time it was cached, forever, even though the account now has
+        // more (or fewer) active branches than that.
+        priceCacheByList = {};
       };
 
       // Full replace, not merge — "reset to default" means "match the
@@ -974,6 +984,7 @@
             next[key] = { vendor: p.vendor, branchId: p.branchId, active: p.active, addedAt: now };
           });
           db.ref("users/" + user.uid + "/vendorProfiles").set(next).then(function() {
+            priceCacheByList = {}; // see toggleVendorProfileActive for why
             setResettingToDefault(false);
             showToast("הרשימה עודכנה לברירת המחדל");
           }, function(err) {

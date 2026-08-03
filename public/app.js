@@ -1,6 +1,6 @@
     const { useState, useEffect, useRef } = React;
 
-    const VERSION = "v5.86";
+    const VERSION = "v5.87";
 
     // ── CONFIG ────────────────────────────────────────────────────────────────────
     const FIREBASE_CONFIG = {
@@ -1696,7 +1696,7 @@
               {copyItemsLoading ? (
                 <div className="flex justify-center py-6"><Spinner /></div>
               ) : (
-                <div className="space-y-2 max-h-80 overflow-y-auto mb-4">
+                <div className="space-y-2 mb-4">
                   {copyItems.map(function(item) {
                     var sel = copySelectedIds.indexOf(item.id) !== -1;
                     return (
@@ -1718,7 +1718,11 @@
                   )}
                 </div>
               )}
-              <div className="flex gap-2">
+              {/* Sticky, not just trailing content — with a long list, the
+                  confirm bar must stay reachable without scrolling past
+                  every item first (the fixed-height box this replaced hid
+                  that problem by capping the list to a few visible rows). */}
+              <div className="sticky bottom-0 -mx-6 px-6 pt-2 pb-1 bg-white border-t border-gray-100 flex gap-2">
                 <button onClick={confirmCopySelection} disabled={copySelectedIds.length === 0}
                   className="flex-1 bg-blue-600 text-white py-3.5 rounded-2xl font-semibold disabled:opacity-40">
                   אישור{copySelectedIds.length > 0 ? " (" + copySelectedIds.length + ")" : ""}
@@ -1734,7 +1738,7 @@
           {showCopyDest && (
             <Modal onClose={() => setShowCopyDest(false)}>
               <h3 className="text-lg font-bold text-center mb-4">העתק {copySelectedIds.length} פריטים אל</h3>
-              <div className="space-y-2 max-h-72 overflow-y-auto mb-3">
+              <div className="space-y-2 mb-3">
                 {copyDestOptions().map(function(l) {
                   return (
                     <button key={l.id} onClick={function() { copyItemsToDest(l.id); }} disabled={copyBusy}
@@ -2515,6 +2519,22 @@
       var dateStr = list.dinnerDate
         ? formatDinnerDate(list.dinnerDate)
         : (list.createdAt ? (function(){ var d = new Date(list.createdAt); return d.getDate()+"/"+(d.getMonth()+1)+"/"+d.getFullYear(); })() : "");
+
+      // Cards near the bottom of the screen had this menu open downward and
+      // run off-screen, mostly hidden below the viewport edge. Measured at
+      // open-time (not render-time) so scrolling between opens is reflected;
+      // 320px is a conservative estimate of the menu's full height (up to 7
+      // rows) — better to flip a little early than clip late.
+      const menuBtnRef = React.useRef(null);
+      const [openUpward, setOpenUpward] = React.useState(false);
+      const handleMenuToggle = function(e) {
+        if (!menuOpen && menuBtnRef.current) {
+          var rect = menuBtnRef.current.getBoundingClientRect();
+          setOpenUpward((window.innerHeight - rect.bottom) < 320);
+        }
+        onMenuToggle(e);
+      };
+
       return (
         <div className="relative">
           <div className={`w-full bg-white rounded-2xl p-4 flex items-center gap-3 shadow-sm border transition cursor-pointer ${isMajor ? "border-yellow-300 bg-yellow-50/30" : "border-gray-100 hover:border-blue-200"}`} onClick={onOpen}>
@@ -2539,10 +2559,10 @@
                 </div>
               )}
             </div>
-            <button onClick={onMenuToggle} className="text-gray-400 text-xl px-1 hover:text-gray-600 flex-shrink-0">⋮</button>
+            <button ref={menuBtnRef} onClick={handleMenuToggle} className="text-gray-400 text-xl px-1 hover:text-gray-600 flex-shrink-0">⋮</button>
           </div>
           {menuOpen && (
-            <div className="absolute left-2 top-full mt-1 bg-white rounded-xl shadow-xl border border-gray-100 z-20 overflow-hidden min-w-44" onClick={e => e.stopPropagation()}>
+            <div className={"absolute left-2 bg-white rounded-xl shadow-xl border border-gray-100 z-20 overflow-hidden min-w-44 " + (openUpward ? "bottom-full mb-1" : "top-full mt-1")} onClick={e => e.stopPropagation()}>
               {!isDone && !isMajor && onSetMajor && (
                 <button onClick={onSetMajor} className="w-full text-right px-4 py-3 text-sm text-gray-700 hover:bg-gray-50 flex items-center gap-2">
                   <span>⭐</span><span>הגדר כראשי</span>

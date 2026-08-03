@@ -1,6 +1,6 @@
     const { useState, useEffect, useRef } = React;
 
-    const VERSION = "v5.92";
+    const VERSION = "v5.93";
 
     // ── CONFIG ────────────────────────────────────────────────────────────────────
     const FIREBASE_CONFIG = {
@@ -882,15 +882,28 @@
 
       const activeVendorProfileCount = Object.values(vendorProfiles).filter(function(p) { return p && p.active; }).length;
 
+      // Each vendor resolves independently — Promise.all previously meant one
+      // slow or failing vendor (a live FTP/HTTP ingest on first load) blanked
+      // out EVERY vendor's branches, not just its own, since Promise.all
+      // rejects the whole batch on a single failure. Fast vendors now show up
+      // immediately instead of waiting on the slowest/broken one, and a
+      // failure only leaves that one vendor empty.
       const loadVendorBranches = function() {
         setPricingBranchesLoading(true);
-        Promise.all(VENDOR_IDS.map(function(id) { return fns.httpsCallable("getVendorBranches")({ vendor: id }); }))
-          .then(function(results) {
-            var next = {};
-            VENDOR_IDS.forEach(function(id, i) { next[id] = results[i].data.branches || {}; });
-            setVendorBranchLists(next);
-            setPricingBranchesLoading(false);
-          }, function() { setPricingBranchesLoading(false); });
+        var remaining = VENDOR_IDS.length;
+        var settleOne = function() {
+          remaining -= 1;
+          if (remaining <= 0) setPricingBranchesLoading(false);
+        };
+        VENDOR_IDS.forEach(function(id) {
+          fns.httpsCallable("getVendorBranches")({ vendor: id }).then(function(res) {
+            setVendorBranchLists(function(prev) { return Object.assign({}, prev, { [id]: (res.data && res.data.branches) || {} }); });
+            settleOne();
+          }, function() {
+            setVendorBranchLists(function(prev) { return Object.assign({}, prev, { [id]: {} }); });
+            settleOne();
+          });
+        });
       };
 
       const requestVendorSupport = function(name) {
@@ -2049,6 +2062,9 @@
                             {(function() {
                               var trimmed = newProfileVendorInput.trim();
                               var matched = VENDOR_LIST.find(function(v) { return v.label === trimmed; });
+                              // null specifically means "hasn't resolved yet" (see loadVendorBranches'
+                              // initial state) — distinct from {} meaning "resolved, genuinely none".
+                              var vendorLoading = matched ? vendorBranchLists[matched.id] == null : false;
                               var q = branchSearchQuery.trim().toLowerCase();
                               var branchEntries = matched ? Object.entries(vendorBranchLists[matched.id] || {})
                                 .filter(function(entry) {
@@ -2064,16 +2080,17 @@
                                       placeholder="חפש סניף לפי שם או עיר..." dir="rtl"
                                       className="w-full border border-gray-200 rounded-xl px-3 py-2 text-sm bg-white mb-2" />
                                   )}
-                                  <div className="flex gap-2">
-                                    <select value={newProfileBranchId} disabled={!matched} onChange={function(e) { setNewProfileBranchId(e.target.value); }}
+                                  <div className="flex gap-2 items-center">
+                                    <select value={newProfileBranchId} disabled={!matched || vendorLoading} onChange={function(e) { setNewProfileBranchId(e.target.value); }}
                                       className="flex-1 min-w-0 border border-gray-200 rounded-xl px-3 py-2 text-sm bg-white disabled:bg-gray-50 disabled:text-gray-400">
                                       <option value="">
-                                        {!matched ? "הקלד רשת קודם" : branchEntries.length > 0 ? "בחר סניף... (" + branchEntries.length + ")" : "לא נמצאו סניפים"}
+                                        {!matched ? "הקלד רשת קודם" : vendorLoading ? "טוען סניפים..." : branchEntries.length > 0 ? "בחר סניף... (" + branchEntries.length + ")" : "לא נמצאו סניפים"}
                                       </option>
                                       {branchEntries.map(function(entry) {
                                         return <option key={entry[0]} value={entry[0]}>{entry[1].name} — {entry[1].address} (סניף {parseInt(entry[0], 10)})</option>;
                                       })}
                                     </select>
+                                    {vendorLoading && <Spinner />}
                                     <button onClick={function() { addVendorProfile(matched.id, newProfileBranchId); }} disabled={!matched || !newProfileBranchId}
                                       className="bg-blue-600 text-white text-sm px-3 py-2 rounded-xl font-medium disabled:opacity-40 flex-shrink-0">+ הוסף</button>
                                   </div>

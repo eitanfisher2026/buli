@@ -1,6 +1,6 @@
     const { useState, useEffect, useRef } = React;
 
-    const VERSION = "v5.87";
+    const VERSION = "v5.88";
 
     // ── CONFIG ────────────────────────────────────────────────────────────────────
     const FIREBASE_CONFIG = {
@@ -141,6 +141,19 @@
       var daysUntil = (5 - d.getDay() + 7) % 7;
       d.setDate(d.getDate() + daysUntil);
       return d.toISOString().split("T")[0];
+    }
+
+    // Alphabetical (Hebrew-aware), with the starred/major list always
+    // pinned first regardless of name — shared by the home screen's own
+    // list order and the "copy items" destination picker, so a list never
+    // appears in a different order in one place than the other.
+    function sortListsByNameMajorFirst(lists, majorListId) {
+      return lists.slice().sort(function(a, b) {
+        var aMajor = a.id === majorListId, bMajor = b.id === majorListId;
+        if (aMajor && !bMajor) return -1;
+        if (bMajor && !aMajor) return 1;
+        return (a.name || "").localeCompare(b.name || "", "he");
+      });
     }
 
     function formatDinnerDate(dateStr) {
@@ -1373,10 +1386,11 @@
       // Same-type, not-done, and either owned or add-permitted — a copy is
       // just adding items, so "own" (add-only) role is enough; "view" isn't.
       const copyDestOptions = function() {
-        return (lists || []).filter(function(l) {
+        var filtered = (lists || []).filter(function(l) {
           return copySourceList && l.id !== copySourceList.id && l.type !== "notes" && !l.done &&
             (l.ownerId === user.uid || (l.sharedWith && (l.sharedWith[user.uid] === "edit" || l.sharedWith[user.uid] === "own")));
         });
+        return sortListsByNameMajorFirst(filtered, majorListId);
       };
       const copyItemsToDest = (destId) => {
         if (copyBusy) return;
@@ -1514,9 +1528,8 @@
         }
       };
 
-      var byDate = function(a, b) { return (a.createdAt || 0) - (b.createdAt || 0); };
-      var activeShopping = lists.filter(function(l) { return !l.done && l.type !== "notes"; }).sort(byDate);
-      var doneLists      = lists.filter(function(l) { return  l.done && l.type !== "notes"; }).sort(byDate);
+      var activeShopping = sortListsByNameMajorFirst(lists.filter(function(l) { return !l.done && l.type !== "notes"; }), majorListId);
+      var doneLists      = sortListsByNameMajorFirst(lists.filter(function(l) { return  l.done && l.type !== "notes"; }), majorListId);
       var byDinnerDate   = function(a, b) { return (b.dinnerDate || "").localeCompare(a.dinnerDate || ""); };
       var activeNotes    = lists.filter(function(l) { return !l.done && l.type === "notes"; }).sort(byDinnerDate);
       var doneNotes      = lists.filter(function(l) { return  l.done && l.type === "notes"; }).sort(byDinnerDate);
@@ -2521,16 +2534,22 @@
         : (list.createdAt ? (function(){ var d = new Date(list.createdAt); return d.getDate()+"/"+(d.getMonth()+1)+"/"+d.getFullYear(); })() : "");
 
       // Cards near the bottom of the screen had this menu open downward and
-      // run off-screen, mostly hidden below the viewport edge. Measured at
-      // open-time (not render-time) so scrolling between opens is reflected;
-      // 320px is a conservative estimate of the menu's full height (up to 7
-      // rows) — better to flip a little early than clip late.
+      // run off-screen. Flipping upward alone isn't enough either — a card
+      // near the TOP has just as little room above it, which clipped the
+      // menu at the screen edge the other way instead. So: pick whichever
+      // side (above/below the button) actually has more room, and cap the
+      // menu to that measured space with internal scrolling as a fallback,
+      // so it's never clipped by the viewport in either direction.
       const menuBtnRef = React.useRef(null);
-      const [openUpward, setOpenUpward] = React.useState(false);
+      const [menuLayout, setMenuLayout] = React.useState({ openUpward: false, maxHeight: null });
       const handleMenuToggle = function(e) {
         if (!menuOpen && menuBtnRef.current) {
           var rect = menuBtnRef.current.getBoundingClientRect();
-          setOpenUpward((window.innerHeight - rect.bottom) < 320);
+          var spaceBelow = window.innerHeight - rect.bottom;
+          var spaceAbove = rect.top;
+          var upward = spaceBelow < 320 && spaceAbove > spaceBelow;
+          var available = (upward ? spaceAbove : spaceBelow) - 16;
+          setMenuLayout({ openUpward: upward, maxHeight: Math.max(140, available) });
         }
         onMenuToggle(e);
       };
@@ -2562,7 +2581,9 @@
             <button ref={menuBtnRef} onClick={handleMenuToggle} className="text-gray-400 text-xl px-1 hover:text-gray-600 flex-shrink-0">⋮</button>
           </div>
           {menuOpen && (
-            <div className={"absolute left-2 bg-white rounded-xl shadow-xl border border-gray-100 z-20 overflow-hidden min-w-44 " + (openUpward ? "bottom-full mb-1" : "top-full mt-1")} onClick={e => e.stopPropagation()}>
+            <div className={"absolute left-2 bg-white rounded-xl shadow-xl border border-gray-100 z-20 overflow-y-auto min-w-44 " + (menuLayout.openUpward ? "bottom-full mb-1" : "top-full mt-1")}
+              style={{ maxHeight: menuLayout.maxHeight ? menuLayout.maxHeight + "px" : undefined }}
+              onClick={e => e.stopPropagation()}>
               {!isDone && !isMajor && onSetMajor && (
                 <button onClick={onSetMajor} className="w-full text-right px-4 py-3 text-sm text-gray-700 hover:bg-gray-50 flex items-center gap-2">
                   <span>⭐</span><span>הגדר כראשי</span>

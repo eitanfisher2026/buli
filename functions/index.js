@@ -631,10 +631,9 @@ const VENDORS = {
 const FTP_HOST = 'url.retail.publishedprices.co.il';
 const SHUFERSAL_BASE_URL = 'https://prices.shufersal.co.il';
 const SHUFERSAL_CAT_ID = { stores: 5, priceFull: 2 };
-// Only vendors a brand-new user should start with pre-seeded (matches the
-// two branches this app originally shipped with). A vendor added later
-// (like Keshet) is opt-in only — everyone must explicitly add it via the
-// vendor-profile picker, never silently becomes "active" for existing users.
+// Last-resort fallback only, if even the owner (see fetchOwnerVendorProfiles
+// below) has no profiles of their own yet — shouldn't normally happen, but
+// better than a brand-new user silently getting zero price comparison.
 const DEFAULT_BRANCH = { ramiLevy: '055', osherAd: '011' }; // Ramat HaHayal / Bnei Brak
 const CATALOG_STALENESS_MS = 18 * 60 * 60 * 1000; // 18h — matches the feed's own refresh cadence
 
@@ -914,6 +913,22 @@ async function getMaxActiveVendors() {
   return (Number.isFinite(v) && v > 0) ? v : DEFAULT_MAX_ACTIVE_VENDORS;
 }
 
+// The "default list" is simply the app owner's own current vendorProfiles —
+// not a separately-maintained template that could drift out of sync with
+// whatever the owner is actually comparing against. Deliberately the literal
+// OWNER_EMAIL account, not "whoever holds the admin role" — someone could
+// hold that role purely for user-management purposes without their personal
+// store picks being what every other user should default to.
+async function fetchOwnerVendorProfiles() {
+  const ownerUid = await resolveUidByEmail(OWNER_EMAIL);
+  if (!ownerUid) return [];
+  const snap = await db.ref(`users/${ownerUid}/vendorProfiles`).once('value');
+  const all = snap.val() || {};
+  return Object.entries(all)
+    .filter(([, p]) => p && VENDOR_IDS.includes(p.vendor) && p.branchId)
+    .map(([, p]) => ({ vendor: p.vendor, branchId: String(p.branchId), active: !!p.active }));
+}
+
 // A "profile" is one vendor chain + one specific branch the user tracks —
 // distinct from a vendor chain itself, since the same chain can appear as
 // two profiles at once (comparing two branches of Rami Levy, say). Only up
@@ -929,11 +944,16 @@ async function getUserActiveProfiles(uid) {
   let entries = Object.entries(all)
     .filter(([, p]) => p && p.active && VENDOR_IDS.includes(p.vendor) && p.branchId);
   if (entries.length === 0) {
-    // Nobody has picked profiles yet — fall back to the original seeded
-    // defaults only (not every integrated vendor), so existing users keep
-    // working without a migration step, and a newly-added vendor never
-    // silently becomes "active" for people who haven't chosen it.
-    return Object.keys(DEFAULT_BRANCH).map(v => ({ id: `default-${v}`, vendor: v, branchId: DEFAULT_BRANCH[v] })).slice(0, cap);
+    // Nobody has picked profiles yet — fall back to the owner's own current
+    // active selections, so a brand-new user starts from whatever the app's
+    // actual owner is already comparing against, not a pair hardcoded at
+    // launch time that never reflects new vendors being added.
+    const owned = (await fetchOwnerVendorProfiles()).filter(p => p.active);
+    let fallback = owned.map(p => ({ id: `default-${p.vendor}`, vendor: p.vendor, branchId: p.branchId }));
+    if (fallback.length === 0) {
+      fallback = Object.keys(DEFAULT_BRANCH).map(v => ({ id: `default-${v}`, vendor: v, branchId: DEFAULT_BRANCH[v] }));
+    }
+    return fallback.slice(0, cap);
   }
   entries.sort((a, b) => (a[1].addedAt || 0) - (b[1].addedAt || 0));
   return entries.slice(0, cap).map(([id, p]) => ({ id, vendor: p.vendor, branchId: String(p.branchId) }));
@@ -1128,6 +1148,20 @@ exports.getPricingSettings = onCall(
   async (request) => {
     await requireAuthorized(request);
     return { maxActiveVendors: await getMaxActiveVendors() };
+  }
+);
+
+// Lets any authorized user (not just admins) fetch the owner's current
+// vendor+branch list to restore their own to it — see fetchOwnerVendorProfiles
+// for why "default" means the owner's live list rather than a stored template.
+// Client-side reads of users/{uid}/vendorProfiles are locked to that uid's
+// own subtree, so this has to go through a callable rather than a direct DB
+// read of the owner's data.
+exports.getDefaultVendorProfiles = onCall(
+  { timeoutSeconds: 30, memory: '128MiB', region: 'europe-west1' },
+  async (request) => {
+    await requireAuthorized(request);
+    return { profiles: await fetchOwnerVendorProfiles() };
   }
 );
 

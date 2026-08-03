@@ -1,6 +1,6 @@
     const { useState, useEffect, useRef } = React;
 
-    const VERSION = "v5.94";
+    const VERSION = "v5.95";
 
     // ── CONFIG ────────────────────────────────────────────────────────────────────
     const FIREBASE_CONFIG = {
@@ -862,6 +862,7 @@
       const [showVendorRequests, setShowVendorRequests] = useState(false);
       const [vendorRequestsLoading, setVendorRequestsLoading] = useState(false);
       const [vendorRequestsList, setVendorRequestsList] = useState([]);
+      const [resettingToDefault, setResettingToDefault] = useState(false);
 
       useEffect(function() {
         var profilesRef = null;
@@ -949,6 +950,40 @@
           return;
         }
         db.ref("users/" + user.uid + "/vendorProfiles/" + profileId + "/active").set(!p.active);
+      };
+
+      // Full replace, not merge — "reset to default" means "match the
+      // owner's list exactly, including which of theirs are active", the
+      // same restore point every time regardless of what's been added or
+      // removed here since. Once applied it's this user's own list again,
+      // freely editable same as any manually-built one.
+      const resetToDefaultProfiles = function() {
+        if (resettingToDefault) return;
+        setResettingToDefault(true);
+        fns.httpsCallable("getDefaultVendorProfiles")().then(function(res) {
+          var defaults = (res.data && res.data.profiles) || [];
+          if (defaults.length === 0) {
+            setResettingToDefault(false);
+            showToast("אין עדיין רשימת ברירת מחדל");
+            return;
+          }
+          var now = Date.now();
+          var next = {};
+          defaults.forEach(function(p) {
+            var key = db.ref("users/" + user.uid + "/vendorProfiles").push().key;
+            next[key] = { vendor: p.vendor, branchId: p.branchId, active: p.active, addedAt: now };
+          });
+          db.ref("users/" + user.uid + "/vendorProfiles").set(next).then(function() {
+            setResettingToDefault(false);
+            showToast("הרשימה עודכנה לברירת המחדל");
+          }, function(err) {
+            setResettingToDefault(false);
+            showToast("שגיאה: " + (err && err.message || "?"));
+          });
+        }, function() {
+          setResettingToDefault(false);
+          showToast("שגיאה בטעינת ברירת המחדל");
+        });
       };
 
       const saveMaxActiveVendors = function(value) {
@@ -2025,8 +2060,14 @@
                           via its own listener) and shouldn't wait on a slow
                           or failing background branch fetch just to appear. */}
                       <div className="space-y-5">
-                        <div className="text-xs text-gray-400 text-center">
-                          פעילים להשוואה: {activeVendorProfileCount} / {maxActiveVendors}
+                        <div className="flex items-center justify-between">
+                          <button onClick={resetToDefaultProfiles} disabled={resettingToDefault}
+                            className="text-xs text-blue-500 border border-blue-200 bg-blue-50 rounded-full px-2.5 py-1 disabled:opacity-50 flex items-center gap-1">
+                            {resettingToDefault ? <Spinner /> : "↩️"} החזר לרשימת ברירת המחדל
+                          </button>
+                          <div className="text-xs text-gray-400">
+                            פעילים להשוואה: {activeVendorProfileCount} / {maxActiveVendors}
+                          </div>
                         </div>
                           {Object.entries(vendorProfiles).length > 0 && (
                             <div className="space-y-1.5">

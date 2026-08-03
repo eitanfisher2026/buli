@@ -1,6 +1,6 @@
     const { useState, useEffect, useRef } = React;
 
-    const VERSION = "v5.85";
+    const VERSION = "v5.86";
 
     // ── CONFIG ────────────────────────────────────────────────────────────────────
     const FIREBASE_CONFIG = {
@@ -3680,8 +3680,17 @@
 
       const shareWithContacts = () => {
         if (!selectedContacts.length && !shareEmail.trim()) return;
+        // Own email shares nothing (you already have access) — if that's the
+        // only thing submitted, stop before the generic "שותף!" success
+        // toast can fire and paper over the fact that nothing happened.
+        var ownEmail = !!shareEmail.trim() && shareEmail.trim().toLowerCase() === (user.email || "").toLowerCase();
+        if (!selectedContacts.length && ownEmail) {
+          showToast("זה כבר האימייל שלך — הרשימה כבר שלך");
+          return;
+        }
+        var emailToShare = shareEmail.trim() && !ownEmail;
         setSharing(true);
-        var total = selectedContacts.length + (shareEmail.trim() ? 1 : 0);
+        var total = selectedContacts.length + (emailToShare ? 1 : 0);
         var completed = 0;
         function done() {
           completed++;
@@ -3697,10 +3706,11 @@
           // contacts[].id is already the target's uid (from listTeamMembers) — no lookup needed
           db.ref().update({ ["lists/" + listId + "/sharedWith/" + uid]: shareRole, ["listsByUser/" + uid + "/" + listId]: true }).then(done, done);
         });
-        if (shareEmail.trim()) {
+        if (emailToShare) {
           db.ref("usersByEmail/" + encodeEmail(shareEmail.trim().toLowerCase())).once("value").then(function(snap) {
             if (!snap.exists()) { showToast("אימייל לא נמצא"); done(); return; }
             var uid = snap.val();
+            if (uid === user.uid) { showToast("זה כבר האימייל שלך — הרשימה כבר שלך"); done(); return; }
             db.ref().update({ ["lists/" + listId + "/sharedWith/" + uid]: shareRole, ["listsByUser/" + uid + "/" + listId]: true }).then(done, done);
           }, done);
         }
@@ -3712,6 +3722,7 @@
         setShareEmail("");
         setShowShare(true);
       };
+      const isOwnEmail = !!shareEmail.trim() && shareEmail.trim().toLowerCase() === (user.email || "").toLowerCase();
 
       const isTasks = list.type === "tasks";
       const isNotes = list.type === "notes";
@@ -4191,7 +4202,10 @@
 
           {showShare && (
             <Modal onClose={() => setShowShare(false)}>
-              <h3 className="text-lg font-bold text-center mb-4">שתף רשימה</h3>
+              <h3 className="text-lg font-bold text-center mb-1">שתף רשימה</h3>
+              <p className="text-xs text-gray-400 text-center mb-4">
+                השיתוף נותן גישה בתוך בולי — לא נשלח מייל. האדם צריך כבר להיות רשום לבולי עם המייל הזה, ואז הרשימה תופיע אצלו בפעם הבאה שהוא פותח את האפליקציה.
+              </p>
               {contacts.length > 0 && (
                 <div className="mb-4">
                   <p className="text-xs text-gray-400 mb-2 text-right">אנשי קשר</p>
@@ -4219,15 +4233,18 @@
                 </div>
               )}
               <input value={shareEmail} onChange={e => setShareEmail(e.target.value)} type="email" placeholder={contacts.length > 0 ? "או הוסף אימייל" : "אימייל"}
-                className="w-full border border-gray-200 rounded-xl px-4 py-3 text-right focus:outline-none focus:border-blue-400 mb-3" />
-              <p className="text-xs text-gray-400 mb-2 text-right">הרשאות</p>
+                className="w-full border border-gray-200 rounded-xl px-4 py-3 text-right focus:outline-none focus:border-blue-400 mb-1" />
+              {isOwnEmail && (
+                <p className="text-xs text-orange-500 text-right mb-2">זה כבר האימייל שלך — הרשימה כבר שלך, אין צורך לשתף</p>
+              )}
+              <p className="text-xs text-gray-400 mb-2 text-right mt-2">הרשאות</p>
               <div className="grid grid-cols-3 gap-2 mb-4">
                 {[["edit","✏️ מלאה"],["own","👤 שלי בלבד"],["view","👁️ צפייה"]].map(([v,l]) => (
                   <button key={v} onClick={() => setShareRole(v)}
                     className={`py-3 rounded-xl text-xs font-medium border transition ${shareRole===v?"bg-blue-600 text-white border-blue-600":"bg-white text-gray-600 border-gray-200"}`}>{l}</button>
                 ))}
               </div>
-              <button onClick={shareWithContacts} disabled={(!selectedContacts.length && !shareEmail.trim()) || sharing}
+              <button onClick={shareWithContacts} disabled={(!selectedContacts.length && !shareEmail.trim()) || (!selectedContacts.length && isOwnEmail) || sharing}
                 className="w-full bg-blue-600 text-white py-4 rounded-2xl font-semibold disabled:opacity-40 flex items-center justify-center gap-2">
                 {sharing ? <Spinner /> : "שתף"}
               </button>

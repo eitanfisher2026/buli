@@ -1,6 +1,6 @@
     const { useState, useEffect, useRef } = React;
 
-    const VERSION = "v5.89";
+    const VERSION = "v5.90";
 
     // ── CONFIG ────────────────────────────────────────────────────────────────────
     const FIREBASE_CONFIG = {
@@ -744,6 +744,7 @@
     // ── HOME ──────────────────────────────────────────────────────────────────────
     function HomeScreen({ user, isAdmin, isRealAdmin, simulating, onToggleSimulate, onOpenList, onCategories, onContacts, showToast, onAddTask, onCreateShoppingList, onCreateNotesList }) {
       const tasksListId = "tasks_" + user.uid;
+      const categories = useCategories(user.uid); // for grouping the "copy items" picker by category, same as a list's default view
       const [lists,      setLists]      = useState(function() { return homeDataCache ? homeDataCache.lists : null; });
       const [tasks,      setTasks]      = useState(function() { return homeDataCache ? homeDataCache.tasks : null; });
       // Every local mutation of `lists` must also update homeDataCache, or the
@@ -1376,6 +1377,24 @@
           return prev.indexOf(id) === -1 ? prev.concat(id) : prev.filter(function(x) { return x !== id; });
         });
       };
+      // Same category grouping + order a list itself shows by default, so
+      // the picker reads as "the list, with checkboxes" rather than an
+      // unrelated re-shuffled dump of the same items.
+      const copyItemsGrouped = function() {
+        var catOrder = categories.map(function(c) { return c.label; });
+        var catMap = {};
+        var seenOrder = [];
+        copyItems.forEach(function(i) {
+          var c = i.category || "שונות";
+          if (!catMap[c]) { catMap[c] = { emoji: i.categoryEmoji || "🛍️", items: [] }; seenOrder.push(c); }
+          catMap[c].items.push(i);
+        });
+        var known = catOrder.filter(function(l) { return catMap[l]; })
+          .map(function(l) { return Object.assign({ label: l }, catMap[l]); });
+        var unknown = seenOrder.filter(function(l) { return catOrder.indexOf(l) === -1; })
+          .map(function(l) { return Object.assign({ label: l }, catMap[l]); });
+        return known.concat(unknown);
+      };
       const confirmCopySelection = () => {
         if (copySelectedIds.length === 0) return;
         setShowCopyPicker(false);
@@ -1709,21 +1728,32 @@
               {copyItemsLoading ? (
                 <div className="flex justify-center py-6"><Spinner /></div>
               ) : (
-                <div className="space-y-2 mb-4">
-                  {copyItems.map(function(item) {
-                    var sel = copySelectedIds.indexOf(item.id) !== -1;
+                <div className="mb-4">
+                  {copyItemsGrouped().map(function(group) {
                     return (
-                      <button key={item.id} onClick={function() { toggleCopySelect(item.id); }}
-                        className={"w-full flex items-center gap-3 px-3 py-2.5 rounded-xl border text-right transition " + (sel ? "bg-blue-50 border-blue-400" : "bg-white border-gray-200")}>
-                        <span className={`w-5 h-5 rounded border-2 flex-shrink-0 flex items-center justify-center transition ${sel ? "bg-blue-600 border-blue-600" : "border-gray-400 bg-white"}`}>
-                          {sel && (
-                            <svg className="w-3 h-3 text-white" viewBox="0 0 12 10" fill="none">
-                              <path d="M1 5l3.5 3.5L11 1" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
-                            </svg>
-                          )}
-                        </span>
-                        <span className={"flex-1 min-w-0 truncate text-sm font-medium " + (item.done ? "line-through text-gray-400" : "text-gray-800")}>{item.name}</span>
-                      </button>
+                      <div key={group.label} className="mb-4 last:mb-0">
+                        <div className="text-xs font-semibold text-gray-400 mb-2 flex items-center gap-1 uppercase tracking-wide">
+                          <span>{group.emoji}</span><span>{group.label}</span>
+                        </div>
+                        <div className="space-y-2">
+                          {group.items.map(function(item) {
+                            var sel = copySelectedIds.indexOf(item.id) !== -1;
+                            return (
+                              <button key={item.id} onClick={function() { toggleCopySelect(item.id); }}
+                                className={"w-full flex items-center gap-3 px-3 py-2.5 rounded-xl border text-right transition " + (sel ? "bg-blue-50 border-blue-400" : "bg-white border-gray-200")}>
+                                <span className={`w-5 h-5 rounded border-2 flex-shrink-0 flex items-center justify-center transition ${sel ? "bg-blue-600 border-blue-600" : "border-gray-400 bg-white"}`}>
+                                  {sel && (
+                                    <svg className="w-3 h-3 text-white" viewBox="0 0 12 10" fill="none">
+                                      <path d="M1 5l3.5 3.5L11 1" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+                                    </svg>
+                                  )}
+                                </span>
+                                <span className={"flex-1 min-w-0 truncate text-sm font-medium " + (item.done ? "line-through text-gray-400" : "text-gray-800")}>{item.name}</span>
+                              </button>
+                            );
+                          })}
+                        </div>
+                      </div>
                     );
                   })}
                   {copyItems.length === 0 && (

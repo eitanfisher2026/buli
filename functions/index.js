@@ -612,6 +612,7 @@ const VENDORS = {
   osherAd: { ftpUser: 'osherad' },
   keshet: { ftpUser: 'Keshet' }, // קשת טעמים — same Cerberus platform, verified 2026-07-19
   yohananof: { ftpUser: 'yohananof' }, // יוחננוף — same Cerberus platform, verified 2026-07-19
+  superYuda: { ftpUser: 'yuda_ho', ftpPassword: 'Yud@147' }, // סופר יודה — same Cerberus platform but a real (non-blank) password, verified 2026-08-03
 };
 const FTP_HOST = 'url.retail.publishedprices.co.il';
 // Only vendors a brand-new user should start with pre-seeded (matches the
@@ -646,7 +647,7 @@ async function ftpConnect(vendor) {
   await client.access({
     host: FTP_HOST,
     user: VENDORS[vendor].ftpUser,
-    password: '',
+    password: VENDORS[vendor].ftpPassword || '',
     secure: true,
     secureOptions: { rejectUnauthorized: false },
   });

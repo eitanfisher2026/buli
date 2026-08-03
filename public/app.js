@@ -1,6 +1,6 @@
     const { useState, useEffect, useRef } = React;
 
-    const VERSION = "v5.93";
+    const VERSION = "v5.94";
 
     // ── CONFIG ────────────────────────────────────────────────────────────────────
     const FIREBASE_CONFIG = {
@@ -312,8 +312,8 @@
     // isn't in VENDOR_LIST above just surfaces the "ask the admin" request
     // flow; it's never a claim that the chain works.
     const VENDOR_NAME_SUGGESTIONS = VENDOR_LIST.map(function(v) { return v.label; }).concat([
-      "שופרסל", "יינות ביתן", "ויקטורי", "טיב טעם", "מגה",
-      "סופר פארם", "גוד פארם", "חצי חינם", "זול ובגדול", "מחסני השוק", "סופר יודה",
+      "יינות ביתן", "ויקטורי", "טיב טעם", "מגה",
+      "סופר פארם", "גוד פארם", "חצי חינם", "זול ובגדול", "מחסני השוק",
     ]);
 
     // A vendor's own barcode for an item, preferring the new per-vendor map
@@ -2019,13 +2019,15 @@
                   </button>
                   {showPricingSettings && (
                     <div className="mt-2 bg-white border border-gray-100 rounded-2xl p-4">
-                      {pricingBranchesLoading ? (
-                        <div className="flex justify-center py-6"><Spinner /></div>
-                      ) : (
-                        <div className="space-y-5">
-                          <div className="text-xs text-gray-400 text-center">
-                            פעילים להשוואה: {activeVendorProfileCount} / {maxActiveVendors}
-                          </div>
+                      {/* Only the "add branch" picker below needs any vendor's
+                          branch list — the active-profile summary above it
+                          reads straight from vendorProfiles (already loaded
+                          via its own listener) and shouldn't wait on a slow
+                          or failing background branch fetch just to appear. */}
+                      <div className="space-y-5">
+                        <div className="text-xs text-gray-400 text-center">
+                          פעילים להשוואה: {activeVendorProfileCount} / {maxActiveVendors}
+                        </div>
                           {Object.entries(vendorProfiles).length > 0 && (
                             <div className="space-y-1.5">
                               {Object.entries(vendorProfiles).map(function(entry) {
@@ -2148,7 +2150,6 @@
                             </div>
                           )}
                         </div>
-                      )}
                     </div>
                   )}
                 </div>

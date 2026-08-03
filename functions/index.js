@@ -726,7 +726,10 @@ async function shufersalDownloadXmlObject(fileEntry) {
 // Shared by every vendor regardless of fetch mechanism — the government-
 // mandated XML schema itself is identical across all of them.
 function branchesFromStoresXml(obj) {
-  const root = obj.Root || {};
+  // Every vendor's PRICE file root element is <Root>, and so is every other
+  // vendor's STORES file — except Shufersal's, which uses <Chain> instead.
+  // Verified live 2026-08-03 after this silently produced zero branches.
+  const root = obj.Root || obj.Chain || {};
   const branches = {};
   for (const subChain of asArray(root.SubChains?.SubChain)) {
     for (const s of asArray(subChain.Stores?.Store)) {

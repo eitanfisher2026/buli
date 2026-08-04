@@ -1,6 +1,6 @@
     const { useState, useEffect, useRef } = React;
 
-    const VERSION = "v5.97";
+    const VERSION = "v5.98";
 
     // ── CONFIG ────────────────────────────────────────────────────────────────────
     const FIREBASE_CONFIG = {
@@ -187,6 +187,7 @@
       { id: "superYuda", label: "סופר יודה" },
       { id: "shufersal", label: "שופרסל" },
       { id: "lahav", label: "מחסני להב" },
+      { id: "carrefour", label: "קרפור" },
     ];
     const VENDOR_IDS = VENDOR_LIST.map(function(v) { return v.id; });
     // Module-level (not component state) so it survives ListScreen mounting

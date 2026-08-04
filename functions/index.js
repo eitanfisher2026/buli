@@ -631,11 +631,22 @@ const VENDORS = {
   // those files is identical to every other vendor's (same government-
   // mandated price-transparency format) — only the fetch mechanism differs.
   // Verified live 2026-08-03 (store 39 "שלי ת"א- ברזיל", ברזיל 15).
-  shufersal: { http: true },
+  shufersal: { http: 'shufersal' },
+  // קרפור absorbed the former Yenot Bitan chain in Israel (chain ID
+  // 7290055700007 confirms it's the same legal entity, feed ChainName is
+  // "קרפור"). Not on the Cerberus FTP platform — it publishes its own HTTP
+  // file listing at prices.carrefour.co.il, where the file list for "today"
+  // (or a requested date via ?p=./YYYYMMDD) is embedded as a JS array
+  // (`const files = [...]`) in the page's own inline script, not an HTML
+  // table like Shufersal. File naming and the XML schema inside are both
+  // the same government-mandated format as every other vendor here.
+  // Verified live 2026-08-04 (147 branches).
+  carrefour: { http: 'carrefour' },
 };
 const FTP_HOST = 'url.retail.publishedprices.co.il';
 const SHUFERSAL_BASE_URL = 'https://prices.shufersal.co.il';
 const SHUFERSAL_CAT_ID = { stores: 5, priceFull: 2 };
+const CARREFOUR_BASE_URL = 'https://prices.carrefour.co.il';
 // Last-resort fallback only, if even the owner (see fetchOwnerVendorProfiles
 // below) has no profiles of their own yet — shouldn't normally happen, but
 // better than a brand-new user silently getting zero price comparison.
@@ -732,6 +743,24 @@ async function shufersalDownloadXmlObject(fileEntry) {
   return parseXmlBuffer(buf, /\.gz(\?|$)/i.test(fileEntry.url) || fileEntry.name.endsWith('.gz'));
 }
 
+// ── Carrefour (HTTP, own site — see the VENDORS comment above) ─────────────
+// Unlike Shufersal, every file for the day (stores + all branches' prices)
+// comes back in one page fetch, so there's no per-category/per-store query.
+async function carrefourListFiles() {
+  const html = (await httpGet(`${CARREFOUR_BASE_URL}/`)).toString('utf8');
+  const pathMatch = html.match(/const path = ['"]([^'"]+)['"]/);
+  const filesMatch = html.match(/const files = (\[[\s\S]*?\]);/);
+  if (!pathMatch || !filesMatch) return [];
+  const path = pathMatch[1];
+  const files = JSON.parse(filesMatch[1]);
+  return files.map((f) => ({ name: f.name, url: `${CARREFOUR_BASE_URL}/${path}/${f.name}` }));
+}
+
+async function carrefourDownloadXmlObject(fileEntry) {
+  const buf = await httpGet(fileEntry.url);
+  return parseXmlBuffer(buf, fileEntry.name.endsWith('.gz'));
+}
+
 // Shared by every vendor regardless of fetch mechanism — the government-
 // mandated XML schema itself is identical across all of them.
 function branchesFromStoresXml(obj) {
@@ -776,11 +805,16 @@ function itemsFromPriceXml(obj) {
 // change rarely, so — unlike prices — this only runs when the cache is empty.
 async function ingestVendorBranches(vendor) {
   let obj;
-  if (VENDORS[vendor].http) {
+  if (VENDORS[vendor].http === 'shufersal') {
     const files = await shufersalListFiles(SHUFERSAL_CAT_ID.stores);
     const storeFiles = files.filter(f => /^stores/i.test(f.name)).sort((a, b) => b.name.localeCompare(a.name));
     if (storeFiles.length === 0) return null;
     obj = await shufersalDownloadXmlObject(storeFiles[0]);
+  } else if (VENDORS[vendor].http === 'carrefour') {
+    const files = await carrefourListFiles();
+    const storeFiles = files.filter(f => /^stores/i.test(f.name)).sort((a, b) => b.name.localeCompare(a.name));
+    if (storeFiles.length === 0) return null;
+    obj = await carrefourDownloadXmlObject(storeFiles[0]);
   } else {
     const client = await ftpConnect(vendor);
     try {
@@ -803,7 +837,7 @@ async function ingestVendorBranches(vendor) {
 // regardless of item count (bills by bytes, not by write count).
 async function ingestVendorCatalog(vendor, branchId, uid, email) {
   let obj;
-  if (VENDORS[vendor].http) {
+  if (VENDORS[vendor].http === 'shufersal') {
     const files = await shufersalListFiles(SHUFERSAL_CAT_ID.priceFull, parseInt(branchId, 10));
     let candidates = files.filter(f => /pricefull/i.test(f.name));
     if (candidates.length === 0) candidates = files.filter(f => /price/i.test(f.name));
@@ -811,6 +845,15 @@ async function ingestVendorCatalog(vendor, branchId, uid, email) {
     const pick = candidates[0];
     if (!pick) throw new HttpsError('not-found', `No price file found for ${vendor} branch ${branchId}`);
     obj = await shufersalDownloadXmlObject(pick);
+  } else if (VENDORS[vendor].http === 'carrefour') {
+    const files = await carrefourListFiles();
+    const branchFiles = files.filter(f => f.name.includes(`-${branchId}-`));
+    let candidates = branchFiles.filter(f => /pricefull/i.test(f.name));
+    if (candidates.length === 0) candidates = branchFiles.filter(f => /price/i.test(f.name));
+    candidates.sort((a, b) => b.name.localeCompare(a.name));
+    const pick = candidates[0];
+    if (!pick) throw new HttpsError('not-found', `No price file found for ${vendor} branch ${branchId}`);
+    obj = await carrefourDownloadXmlObject(pick);
   } else {
     const client = await ftpConnect(vendor);
     try {

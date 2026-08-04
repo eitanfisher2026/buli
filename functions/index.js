@@ -617,6 +617,11 @@ const VENDORS = {
   // uses (confirmed live via CWD → "250 Change directory ok"). Without this,
   // client.list() silently listed the empty root and produced zero branches.
   superYuda: { ftpUser: 'yuda_ho', ftpPassword: 'Yud@147', ftpPath: '/Yuda' }, // verified 2026-08-03
+  // מחסני להב — the chain rebranded to "פרש מרקט" (Fresh Market); its feed's
+  // own ChainName reflects that. Same Cerberus platform, blank password, no
+  // path quirks — a standard integration like ramiLevy/osherAd/keshet/yohananof.
+  // Verified live 2026-08-04 (45 branches).
+  lahav: { ftpUser: 'freshmarket' },
   // שופרסל (both שופרסל שלי and שופרסל דיל — and every other sub-brand —
   // live in this one chain's feed, distinguished only by SubChainName, so
   // ingesting it covers all of them with no extra code) does NOT use the

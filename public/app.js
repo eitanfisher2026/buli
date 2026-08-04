@@ -1,6 +1,6 @@
     const { useState, useEffect, useRef } = React;
 
-    const VERSION = "v5.98";
+    const VERSION = "v6.0";
 
     // ── CONFIG ────────────────────────────────────────────────────────────────────
     const FIREBASE_CONFIG = {
@@ -686,11 +686,12 @@
               <span>👁️ תצוגת משתמש רגיל</span><span className="opacity-70">· חזרה למנהל</span>
             </button>
           )}
-          {screen === "home"       && <HomeScreen       user={user} isAdmin={role === "admin" && !simulateRegular} isRealAdmin={role === "admin"} simulating={simulateRegular} onToggleSimulate={toggleSimulate} onOpenList={goList} onCategories={() => go("categories")} onContacts={() => go("contacts")} showToast={setToast} onAddTask={() => goAdd("tasks_" + user.uid, "tasks")} onCreateShoppingList={(id, name) => goAdd(id, "shopping", name)} onCreateNotesList={(id, name) => goAdd(id, "notes", name)} />}
+          {screen === "home"       && <HomeScreen       user={user} isAdmin={role === "admin" && !simulateRegular} isRealAdmin={role === "admin"} simulating={simulateRegular} onToggleSimulate={toggleSimulate} onOpenList={goList} onCategories={() => go("categories")} onContacts={() => go("contacts")} onPromotions={() => go("promotions")} showToast={setToast} onAddTask={() => goAdd("tasks_" + user.uid, "tasks")} onCreateShoppingList={(id, name) => goAdd(id, "shopping", name)} onCreateNotesList={(id, name) => goAdd(id, "notes", name)} />}
           {screen === "list"       && <ListScreen       user={user} listId={listId} onBack={goBack} onAdd={(type, name) => goAdd(listId, type, name || listName)} showToast={setToast} />}
           {screen === "add"        && <AddScreen        user={user} listId={listId} listType={listType} listName={listName} onBack={goBack} showToast={setToast} showStickyToast={setStickyToast} />}
           {screen === "categories" && <CategoriesScreen user={user} onBack={goBack} showToast={setToast} />}
           {screen === "contacts"   && <ContactsScreen   user={user} onBack={goBack} showToast={setToast} />}
+          {screen === "promotions" && <PromotionsScreen user={user} onBack={goBack} showToast={setToast} />}
           {toast && <Toast msg={toast} onClose={() => setToast("")} />}
           {stickyToast.length > 0 && (
             <div onClick={() => setStickyToast([])}
@@ -746,7 +747,7 @@
     }
 
     // ── HOME ──────────────────────────────────────────────────────────────────────
-    function HomeScreen({ user, isAdmin, isRealAdmin, simulating, onToggleSimulate, onOpenList, onCategories, onContacts, showToast, onAddTask, onCreateShoppingList, onCreateNotesList }) {
+    function HomeScreen({ user, isAdmin, isRealAdmin, simulating, onToggleSimulate, onOpenList, onCategories, onContacts, onPromotions, showToast, onAddTask, onCreateShoppingList, onCreateNotesList }) {
       const tasksListId = "tasks_" + user.uid;
       const categories = useCategories(user.uid); // for grouping the "copy items" picker by category, same as a list's default view
       const [lists,      setLists]      = useState(function() { return homeDataCache ? homeDataCache.lists : null; });
@@ -2038,6 +2039,11 @@
                 <button onClick={function() { setShowSettings(false); onCategories(); }} className="w-full text-right px-3 py-3 text-sm text-gray-700 hover:bg-gray-50 rounded-xl flex items-center gap-3">
                   <span className="text-lg w-7 text-center">⚙️</span><span>קטגוריות וחנויות</span>
                 </button>
+                {myPricingEnabled && (
+                  <button onClick={function() { setShowSettings(false); onPromotions(); }} className="w-full text-right px-3 py-3 text-sm text-gray-700 hover:bg-gray-50 rounded-xl flex items-center gap-3">
+                    <span className="text-lg w-7 text-center">🏷️</span><span>מבצעים</span>
+                  </button>
+                )}
                 <div className="px-3 py-2.5 flex items-center gap-3">
                   <span className="text-lg w-7 text-center">📝</span>
                   <span className="flex-1 text-sm text-gray-700">מילת מעבר בתפריטים</span>
@@ -3014,6 +3020,92 @@
       var order = (categoryOrder || []).filter(function(l) { return labels.indexOf(l) !== -1; });
       labels.forEach(function(l) { if (order.indexOf(l) === -1) order.push(l); });
       return order;
+    }
+
+    // ── PROMOTIONS (read-only browsing, v1 — adding items to a list comes later) ──
+    function PromotionsScreen({ user, onBack, showToast }) {
+      const [data, setData] = useState(null); // { promotionsByProfile, profiles } | "error" | null (loading)
+      const [openProfileId, setOpenProfileId] = useState(null);
+
+      useEffect(function() {
+        fns.httpsCallable("getVendorPromotions")().then(function(res) {
+          setData(res.data);
+          var profiles = res.data.profiles || [];
+          if (profiles.length > 0) setOpenProfileId(profiles[0].id);
+        }, function() { setData("error"); showToast("שגיאה בטעינת מבצעים"); });
+      }, []);
+
+      function dealPhrase(item) {
+        if (item.discountedPrice != null) {
+          return (item.minQty > 1 ? item.minQty + " ב-" : "") + "₪" + item.discountedPrice.toFixed(2);
+        }
+        if (item.discountRate != null) return "-" + Math.round(item.discountRate) + "%";
+        return "";
+      }
+
+      var profiles = (data && data !== "error") ? (data.profiles || []) : [];
+
+      return (
+        <div className="bg-gray-50 flex flex-col" style={{height:"100dvh"}}>
+          <div className="bg-blue-600 text-white px-4 pt-10 pb-4 flex-shrink-0">
+            <div className="flex items-center gap-3" dir="ltr">
+              <button onClick={onBack} className="flex items-center gap-1 text-white font-semibold text-sm bg-white/20 px-3 py-1.5 rounded-full flex-shrink-0">
+                <span className="text-lg leading-none">‹</span><span>חזרה</span>
+              </button>
+              <h1 className="flex-1 text-lg font-bold text-right">מבצעים</h1>
+            </div>
+            <p className="text-white/60 text-xs mt-1 text-right">מבצעים פעילים ברשתות שאתה משווה מולן</p>
+          </div>
+
+          <div className="flex-1 overflow-y-auto p-4">
+            {data === null ? (
+              <div className="flex justify-center py-20"><Spinner large /></div>
+            ) : data === "error" || profiles.length === 0 ? (
+              <div className="text-center py-20 text-gray-400">
+                <div className="text-4xl mb-2">🏷️</div>
+                <div>אין רשתות פעילות להשוואת מחירים</div>
+              </div>
+            ) : (
+              <div className="space-y-3">
+                {profiles.map(function(profile) {
+                  var promos = (data.promotionsByProfile[profile.id] || []);
+                  var isOpen = openProfileId === profile.id;
+                  return (
+                    <div key={profile.id} className="bg-white border border-gray-100 rounded-2xl overflow-hidden">
+                      <button onClick={function() { setOpenProfileId(isOpen ? null : profile.id); }}
+                        className="w-full flex items-center justify-between px-4 py-3">
+                        <span className="text-xs text-gray-400">{promos.length} מבצעים</span>
+                        <span className="text-sm font-semibold text-gray-700">{profileLabel(profile, profiles)}</span>
+                      </button>
+                      {isOpen && (
+                        <div className="border-t border-gray-100 divide-y divide-gray-50">
+                          {promos.length === 0 ? (
+                            <div className="text-center py-8 text-gray-300 text-sm">אין מבצעים כרגע</div>
+                          ) : promos.map(function(promo) {
+                            return (
+                              <div key={promo.id} className="px-4 py-3">
+                                <div className="flex flex-wrap gap-1.5">
+                                  {promo.items.map(function(item, idx) {
+                                    return (
+                                      <span key={idx} className="text-xs bg-blue-50 text-blue-700 rounded-full px-2.5 py-1">
+                                        {item.name || item.barcode}{dealPhrase(item) && (" · " + dealPhrase(item))}
+                                      </span>
+                                    );
+                                  })}
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        </div>
+      );
     }
 
     function CategoriesScreen({ user, onBack, showToast }) {
@@ -4584,6 +4676,27 @@
                       <span key={e.profile.id} className={"text-xs font-semibold px-1.5 py-0.5 rounded " + cheapestBadgeClass(e.price, others)}>
                         {profileLabel(e.profile, activeProfiles)}: {e.price != null ? "₪" + e.price.toFixed(2) : "לא נמכר כאן"}
                       </span>
+                    );
+                  })}
+                </div>
+              )}
+              {/* A vendor added *after* this item already matched another one
+                  never gets a chance to show up here — matching is per-vendor,
+                  and the big "match item" action below is deliberately hidden
+                  once anything's matched (see its own comment). Without this,
+                  the new vendor's "waiting to be matched" state is completely
+                  invisible next to real prices, indistinguishable from
+                  "genuinely not sold there". Distinct styling (not a price
+                  pill) so it doesn't read as a price itself. */}
+              {!isTasks && itemHasAnyBarcode(item) && priceCandidates && priceCandidates.list && priceCandidates.vendors && priceCandidates.vendors.length > 0 && (
+                <div className="flex items-center gap-1.5 flex-wrap mt-1">
+                  {priceCandidates.vendors.map(function(vId) {
+                    var meta = VENDOR_LIST.find(function(v) { return v.id === vId; });
+                    return (
+                      <button key={vId} onClick={function(e) { e.stopPropagation(); onPickPrice(); }}
+                        className="text-xs font-medium px-1.5 py-0.5 rounded bg-blue-50 text-blue-600 border border-blue-200 inline-flex items-center gap-1">
+                        <BarcodeIcon className="w-3 h-3" /> {meta ? meta.label : vId}
+                      </button>
                     );
                   })}
                 </div>

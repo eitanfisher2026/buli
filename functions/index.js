@@ -645,7 +645,7 @@ const VENDORS = {
 };
 const FTP_HOST = 'url.retail.publishedprices.co.il';
 const SHUFERSAL_BASE_URL = 'https://prices.shufersal.co.il';
-const SHUFERSAL_CAT_ID = { stores: 5, priceFull: 2 };
+const SHUFERSAL_CAT_ID = { stores: 5, priceFull: 2, promoFull: 4 };
 const CARREFOUR_BASE_URL = 'https://prices.carrefour.co.il';
 // Last-resort fallback only, if even the owner (see fetchOwnerVendorProfiles
 // below) has no profiles of their own yet — shouldn't normally happen, but
@@ -801,6 +801,41 @@ function itemsFromPriceXml(obj) {
   return items;
 }
 
+// Same government-mandated schema's Promotions file. Cross-group "buy A get
+// B" linkage isn't specially modeled — every item across every group is
+// flattened into one array, which is enough for a v1 browsing list. Already-
+// expired promos are dropped at ingest time so stale deals never get stored.
+function promotionsFromXml(obj) {
+  const root = obj.Root || {};
+  const now = Date.now();
+  const promotions = [];
+  for (const promo of asArray(root.Promotions?.Promotion)) {
+    const endDate = String(promo.PromotionEndDateTime ?? '').trim();
+    if (endDate && new Date(endDate).getTime() < now) continue;
+    const items = [];
+    for (const group of asArray(promo.Groups?.Group)) {
+      for (const item of asArray(group.PromotionItems?.PromotionItem)) {
+        const barcode = String(item.ItemCode ?? '').trim();
+        if (!barcode) continue;
+        items.push({
+          barcode,
+          minQty: Number(item.MinQty) || 1,
+          discountedPrice: Number.isFinite(parseFloat(item.DiscountedPrice)) && parseFloat(item.DiscountedPrice) > 0 ? parseFloat(item.DiscountedPrice) : null,
+          discountRate: Number.isFinite(parseFloat(item.DiscountRate)) && parseFloat(item.DiscountRate) > 0 ? parseFloat(item.DiscountRate) : null,
+        });
+      }
+    }
+    if (items.length === 0) continue;
+    promotions.push({
+      id: String(promo.PromotionID ?? '').trim(),
+      description: String(promo.PromotionDescription || promo.Remarks || '').trim(),
+      endDate,
+      items,
+    });
+  }
+  return promotions;
+}
+
 // Refreshes vendorBranches/{vendor} from the chain's own Stores file. Branches
 // change rarely, so — unlike prices — this only runs when the cache is empty.
 async function ingestVendorBranches(vendor) {
@@ -885,6 +920,55 @@ async function ingestVendorCatalog(vendor, branchId, uid, email) {
   return items;
 }
 
+// Mirrors ingestVendorCatalog exactly, but for the same feed's separate
+// Promo/PromoFull file — same three fetch mechanisms, same "prefer the Full
+// snapshot, fall back to the incremental file" rule.
+async function ingestVendorPromotions(vendor, branchId, uid, email) {
+  let obj;
+  if (VENDORS[vendor].http === 'shufersal') {
+    const files = await shufersalListFiles(SHUFERSAL_CAT_ID.promoFull, parseInt(branchId, 10));
+    let candidates = files.filter(f => /promofull/i.test(f.name));
+    if (candidates.length === 0) candidates = files.filter(f => /promo/i.test(f.name));
+    candidates.sort((a, b) => b.name.localeCompare(a.name));
+    const pick = candidates[0];
+    if (!pick) throw new HttpsError('not-found', `No promo file found for ${vendor} branch ${branchId}`);
+    obj = await shufersalDownloadXmlObject(pick);
+  } else if (VENDORS[vendor].http === 'carrefour') {
+    const files = await carrefourListFiles();
+    const branchFiles = files.filter(f => f.name.includes(`-${branchId}-`));
+    let candidates = branchFiles.filter(f => /promofull/i.test(f.name));
+    if (candidates.length === 0) candidates = branchFiles.filter(f => /promo/i.test(f.name));
+    candidates.sort((a, b) => b.name.localeCompare(a.name));
+    const pick = candidates[0];
+    if (!pick) throw new HttpsError('not-found', `No promo file found for ${vendor} branch ${branchId}`);
+    obj = await carrefourDownloadXmlObject(pick);
+  } else {
+    const client = await ftpConnect(vendor);
+    try {
+      const list = await client.list();
+      const branchFiles = list.filter(f => f.name.includes(`-${branchId}-`));
+      let candidates = branchFiles.filter(f => /promofull/i.test(f.name));
+      if (candidates.length === 0) candidates = branchFiles.filter(f => /promo/i.test(f.name));
+      candidates.sort((a, b) => b.name.localeCompare(a.name));
+      const pick = candidates[0];
+      if (!pick) throw new HttpsError('not-found', `No promo file found for ${vendor} branch ${branchId}`);
+      obj = await ftpDownloadXmlObject(client, pick);
+    } finally {
+      client.close();
+    }
+  }
+
+  const promotions = promotionsFromXml(obj);
+  const sizeBytes = Buffer.byteLength(JSON.stringify(promotions));
+  const updatedAt = Date.now();
+  await db.ref().update({
+    [`vendorPromotions/${vendor}/${branchId}`]: { promotions, updatedAt, sizeBytes },
+    [`vendorPromotionsIndex/${vendor}/${branchId}`]: { updatedAt, sizeBytes, promotionCount: promotions.length },
+  });
+  await recordPricingUsage({ catalogWriteBytes: sizeBytes, catalogRefreshCount: 1 }, uid, email);
+  return promotions;
+}
+
 // Calendar-day comparison in Israel local time (not UTC, and not exact
 // hours) — "already refreshed today" should track the day the person
 // making the request experiences, not a UTC boundary that can flip mid-
@@ -937,9 +1021,10 @@ exports.refreshActiveVendorCatalogs = onSchedule(
         }
       });
     });
-    await Promise.all(Object.values(pairs).map(({ vendor, branchId }) =>
-      ingestVendorCatalog(vendor, branchId).catch(() => {})
-    ));
+    await Promise.all(Object.values(pairs).flatMap(({ vendor, branchId }) => [
+      ingestVendorCatalog(vendor, branchId).catch(() => {}),
+      ingestVendorPromotions(vendor, branchId).catch(() => {}),
+    ]));
   }
 );
 
@@ -1404,6 +1489,54 @@ exports.getBasketPrices = onCall(
     }));
     await recordPricingUsage({ pointReadCount: readCount }, request.auth.uid, request.auth.token.email);
     return { prices, profiles: activeProfiles };
+  }
+);
+
+exports.getVendorPromotions = onCall(
+  { timeoutSeconds: 300, memory: '1GiB', region: 'europe-west1' },
+  async (request) => {
+    await requireAuthorized(request);
+    const activeProfiles = await getUserActiveProfiles(request.auth.uid);
+    if (activeProfiles.length === 0) return { promotionsByProfile: {}, profiles: activeProfiles };
+
+    // Dedupe by (vendor,branchId) so profiles sharing one branch only fetch
+    // it once — same pattern as getBasketPrices's force-refresh path.
+    const promosByBranch = {};
+    await Promise.all(activeProfiles.map(async (p) => {
+      const key = `${p.vendor}:${p.branchId}`;
+      if (!promosByBranch[key]) {
+        promosByBranch[key] = (async () => {
+          const metaSnap = await db.ref(`vendorPromotionsIndex/${p.vendor}/${p.branchId}/updatedAt`).once('value');
+          const updatedAt = metaSnap.val();
+          if (updatedAt && Date.now() - updatedAt < CATALOG_STALENESS_MS) {
+            const snap = await db.ref(`vendorPromotions/${p.vendor}/${p.branchId}/promotions`).once('value');
+            return snap.val() || [];
+          }
+          return ingestVendorPromotions(p.vendor, p.branchId, request.auth.uid, request.auth.token.email).catch(() => []);
+        })();
+      }
+      return promosByBranch[key];
+    }));
+
+    // Resolve display names only for the barcodes actually referenced —
+    // never pull a whole (multi-MB) catalog just to label a handful of items.
+    const promotionsByProfile = {};
+    await Promise.all(activeProfiles.map(async (p) => {
+      const key = `${p.vendor}:${p.branchId}`;
+      const promotions = await promosByBranch[key];
+      const barcodes = [...new Set(promotions.flatMap(promo => promo.items.map(i => i.barcode)))];
+      const names = {};
+      await Promise.all(barcodes.map(async (barcode) => {
+        const snap = await db.ref(`vendorCatalog/${p.vendor}/${p.branchId}/items/${barcode}/name`).once('value');
+        names[barcode] = snap.val() || '';
+      }));
+      promotionsByProfile[p.id] = promotions.map(promo => ({
+        ...promo,
+        items: promo.items.map(item => ({ ...item, name: names[item.barcode] || '' })),
+      }));
+    }));
+
+    return { promotionsByProfile, profiles: activeProfiles };
   }
 );
 

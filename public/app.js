@@ -1,6 +1,6 @@
     const { useState, useEffect, useRef } = React;
 
-    const VERSION = "v6.0";
+    const VERSION = "v6.1";
 
     // ── CONFIG ────────────────────────────────────────────────────────────────────
     const FIREBASE_CONFIG = {
@@ -4676,27 +4676,6 @@
                       <span key={e.profile.id} className={"text-xs font-semibold px-1.5 py-0.5 rounded " + cheapestBadgeClass(e.price, others)}>
                         {profileLabel(e.profile, activeProfiles)}: {e.price != null ? "₪" + e.price.toFixed(2) : "לא נמכר כאן"}
                       </span>
-                    );
-                  })}
-                </div>
-              )}
-              {/* A vendor added *after* this item already matched another one
-                  never gets a chance to show up here — matching is per-vendor,
-                  and the big "match item" action below is deliberately hidden
-                  once anything's matched (see its own comment). Without this,
-                  the new vendor's "waiting to be matched" state is completely
-                  invisible next to real prices, indistinguishable from
-                  "genuinely not sold there". Distinct styling (not a price
-                  pill) so it doesn't read as a price itself. */}
-              {!isTasks && itemHasAnyBarcode(item) && priceCandidates && priceCandidates.list && priceCandidates.vendors && priceCandidates.vendors.length > 0 && (
-                <div className="flex items-center gap-1.5 flex-wrap mt-1">
-                  {priceCandidates.vendors.map(function(vId) {
-                    var meta = VENDOR_LIST.find(function(v) { return v.id === vId; });
-                    return (
-                      <button key={vId} onClick={function(e) { e.stopPropagation(); onPickPrice(); }}
-                        className="text-xs font-medium px-1.5 py-0.5 rounded bg-blue-50 text-blue-600 border border-blue-200 inline-flex items-center gap-1">
-                        <BarcodeIcon className="w-3 h-3" /> {meta ? meta.label : vId}
-                      </button>
                     );
                   })}
                 </div>

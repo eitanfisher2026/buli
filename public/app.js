@@ -1,6 +1,6 @@
     const { useState, useEffect, useRef } = React;
 
-    const VERSION = "v6.3";
+    const VERSION = "v6.4";
 
     // ── CONFIG ────────────────────────────────────────────────────────────────────
     const FIREBASE_CONFIG = {
@@ -1071,13 +1071,20 @@
           }
           var now = Date.now();
           var updates = {};
+          // Respect the cap here too — the owner's own account can carry
+          // more active flags than the current cap allows (e.g. the cap was
+          // lowered after they were set), and blindly copying those over
+          // would let the count exceed the cap for this account as well.
+          var activatedCount = 0;
           defaults.forEach(function(p) {
+            var willActivate = !!p.active && activatedCount < maxActiveVendors;
+            if (willActivate) activatedCount++;
             var existing = Object.entries(vendorProfiles).find(function(e) { return e[1].vendor === p.vendor && String(e[1].branchId) === String(p.branchId); });
             if (existing) {
-              updates["users/" + user.uid + "/vendorProfiles/" + existing[0] + "/activeIn/default"] = !!p.active;
+              updates["users/" + user.uid + "/vendorProfiles/" + existing[0] + "/activeIn/default"] = willActivate;
             } else {
               var key = db.ref("users/" + user.uid + "/vendorProfiles").push().key;
-              updates["users/" + user.uid + "/vendorProfiles/" + key] = { vendor: p.vendor, branchId: p.branchId, addedAt: now, activeIn: { default: !!p.active } };
+              updates["users/" + user.uid + "/vendorProfiles/" + key] = { vendor: p.vendor, branchId: p.branchId, addedAt: now, activeIn: { default: willActivate } };
             }
           });
           Object.entries(vendorProfiles).forEach(function(entry) {
@@ -2176,10 +2183,6 @@
                     <span className={`w-5 h-5 bg-white rounded-full shadow transition-transform ${autoOpenMajor ? "translate-x-5" : "translate-x-0"}`} />
                   </span>
                 </button>
-                <div className="border-t border-gray-100 my-1" />
-                <button onClick={function() { setShowSettings(false); onCategories(); }} className="w-full text-right px-3 py-3 text-sm text-gray-700 hover:bg-gray-50 rounded-xl flex items-center gap-3">
-                  <span className="text-lg w-7 text-center">⚙️</span><span>קטגוריות וחנויות</span>
-                </button>
                 <div className="px-3 py-2.5 flex items-center gap-3">
                   <span className="text-lg w-7 text-center">📝</span>
                   <span className="flex-1 text-sm text-gray-700">מילת מעבר בתפריטים</span>
@@ -2419,6 +2422,9 @@
               </div>)}
 
               {settingsTab === "vendors" && (<div>
+              <button onClick={function() { setShowSettings(false); onCategories(); }} className="w-full text-right px-3 py-3 mb-2 text-sm text-gray-700 hover:bg-gray-50 rounded-xl flex items-center gap-3 border border-gray-100">
+                <span className="text-lg w-7 text-center">⚙️</span><span>קטגוריות וחנויות</span>
+              </button>
               {myPricingEnabled && (
                 <button onClick={function() { setShowSettings(false); onPromotions(); }} className="w-full text-right px-3 py-3 mb-2 text-sm text-gray-700 hover:bg-gray-50 rounded-xl flex items-center gap-3 border border-gray-100">
                   <span className="text-lg w-7 text-center">🏷️</span><span>מבצעים</span>
@@ -2461,6 +2467,17 @@
                         {isOpen && (
                           <div className="mt-2 bg-white border border-gray-100 rounded-2xl p-4">
                             <div className="space-y-5">
+                              {/* The header row above still toggles open/closed,
+                                  but re-tapping it to close wasn't obvious — this
+                                  is a visible, unambiguous close action right
+                                  where the user is already looking. */}
+                              <div className="flex items-center justify-between -mt-1">
+                                <span className="text-sm font-semibold text-gray-700">{g.name}</span>
+                                <button onClick={function() { setShowPricingSettings(false); }}
+                                  className="text-gray-400 hover:text-gray-600 text-xs border border-gray-200 rounded-full px-2.5 py-1 flex items-center gap-1">
+                                  ✕ סגור
+                                </button>
+                              </div>
                               {g.id === null && (
                                 <div className="flex items-center justify-between">
                                   <button onClick={resetToDefaultProfiles} disabled={resettingToDefault}

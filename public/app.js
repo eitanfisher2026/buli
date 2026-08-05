@@ -1,6 +1,6 @@
     const { useState, useEffect, useRef } = React;
 
-    const VERSION = "v6.7";
+    const VERSION = "v6.8";
 
     // ── CONFIG ────────────────────────────────────────────────────────────────────
     const FIREBASE_CONFIG = {
@@ -378,22 +378,42 @@
     // barcode for. Skips profiles whose price hasn't been fetched yet rather
     // than showing a misleading "not sold here" before the real answer
     // arrives.
+    //
+    // promo.active reflects whether this item's *actual quantity in the
+    // list* meets the promo's minQty — a "3 for ₪17.80" deal only becomes
+    // the real price once there are 3 in the cart; below that it's shown as
+    // a tag (see promoTagPhrase) instead of the headline price, since
+    // showing the discounted number before it's actually earned would be
+    // wrong.
     function itemProfilePrices(item, activeProfiles, priceMap, promoMap) {
       var out = [];
+      var qty = item.quantity || 1;
       activeProfiles.forEach(function(p) {
         var bc = itemVendorBarcode(item, p.vendor);
         if (!bc) return;
         var vendorPrices = priceMap[p.id];
         if (!vendorPrices || !(bc in vendorPrices)) return;
         var price = vendorPrices[bc];
-        var promoPrice = promoMap && promoMap[p.id] ? promoMap[p.id][bc] : null;
-        // Only ever show a promo as the headline price when it's genuinely
-        // cheaper — a rate-only promo computed off a stale catalog price, or
-        // bad source data, could otherwise show a "discount" that isn't one.
-        if (promoPrice != null && price != null && promoPrice >= price) promoPrice = null;
-        out.push({ profile: p, price: price, promoPrice: promoPrice });
+        var rawPromo = promoMap && promoMap[p.id] ? promoMap[p.id][bc] : null;
+        var promo = null;
+        // Only ever treat a promo as real when it's genuinely cheaper — a
+        // rate-only promo computed off a stale catalog price, or bad source
+        // data, could otherwise show a "discount" that isn't one.
+        if (rawPromo && rawPromo.price != null && (price == null || rawPromo.price < price)) {
+          var minQty = rawPromo.minQty || 1;
+          promo = { price: rawPromo.price, minQty: minQty, discountedPrice: rawPromo.discountedPrice, discountRate: rawPromo.discountRate, active: qty >= minQty };
+        }
+        out.push({ profile: p, price: price, promo: promo });
       });
       return out;
+    }
+    // "3 ב-₪17.80" or "-20%" — used both for the not-yet-reached tag and
+    // could describe the deal even once active, so it's shared rather than
+    // reimplemented per call site.
+    function promoTagPhrase(promo) {
+      if (promo.discountedPrice != null) return promo.minQty + " ב-₪" + promo.discountedPrice.toFixed(2);
+      if (promo.discountRate != null) return "-" + Math.round(promo.discountRate) + "%";
+      return "";
     }
 
     const USER_COLORS = ["#ef4444","#f97316","#22c55e","#14b8a6","#8b5cf6","#ec4899","#6366f1","#f59e0b"];
@@ -703,11 +723,10 @@
               <span>👁️ תצוגת משתמש רגיל</span><span className="opacity-70">· חזרה למנהל</span>
             </button>
           )}
-          {screen === "home"       && <HomeScreen       user={user} isAdmin={role === "admin" && !simulateRegular} isRealAdmin={role === "admin"} simulating={simulateRegular} onToggleSimulate={toggleSimulate} onOpenList={goList} onCategories={() => go("categories")} onPromotions={() => go("promotions")} showToast={setToast} onAddTask={() => goAdd("tasks_" + user.uid, "tasks")} onCreateShoppingList={(id, name) => goAdd(id, "shopping", name)} onCreateNotesList={(id, name) => goAdd(id, "notes", name)} />}
+          {screen === "home"       && <HomeScreen       user={user} isAdmin={role === "admin" && !simulateRegular} isRealAdmin={role === "admin"} simulating={simulateRegular} onToggleSimulate={toggleSimulate} onOpenList={goList} onCategories={() => go("categories")} showToast={setToast} onAddTask={() => goAdd("tasks_" + user.uid, "tasks")} onCreateShoppingList={(id, name) => goAdd(id, "shopping", name)} onCreateNotesList={(id, name) => goAdd(id, "notes", name)} />}
           {screen === "list"       && <ListScreen       user={user} listId={listId} onBack={goBack} onAdd={(type, name) => goAdd(listId, type, name || listName)} showToast={setToast} />}
           {screen === "add"        && <AddScreen        user={user} listId={listId} listType={listType} listName={listName} onBack={goBack} showToast={setToast} showStickyToast={setStickyToast} />}
           {screen === "categories" && <CategoriesScreen user={user} onBack={goBack} showToast={setToast} />}
-          {screen === "promotions" && <PromotionsScreen user={user} onBack={goBack} showToast={setToast} />}
           {toast && <Toast msg={toast} onClose={() => setToast("")} />}
           {stickyToast.length > 0 && (
             <div onClick={() => setStickyToast([])}
@@ -763,7 +782,7 @@
     }
 
     // ── HOME ──────────────────────────────────────────────────────────────────────
-    function HomeScreen({ user, isAdmin, isRealAdmin, simulating, onToggleSimulate, onOpenList, onCategories, onPromotions, showToast, onAddTask, onCreateShoppingList, onCreateNotesList }) {
+    function HomeScreen({ user, isAdmin, isRealAdmin, simulating, onToggleSimulate, onOpenList, onCategories, showToast, onAddTask, onCreateShoppingList, onCreateNotesList }) {
       const tasksListId = "tasks_" + user.uid;
       const categories = useCategories(user.uid); // for grouping the "copy items" picker by category, same as a list's default view
       const [lists,      setLists]      = useState(function() { return homeDataCache ? homeDataCache.lists : null; });
@@ -2526,11 +2545,6 @@
                 <span className="text-lg w-7 text-center">⚙️</span><span>קטגוריות וחנויות</span>
               </button>
               {myPricingEnabled && (
-                <button onClick={function() { setShowSettings(false); onPromotions(); }} className="w-full text-right px-3 py-3 mb-2 text-sm text-gray-700 hover:bg-gray-50 rounded-xl flex items-center gap-3 border border-gray-100">
-                  <span className="text-lg w-7 text-center">🏷️</span><span>מבצעים</span>
-                </button>
-              )}
-              {myPricingEnabled && (
                 <div className="space-y-2">
                   {vendorGroupList.map(function(g) {
                     var isOpen = showPricingSettings && selectedGroupId === g.id;
@@ -3212,92 +3226,6 @@
       var order = (categoryOrder || []).filter(function(l) { return labels.indexOf(l) !== -1; });
       labels.forEach(function(l) { if (order.indexOf(l) === -1) order.push(l); });
       return order;
-    }
-
-    // ── PROMOTIONS (read-only browsing, v1 — adding items to a list comes later) ──
-    function PromotionsScreen({ user, onBack, showToast }) {
-      const [data, setData] = useState(null); // { promotionsByProfile, profiles } | "error" | null (loading)
-      const [openProfileId, setOpenProfileId] = useState(null);
-
-      useEffect(function() {
-        fns.httpsCallable("getVendorPromotions")().then(function(res) {
-          setData(res.data);
-          var profiles = res.data.profiles || [];
-          if (profiles.length > 0) setOpenProfileId(profiles[0].id);
-        }, function() { setData("error"); showToast("שגיאה בטעינת מבצעים"); });
-      }, []);
-
-      function dealPhrase(item) {
-        if (item.discountedPrice != null) {
-          return (item.minQty > 1 ? item.minQty + " ב-" : "") + "₪" + item.discountedPrice.toFixed(2);
-        }
-        if (item.discountRate != null) return "-" + Math.round(item.discountRate) + "%";
-        return "";
-      }
-
-      var profiles = (data && data !== "error") ? (data.profiles || []) : [];
-
-      return (
-        <div className="bg-gray-50 flex flex-col" style={{height:"100dvh"}}>
-          <div className="bg-blue-600 text-white px-4 pt-10 pb-4 flex-shrink-0">
-            <div className="flex items-center gap-3" dir="ltr">
-              <button onClick={onBack} className="flex items-center gap-1 text-white font-semibold text-sm bg-white/20 px-3 py-1.5 rounded-full flex-shrink-0">
-                <span className="text-lg leading-none">‹</span><span>חזרה</span>
-              </button>
-              <h1 className="flex-1 text-lg font-bold text-right">מבצעים</h1>
-            </div>
-            <p className="text-white/60 text-xs mt-1 text-right">מבצעים פעילים ברשתות שאתה משווה מולן</p>
-          </div>
-
-          <div className="flex-1 overflow-y-auto p-4">
-            {data === null ? (
-              <div className="flex justify-center py-20"><Spinner large /></div>
-            ) : data === "error" || profiles.length === 0 ? (
-              <div className="text-center py-20 text-gray-400">
-                <div className="text-4xl mb-2">🏷️</div>
-                <div>אין רשתות פעילות להשוואת מחירים</div>
-              </div>
-            ) : (
-              <div className="space-y-3">
-                {profiles.map(function(profile) {
-                  var promos = (data.promotionsByProfile[profile.id] || []);
-                  var isOpen = openProfileId === profile.id;
-                  return (
-                    <div key={profile.id} className="bg-white border border-gray-100 rounded-2xl overflow-hidden">
-                      <button onClick={function() { setOpenProfileId(isOpen ? null : profile.id); }}
-                        className="w-full flex items-center justify-between px-4 py-3">
-                        <span className="text-xs text-gray-400">{promos.length} מבצעים</span>
-                        <span className="text-sm font-semibold text-gray-700">{profileLabel(profile, profiles)}</span>
-                      </button>
-                      {isOpen && (
-                        <div className="border-t border-gray-100 divide-y divide-gray-50">
-                          {promos.length === 0 ? (
-                            <div className="text-center py-8 text-gray-300 text-sm">אין מבצעים כרגע</div>
-                          ) : promos.map(function(promo) {
-                            return (
-                              <div key={promo.id} className="px-4 py-3">
-                                <div className="flex flex-wrap gap-1.5">
-                                  {promo.items.map(function(item, idx) {
-                                    return (
-                                      <span key={idx} className="text-xs bg-blue-50 text-blue-700 rounded-full px-2.5 py-1">
-                                        {item.name || item.barcode}{dealPhrase(item) && (" · " + dealPhrase(item))}
-                                      </span>
-                                    );
-                                  })}
-                                </div>
-                              </div>
-                            );
-                          })}
-                        </div>
-                      )}
-                    </div>
-                  );
-                })}
-              </div>
-            )}
-          </div>
-        </div>
-      );
     }
 
     function CategoriesScreen({ user, onBack, showToast }) {
@@ -4120,10 +4048,10 @@
             var next = Object.assign({}, prev);
             activeProfiles.forEach(function(p) {
               if (vendorsToConfirm.indexOf(p.vendor) === -1) return;
-              var promoPrice = candidate.promoPrices && candidate.promoPrices[p.vendor];
-              if (promoPrice == null) return;
+              var promoInfo = candidate.promoPrices && candidate.promoPrices[p.vendor];
+              if (!promoInfo) return;
               next[p.id] = Object.assign({}, next[p.id]);
-              next[p.id][candidate.barcode] = promoPrice;
+              next[p.id][candidate.barcode] = promoInfo;
             });
             return next;
           });
@@ -4706,24 +4634,29 @@
                               {searchedVendors.map(function(v) {
                                 var meta = VENDOR_LIST.find(function(x) { return x.id === v; });
                                 var price = c.prices ? c.prices[v] : null;
-                                var promoPrice = c.promoPrices ? c.promoPrices[v] : null;
-                                if (promoPrice != null && price != null && promoPrice >= price) promoPrice = null;
-                                var effective = promoPrice != null ? promoPrice : price;
+                                var promo = c.promoPrices ? c.promoPrices[v] : null;
+                                if (promo && price != null && promo.price >= price) promo = null;
+                                var promoActive = !!(promo && (pickerItem.quantity || 1) >= (promo.minQty || 1));
+                                var effective = promoActive ? promo.price : price;
                                 var others = searchedVendors.filter(function(o) { return o !== v; })
                                   .map(function(o) {
                                     var op = c.prices ? c.prices[o] : null;
                                     var opromo = c.promoPrices ? c.promoPrices[o] : null;
-                                    return opromo != null ? opromo : op;
+                                    var oActive = opromo && (pickerItem.quantity || 1) >= (opromo.minQty || 1);
+                                    return oActive ? opromo.price : op;
                                   }).filter(function(x) { return x != null; });
                                 return (
                                   <span key={v} className={"text-xs font-semibold px-1.5 py-0.5 rounded leading-tight " + cheapestBadgeClass(effective, others)}>
-                                    {promoPrice != null ? (
+                                    {promoActive ? (
                                       <span className="flex flex-col items-start">
-                                        <span>{meta ? meta.label : v}: ₪{promoPrice.toFixed(2)}*</span>
+                                        <span>{meta ? meta.label : v}: ₪{promo.price.toFixed(2)}*</span>
                                         <span className="text-[10px] opacity-70 font-normal">(₪{Number(price).toFixed(2)})</span>
                                       </span>
                                     ) : (
-                                      <span>{meta ? meta.label : v}: {price != null ? "₪" + Number(price).toFixed(2) : "לא נמכר כאן"}</span>
+                                      <span className="flex flex-col items-start">
+                                        <span>{meta ? meta.label : v}: {price != null ? "₪" + Number(price).toFixed(2) : "לא נמכר כאן"}</span>
+                                        {promo && <span className="text-[10px] text-orange-500 font-normal">🏷️ {promoTagPhrase(promo)}</span>}
+                                      </span>
                                     )}
                                   </span>
                                 );
@@ -4821,7 +4754,7 @@
         // when this item has one, not the regular catalog price next to it.
         itemProfilePrices(item, activeProfiles, priceMap, promoMap).forEach(function(e) {
           if (e.price == null) return;
-          var effective = e.promoPrice != null ? e.promoPrice : e.price;
+          var effective = (e.promo && e.promo.active) ? e.promo.price : e.price;
           totals[e.profile.id].sum += effective * qty;
           totals[e.profile.id].count++;
         });
@@ -4860,21 +4793,25 @@
                       var vendorPrices = priceMap[p.id];
                       var fetched = !!(bc && vendorPrices && (bc in vendorPrices));
                       var price = fetched ? vendorPrices[bc] : null;
-                      var promoPrice = byId[p.id] ? byId[p.id].promoPrice : null;
-                      var effectivePrice = promoPrice != null ? promoPrice : price;
-                      var others = priced.filter(function(e) { return e.profile.id !== p.id; }).map(function(e) { return e.promoPrice != null ? e.promoPrice : e.price; });
+                      var promo = byId[p.id] ? byId[p.id].promo : null;
+                      var promoActive = !!(promo && promo.active);
+                      var effectivePrice = promoActive ? promo.price : price;
+                      var others = priced.filter(function(e) { return e.profile.id !== p.id; }).map(function(e) { return (e.promo && e.promo.active) ? e.promo.price : e.price; });
                       var cellClass = !bc ? "text-gray-300" : !fetched ? "text-gray-300" : cheapestTextClass(effectivePrice, others);
                       return (
                         <td key={p.id} className={"text-center px-3 py-2 border-b border-gray-100 " + cellClass}>
                           {!bc ? "—" : !fetched ? "…" : price != null ? (
                             <div className="leading-tight">
-                              {promoPrice != null ? (
+                              {promoActive ? (
                                 <div>
-                                  <div className="text-orange-600 font-bold">₪{(promoPrice * qty).toFixed(2)}*</div>
+                                  <div className="text-orange-600 font-bold">₪{(promo.price * qty).toFixed(2)}*</div>
                                   <div className="text-[10px] text-gray-400">(₪{(price * qty).toFixed(2)})</div>
                                 </div>
                               ) : (
-                                <div>₪{(price * qty).toFixed(2)}</div>
+                                <div>
+                                  <div>₪{(price * qty).toFixed(2)}</div>
+                                  {promo && <div className="text-[9px] text-orange-500">🏷️ {promoTagPhrase(promo)}</div>}
+                                </div>
                               )}
                               {/* The line total above is what actually feeds
                                   the "סה"כ" sum at the bottom — this breakdown
@@ -4962,9 +4899,9 @@
                   if (!e) return null;
                   return (
                     <div className="mt-1">
-                      {e.promoPrice != null ? (
+                      {e.promo && e.promo.active ? (
                         <span className="text-xs font-semibold text-orange-600 flex flex-col items-start leading-tight">
-                          <span>₪{e.promoPrice.toFixed(2)}*</span>
+                          <span>₪{e.promo.price.toFixed(2)}*</span>
                           <span className="text-[10px] text-gray-400 font-normal">(₪{e.price.toFixed(2)})</span>
                         </span>
                       ) : (
@@ -4972,23 +4909,31 @@
                           {e.price != null ? "₪" + e.price.toFixed(2) : "לא נמכר כאן"}
                         </span>
                       )}
+                      {e.promo && !e.promo.active && (
+                        <div className="text-[10px] text-orange-500 mt-0.5">🏷️ {promoTagPhrase(e.promo)} (יש לך {item.quantity || 1})</div>
+                      )}
                     </div>
                   );
                 })()
               ) : !isTasks && pricedEntries.length > 0 && (
                 <div className="flex items-center gap-1.5 flex-wrap mt-1">
                   {pricedEntries.map(function(e) {
-                    var effective = e.promoPrice != null ? e.promoPrice : e.price;
-                    var others = pricedEntries.filter(function(o) { return o.profile.id !== e.profile.id; }).map(function(o) { return o.promoPrice != null ? o.promoPrice : o.price; });
+                    var effective = (e.promo && e.promo.active) ? e.promo.price : e.price;
+                    var others = pricedEntries.filter(function(o) { return o.profile.id !== e.profile.id; }).map(function(o) { return (o.promo && o.promo.active) ? o.promo.price : o.price; });
                     return (
                       <span key={e.profile.id} className={"text-xs font-semibold px-1.5 py-0.5 rounded leading-tight " + cheapestBadgeClass(effective, others)}>
-                        {e.promoPrice != null ? (
+                        {e.promo && e.promo.active ? (
                           <span className="flex flex-col items-start">
-                            <span>{profileLabel(e.profile, activeProfiles)}: ₪{e.promoPrice.toFixed(2)}*</span>
+                            <span>{profileLabel(e.profile, activeProfiles)}: ₪{e.promo.price.toFixed(2)}*</span>
                             <span className="text-[10px] opacity-70 font-normal">(₪{e.price.toFixed(2)})</span>
                           </span>
                         ) : (
-                          <span>{profileLabel(e.profile, activeProfiles)}: {e.price != null ? "₪" + e.price.toFixed(2) : "לא נמכר כאן"}</span>
+                          <span className="flex flex-col items-start">
+                            <span>{profileLabel(e.profile, activeProfiles)}: {e.price != null ? "₪" + e.price.toFixed(2) : "לא נמכר כאן"}</span>
+                            {e.promo && !e.promo.active && (
+                              <span className="text-[10px] text-orange-500 font-normal">🏷️ {promoTagPhrase(e.promo)}</span>
+                            )}
+                          </span>
                         )}
                       </span>
                     );

@@ -830,6 +830,11 @@ function promotionsFromXml(obj) {
       id: String(promo.PromotionID ?? '').trim(),
       description: String(promo.PromotionDescription || promo.Remarks || '').trim(),
       endDate,
+      // Coupon/club-gated promos (redeem in an app or at the register) don't
+      // apply automatically just by having the item in your cart — showing
+      // one as "this is the price" would be wrong, so this flags them for
+      // exclusion from the automatic per-item price/tag index.
+      additionalIsCoupon: Number(promo.AdditionalIsCoupon) === 1,
       items,
     });
   }
@@ -970,24 +975,30 @@ async function ingestVendorPromotions(vendor, branchId, uid, email) {
   return promotions;
 }
 
-// A per-barcode index of the *simple* single-item promos (minQty <= 1) —
-// "buy X get Y" and other multi-unit deals are deliberately excluded here,
-// since there's no single "the price" to show inline next to a regular
-// price for those. Lets price-lookup paths (getBasketPrices,
-// resolveItemBarcodes) point-read one barcode's promo instead of scanning
-// every promotion, the same way vendorCatalogIndex avoids scanning the
-// whole catalog. When a barcode qualifies via more than one promotion, an
-// explicit discountedPrice wins over a rate-only one (more precise), and
-// the lower/better price wins between same-quality candidates.
+// A per-barcode index of every promo that describes a discount on that
+// barcode *by itself* — every PromotionItem entry carries its own MinQty/
+// DiscountedPrice/DiscountRate independent of whatever else is in the same
+// Promotion or Group, so each is processed on its own; there's no cross-
+// barcode "buying A unlocks B" logic to model here (a real "buy A get B"
+// government feed still describes B's own discount on B's own PromotionItem
+// line — see effectivePromoInfo for how MinQty is then used at read time to
+// decide whether the current cart quantity actually reaches it). Coupon/
+// club-gated promos (AdditionalIsCoupon) are excluded entirely — those need
+// a redemption action Buli can't represent as "this is the price". When a
+// barcode qualifies via more than one promotion, the easiest-to-reach
+// (lowest MinQty) wins, then an explicit discountedPrice over a rate-only
+// one, then the better price between same-quality candidates.
 function promoPricesByBarcode(promotions) {
   const byBarcode = {};
   for (const promo of promotions) {
+    if (promo.additionalIsCoupon) continue;
     for (const item of promo.items) {
-      if (item.minQty > 1) continue;
       if (item.discountedPrice == null && item.discountRate == null) continue;
-      const candidate = { discountedPrice: item.discountedPrice, discountRate: item.discountRate };
+      const candidate = { discountedPrice: item.discountedPrice, discountRate: item.discountRate, minQty: item.minQty || 1 };
       const existing = byBarcode[item.barcode];
       if (!existing) { byBarcode[item.barcode] = candidate; continue; }
+      if (candidate.minQty < existing.minQty) { byBarcode[item.barcode] = candidate; continue; }
+      if (candidate.minQty > existing.minQty) continue;
       if (existing.discountedPrice == null && candidate.discountedPrice != null) { byBarcode[item.barcode] = candidate; continue; }
       if (existing.discountedPrice != null && candidate.discountedPrice != null && candidate.discountedPrice < existing.discountedPrice) { byBarcode[item.barcode] = candidate; continue; }
       if (existing.discountedPrice == null && candidate.discountedPrice == null && candidate.discountRate > existing.discountRate) { byBarcode[item.barcode] = candidate; }
@@ -996,14 +1007,22 @@ function promoPricesByBarcode(promotions) {
   return byBarcode;
 }
 
-// Shared by every price-lookup path — the promo index stores raw fields,
-// not a final price, since a rate-only promo needs that barcode's actual
-// catalog price (not available at ingest time) to become a number.
-function effectivePromoPrice(promo, catalogPrice) {
+// Shared by every price-lookup path. discountedPrice is the price for
+// buying `minQty` units together (a "3 for ₪17.80" bundle), not a per-unit
+// price, so it's divided down here — for the common minQty=1 case that's a
+// no-op. Returns null (not a price) as often as a real number: the caller
+// is expected to compare `minQty` against the item's actual cart quantity
+// to decide whether to show this as the real price yet, or just a "buy N
+// for this price" tag — this function only computes what the number WOULD
+// be, it doesn't know the cart.
+function effectivePromoInfo(promo, catalogPrice) {
   if (!promo) return null;
-  if (promo.discountedPrice != null) return promo.discountedPrice;
-  if (promo.discountRate != null && catalogPrice != null) return Math.round(catalogPrice * (1 - promo.discountRate / 100) * 100) / 100;
-  return null;
+  const minQty = promo.minQty || 1;
+  let price = null;
+  if (promo.discountedPrice != null) price = Math.round((promo.discountedPrice / minQty) * 100) / 100;
+  else if (promo.discountRate != null && catalogPrice != null) price = Math.round(catalogPrice * (1 - promo.discountRate / 100) * 100) / 100;
+  if (price == null) return null;
+  return { price, minQty, discountedPrice: promo.discountedPrice, discountRate: promo.discountRate };
 }
 
 // Calendar-day comparison in Israel local time (not UTC, and not exact
@@ -1256,8 +1275,8 @@ function fuzzyMatchCatalogs(query, catalogsByVendor, promoPricesByVendor) {
     const promoPrices = {};
     for (const vendor of vendorNames) {
       const promo = promoPricesByVendor && promoPricesByVendor[vendor] && promoPricesByVendor[vendor][entry.barcode];
-      const p = effectivePromoPrice(promo, entry.prices[vendor]);
-      if (p != null) promoPrices[vendor] = p;
+      const info = effectivePromoInfo(promo, entry.prices[vendor]);
+      if (info) promoPrices[vendor] = info;
     }
     return {
       barcode: entry.barcode,
@@ -1565,7 +1584,7 @@ exports.getBasketPrices = onCall(
         barcodesByVendor[p.vendor].forEach(barcode => {
           const price = items[barcode]?.price ?? null;
           prices[p.id][barcode] = price;
-          promoPrices[p.id][barcode] = effectivePromoPrice(promoMap[barcode], price);
+          promoPrices[p.id][barcode] = effectivePromoInfo(promoMap[barcode], price);
         });
       }));
       return {
@@ -1591,63 +1610,12 @@ exports.getBasketPrices = onCall(
         ]);
         const price = priceSnap.val() ?? null;
         prices[p.id][barcode] = price;
-        promoPrices[p.id][barcode] = effectivePromoPrice(promoSnap.val(), price);
+        promoPrices[p.id][barcode] = effectivePromoInfo(promoSnap.val(), price);
         readCount++;
       }));
     }));
     await recordPricingUsage({ pointReadCount: readCount }, request.auth.uid, request.auth.token.email);
     return { prices, promoPrices, profiles: activeProfiles };
-  }
-);
-
-exports.getVendorPromotions = onCall(
-  { timeoutSeconds: 300, memory: '1GiB', region: 'europe-west1' },
-  async (request) => {
-    await requireAuthorized(request);
-    // Not list-scoped (this is a standalone screen, not per-list), so it
-    // still shows the union of every group's active profiles — promotions
-    // hasn't been made group-aware in this pass.
-    const activeProfiles = await getUserActiveProfiles(request.auth.uid, 'all');
-    if (activeProfiles.length === 0) return { promotionsByProfile: {}, profiles: activeProfiles };
-
-    // Dedupe by (vendor,branchId) so profiles sharing one branch only fetch
-    // it once — same pattern as getBasketPrices's force-refresh path.
-    const promosByBranch = {};
-    await Promise.all(activeProfiles.map(async (p) => {
-      const key = `${p.vendor}:${p.branchId}`;
-      if (!promosByBranch[key]) {
-        promosByBranch[key] = (async () => {
-          const metaSnap = await db.ref(`vendorPromotionsIndex/${p.vendor}/${p.branchId}/updatedAt`).once('value');
-          const updatedAt = metaSnap.val();
-          if (updatedAt && Date.now() - updatedAt < CATALOG_STALENESS_MS) {
-            const snap = await db.ref(`vendorPromotions/${p.vendor}/${p.branchId}/promotions`).once('value');
-            return snap.val() || [];
-          }
-          return ingestVendorPromotions(p.vendor, p.branchId, request.auth.uid, request.auth.token.email).catch(() => []);
-        })();
-      }
-      return promosByBranch[key];
-    }));
-
-    // Resolve display names only for the barcodes actually referenced —
-    // never pull a whole (multi-MB) catalog just to label a handful of items.
-    const promotionsByProfile = {};
-    await Promise.all(activeProfiles.map(async (p) => {
-      const key = `${p.vendor}:${p.branchId}`;
-      const promotions = await promosByBranch[key];
-      const barcodes = [...new Set(promotions.flatMap(promo => promo.items.map(i => i.barcode)))];
-      const names = {};
-      await Promise.all(barcodes.map(async (barcode) => {
-        const snap = await db.ref(`vendorCatalog/${p.vendor}/${p.branchId}/items/${barcode}/name`).once('value');
-        names[barcode] = snap.val() || '';
-      }));
-      promotionsByProfile[p.id] = promotions.map(promo => ({
-        ...promo,
-        items: promo.items.map(item => ({ ...item, name: names[item.barcode] || '' })),
-      }));
-    }));
-
-    return { promotionsByProfile, profiles: activeProfiles };
   }
 );
 

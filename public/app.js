@@ -1,6 +1,6 @@
     const { useState, useEffect, useRef } = React;
 
-    const VERSION = "v6.5";
+    const VERSION = "v6.6";
 
     // ── CONFIG ────────────────────────────────────────────────────────────────────
     const FIREBASE_CONFIG = {
@@ -1281,6 +1281,21 @@
         }, function() { setFirebaseUsageLoading(false); });
       };
 
+      // Every collapsible sub-section starts closed on a fresh tab, rather
+      // than carrying over whatever was left open from the last time this
+      // or another tab was visited — landing on a tab full of already-open
+      // panels reads as cluttered/confusing.
+      const switchSettingsTab = function(tab) {
+        setSettingsTab(tab);
+        setShowAISettings(false);
+        setShowPricingSettings(false);
+        setShowVendorRequests(false);
+        setShowUsers(false);
+        setShowCosts(false);
+        setShowVendorCatalogs(false);
+        setShowFirebaseUsage(false);
+      };
+
       const [confirmDialog, setConfirmDialog] = useState(null);
       const [autoOpenMajor, setAutoOpenMajorState] = useState(localStorage.getItem("buli_auto_open_major") === "true");
       const [userColor,        setUserColor]        = useState(function() { return getUserColor(user.uid); });
@@ -1805,7 +1820,7 @@
                 <span className="text-xl font-bold">בולי</span>
                 <span className="text-xs text-white/40">{VERSION}</span>
               </div>
-              <button onClick={e => { e.stopPropagation(); setShowSettings(true); }} className="text-white text-xl w-9 h-9 flex items-center justify-center bg-white/20 rounded-full">☰</button>
+              <button onClick={e => { e.stopPropagation(); switchSettingsTab(settingsTab); setShowSettings(true); }} className="text-white text-xl w-9 h-9 flex items-center justify-center bg-white/20 rounded-full">☰</button>
             </div>
             <p className="text-white/60 text-sm mt-1 text-right">שלום, {user.displayName.split(" ")[0]}</p>
           </div>
@@ -2058,10 +2073,10 @@
                   Settings as a whole instead of unpredictably landing on the home
                   screen depending on which sub-panel happened to be open. ── */}
               <div className="flex bg-gray-100 rounded-xl p-1 mb-4">
-                {[["general", "כללי"], ["users", "משתמשים"], ["vendors", "רשתות"]].map(function(tab) {
+                {[["vendors", "רשתות"], ["general", "כללי"], ["users", "משתמשים"]].map(function(tab) {
                   var key = tab[0], label = tab[1];
                   return (
-                    <button key={key} onClick={function() { setSettingsTab(key); }}
+                    <button key={key} onClick={function() { switchSettingsTab(key); }}
                       className={"flex-1 py-2 rounded-lg text-sm font-medium transition " + (settingsTab === key ? "bg-white shadow text-blue-600" : "text-gray-500")}>
                       {label}
                     </button>
@@ -2423,6 +2438,77 @@
                 )}
               </div>
 
+              {/* ── Firebase usage (pricing feature, admin only) ─────────────────── */}
+              {isAdmin && (
+                <div className="mt-3 mb-2">
+                  <button onClick={function() { setShowFirebaseUsage(function(o) { if (!o) loadFirebaseUsage(); return !o; }); }}
+                    className={"w-full flex items-center justify-between px-3 py-3 rounded-xl border transition " + (showFirebaseUsage ? "bg-white border-blue-200" : "bg-gray-50 border-transparent hover:bg-gray-100")}>
+                    <div className="flex items-center gap-3">
+                      <span className="text-lg w-7 text-center">🔥</span>
+                      <div className="text-right">
+                        <div className="text-sm font-semibold text-gray-700">שימוש ב-Firebase (השוואת מחירים)</div>
+                        <div className="text-xs text-gray-400">הערכה גסה, לא החיוב המדויק</div>
+                      </div>
+                    </div>
+                    <span className="text-gray-400 text-xs flex-shrink-0">{showFirebaseUsage ? "▲ הסתר" : "▼ הצג"}</span>
+                  </button>
+                  {showFirebaseUsage && (
+                    <div className="mt-2 bg-white border border-gray-100 rounded-2xl p-4">
+                      {firebaseUsageLoading ? (
+                        <div className="flex justify-center py-6"><Spinner /></div>
+                      ) : !firebaseUsageMonths || firebaseUsageMonths.length === 0 ? (
+                        <p className="text-xs text-gray-400 text-center py-4">אין עדיין נתוני שימוש</p>
+                      ) : (
+                        <div>
+                          {firebaseUsageMonths.map(function(m) {
+                            var expanded = expandedUsageMonth === m.month;
+                            return (
+                              <div key={m.month} className="bg-gray-50 rounded-xl px-3 py-2 mb-2">
+                                <div className="flex items-center justify-between mb-1">
+                                  <span className="text-sm text-gray-700">{m.month}</span>
+                                  <span className="text-sm font-bold text-green-500">≈${m.estimatedUsd.toFixed(3)}</span>
+                                </div>
+                                <div className="text-xs text-gray-400 space-y-0.5">
+                                  <div>רענוני קטלוג מלאים: {m.catalogRefreshCount} ({formatBytes(m.catalogWriteBytes)} נכתבו)</div>
+                                  <div>חיפושי מוצר חדש: {m.catalogReadCount} ({formatBytes(m.catalogReadBytes)} נקראו)</div>
+                                  <div>בדיקות מחיר לפריט קיים: {m.pointReadCount} (זניח)</div>
+                                </div>
+                                {m.byUser && m.byUser.length > 0 && (
+                                  <div className="mt-1.5 pt-1.5 border-t border-gray-200">
+                                    <button onClick={function() { setExpandedUsageMonth(expanded ? null : m.month); }}
+                                      className="text-xs text-blue-500 font-medium">
+                                      {expanded ? "▲ הסתר לפי משתמש" : "▼ פירוט לפי משתמש (" + m.byUser.length + ")"}
+                                    </button>
+                                    {expanded && (
+                                      <div className="mt-1.5 space-y-1">
+                                        {m.byUser.map(function(u) {
+                                          return (
+                                            <div key={u.uid} className="flex items-center justify-between text-xs text-gray-500 bg-white rounded-lg px-2 py-1.5">
+                                              <span className="truncate">{u.email || u.uid}</span>
+                                              <span className="flex-shrink-0 flex items-center gap-2">
+                                                <span>רענונים: {u.catalogRefreshCount}</span>
+                                                <span className="font-semibold text-green-500">≈${u.estimatedUsd.toFixed(3)}</span>
+                                              </span>
+                                            </div>
+                                          );
+                                        })}
+                                      </div>
+                                    )}
+                                  </div>
+                                )}
+                              </div>
+                            );
+                          })}
+                          <p className="text-xs text-gray-400 text-center mt-1">
+                            הערכה בלבד, מבוססת על נפח הנתונים בפועל — לא שאילתה מול חשבון החיוב של Google
+                          </p>
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              )}
+
               <div className="border-t border-gray-100 my-2" />
               <button onClick={function() { auth.signOut(); }} className="w-full text-right px-3 py-3 text-sm text-red-500 hover:bg-red-50 rounded-xl flex items-center gap-3">
                 <span className="text-lg w-7 text-center">🚪</span><span>יציאה</span>
@@ -2642,77 +2728,6 @@
                               </div>
                             );
                           })}
-                        </div>
-                      )}
-                    </div>
-                  )}
-                </div>
-              )}
-
-              {/* ── Firebase usage (pricing feature, admin only) ─────────────────── */}
-              {isAdmin && (
-                <div className="mt-3 mb-2">
-                  <button onClick={function() { setShowFirebaseUsage(function(o) { if (!o) loadFirebaseUsage(); return !o; }); }}
-                    className={"w-full flex items-center justify-between px-3 py-3 rounded-xl border transition " + (showFirebaseUsage ? "bg-white border-blue-200" : "bg-gray-50 border-transparent hover:bg-gray-100")}>
-                    <div className="flex items-center gap-3">
-                      <span className="text-lg w-7 text-center">🔥</span>
-                      <div className="text-right">
-                        <div className="text-sm font-semibold text-gray-700">שימוש ב-Firebase (השוואת מחירים)</div>
-                        <div className="text-xs text-gray-400">הערכה גסה, לא החיוב המדויק</div>
-                      </div>
-                    </div>
-                    <span className="text-gray-400 text-xs flex-shrink-0">{showFirebaseUsage ? "▲ הסתר" : "▼ הצג"}</span>
-                  </button>
-                  {showFirebaseUsage && (
-                    <div className="mt-2 bg-white border border-gray-100 rounded-2xl p-4">
-                      {firebaseUsageLoading ? (
-                        <div className="flex justify-center py-6"><Spinner /></div>
-                      ) : !firebaseUsageMonths || firebaseUsageMonths.length === 0 ? (
-                        <p className="text-xs text-gray-400 text-center py-4">אין עדיין נתוני שימוש</p>
-                      ) : (
-                        <div>
-                          {firebaseUsageMonths.map(function(m) {
-                            var expanded = expandedUsageMonth === m.month;
-                            return (
-                              <div key={m.month} className="bg-gray-50 rounded-xl px-3 py-2 mb-2">
-                                <div className="flex items-center justify-between mb-1">
-                                  <span className="text-sm text-gray-700">{m.month}</span>
-                                  <span className="text-sm font-bold text-green-500">≈${m.estimatedUsd.toFixed(3)}</span>
-                                </div>
-                                <div className="text-xs text-gray-400 space-y-0.5">
-                                  <div>רענוני קטלוג מלאים: {m.catalogRefreshCount} ({formatBytes(m.catalogWriteBytes)} נכתבו)</div>
-                                  <div>חיפושי מוצר חדש: {m.catalogReadCount} ({formatBytes(m.catalogReadBytes)} נקראו)</div>
-                                  <div>בדיקות מחיר לפריט קיים: {m.pointReadCount} (זניח)</div>
-                                </div>
-                                {m.byUser && m.byUser.length > 0 && (
-                                  <div className="mt-1.5 pt-1.5 border-t border-gray-200">
-                                    <button onClick={function() { setExpandedUsageMonth(expanded ? null : m.month); }}
-                                      className="text-xs text-blue-500 font-medium">
-                                      {expanded ? "▲ הסתר לפי משתמש" : "▼ פירוט לפי משתמש (" + m.byUser.length + ")"}
-                                    </button>
-                                    {expanded && (
-                                      <div className="mt-1.5 space-y-1">
-                                        {m.byUser.map(function(u) {
-                                          return (
-                                            <div key={u.uid} className="flex items-center justify-between text-xs text-gray-500 bg-white rounded-lg px-2 py-1.5">
-                                              <span className="truncate">{u.email || u.uid}</span>
-                                              <span className="flex-shrink-0 flex items-center gap-2">
-                                                <span>רענונים: {u.catalogRefreshCount}</span>
-                                                <span className="font-semibold text-green-500">≈${u.estimatedUsd.toFixed(3)}</span>
-                                              </span>
-                                            </div>
-                                          );
-                                        })}
-                                      </div>
-                                    )}
-                                  </div>
-                                )}
-                              </div>
-                            );
-                          })}
-                          <p className="text-xs text-gray-400 text-center mt-1">
-                            הערכה בלבד, מבוססת על נפח הנתונים בפועל — לא שאילתה מול חשבון החיוב של Google
-                          </p>
                         </div>
                       )}
                     </div>

@@ -1,6 +1,6 @@
     const { useState, useEffect, useRef } = React;
 
-    const VERSION = "v6.8";
+    const VERSION = "v6.9";
 
     // ── CONFIG ────────────────────────────────────────────────────────────────────
     const FIREBASE_CONFIG = {
@@ -3565,6 +3565,20 @@
         return function() { ref.off("value", cb); };
       }, [pricingEnabled, user.uid]);
 
+      // A real browse/search view of this list's group's promotions — lazy-
+      // loaded only when opened, not on every list open (could be a lot of
+      // data across a group's active branches).
+      const [showPromoBrowser, setShowPromoBrowser] = useState(false);
+      const [promoBrowserData, setPromoBrowserData] = useState(null); // { promotionsByProfile, profiles } | "error" | null (loading)
+      const [promoSearchQuery, setPromoSearchQuery] = useState("");
+      const openPromoBrowser = function() {
+        setShowPromoBrowser(true);
+        if (promoBrowserData !== null) return;
+        fns.httpsCallable("getVendorPromotions")({ groupId: (list && list.vendorGroupId) || null }).then(function(res) {
+          setPromoBrowserData(res.data);
+        }, function() { setPromoBrowserData("error"); showToast("שגיאה בטעינת מבצעים"); });
+      };
+
       const setListVendorGroup = function(groupId) {
         db.ref("lists/" + listId + "/vendorGroupId").set(groupId || null);
         setList(function(prev) { return prev ? Object.assign({}, prev, { vendorGroupId: groupId }) : prev; });
@@ -4344,6 +4358,15 @@
                 </div>
                 {pricingEnabled && showFilters && (
                   <div className="mt-2 bg-white/10 rounded-2xl p-2.5 space-y-2.5">
+                    {Object.keys(vendorGroups).length > 0 && (
+                      <div>
+                        <div className="text-white/50 text-xs mb-1">קבוצת רשתות</div>
+                        <button onClick={function() { setShowGroupPicker(true); }}
+                          className="text-xs bg-white/15 text-white/70 rounded-full px-2.5 py-1 flex items-center gap-1 w-fit">
+                          🏪 {list.vendorGroupId && vendorGroups[list.vendorGroupId] ? vendorGroups[list.vendorGroupId].name : "כללי"}
+                        </button>
+                      </div>
+                    )}
                     <div>
                       <div className="text-white/50 text-xs mb-1">מי הוסיף</div>
                       <div className="flex bg-white/15 rounded-full p-0.5 gap-0.5 w-fit">
@@ -4390,12 +4413,10 @@
                   className="text-xs text-blue-600 font-medium flex items-center gap-1 disabled:opacity-50">
                   {pricesRefreshing ? <Spinner /> : "🔄"} רענן מחירים
                 </button>
-                {Object.keys(vendorGroups).length > 0 && (
-                  <button onClick={function() { setShowGroupPicker(true); }}
-                    className="text-xs text-gray-500 font-medium border border-gray-200 rounded-full px-2 py-0.5 flex items-center gap-1">
-                    🏪 {list.vendorGroupId && vendorGroups[list.vendorGroupId] ? vendorGroups[list.vendorGroupId].name : "כללי"}
-                  </button>
-                )}
+                <button onClick={openPromoBrowser}
+                  className="text-xs text-gray-500 font-medium border border-gray-200 rounded-full px-2 py-0.5 flex items-center gap-1">
+                  🏷️ מבצעים
+                </button>
               </div>
               <div className="flex items-center gap-2">
                 {pricesLoading ? (
@@ -4551,6 +4572,67 @@
             </Modal>
           )}
 
+          {showPromoBrowser && (
+            <Modal onClose={function() { setShowPromoBrowser(false); }}>
+              <h3 className="text-lg font-bold text-center mb-1">מבצעים</h3>
+              <p className="text-xs text-gray-400 text-center mb-3">
+                {list.vendorGroupId && vendorGroups[list.vendorGroupId] ? vendorGroups[list.vendorGroupId].name : "כללי"}
+              </p>
+              <input value={promoSearchQuery} onChange={function(e) { setPromoSearchQuery(e.target.value); }}
+                placeholder="חפש מוצר, למשל: קפה" dir="rtl"
+                className="w-full border border-gray-200 rounded-xl px-3 py-2 text-sm mb-3" />
+              <div className="max-h-96 overflow-y-auto space-y-2">
+                {promoBrowserData === null ? (
+                  <div className="flex justify-center py-10"><Spinner large /></div>
+                ) : promoBrowserData === "error" ? (
+                  <p className="text-center text-gray-400 text-sm py-10">שגיאה בטעינה</p>
+                ) : (function() {
+                  var profiles = promoBrowserData.profiles || [];
+                  if (profiles.length === 0) return <p className="text-center text-gray-400 text-sm py-10">אין רשתות פעילות בקבוצה זו</p>;
+                  var q = promoSearchQuery.trim();
+                  var results = [];
+                  profiles.forEach(function(profile) {
+                    var promos = (promoBrowserData.promotionsByProfile[profile.id] || []);
+                    promos.forEach(function(promo) {
+                      var matched = !q || promo.items.some(function(it) { return (it.name || "").indexOf(q) !== -1; });
+                      if (matched) results.push({ profile: profile, promo: promo });
+                    });
+                  });
+                  if (results.length === 0) return <p className="text-center text-gray-400 text-sm py-10">{q ? "לא נמצאו מבצעים תואמים" : "אין מבצעים כרגע"}</p>;
+                  var total = results.length;
+                  var capped = results.slice(0, 150);
+                  return (
+                    <React.Fragment>
+                      {!q && total > capped.length && (
+                        <p className="text-xs text-gray-400 text-center mb-2">מוצגים {capped.length} מתוך {total} — חפש כדי לצמצם</p>
+                      )}
+                      {capped.map(function(r, idx) {
+                        return (
+                          <div key={r.profile.id + ":" + r.promo.id + ":" + idx} className="bg-gray-50 rounded-xl px-3 py-2">
+                            <div className="text-xs text-gray-400 mb-1">{profileLabel(r.profile, profiles)}</div>
+                            <div className="flex flex-wrap gap-1.5">
+                              {r.promo.items.map(function(item, i2) {
+                                var phrase = promoTagPhrase(item);
+                                return (
+                                  <span key={i2} className="text-xs bg-blue-50 text-blue-700 rounded-full px-2.5 py-1">
+                                    {item.name || item.barcode}{phrase && (" · " + phrase)}
+                                  </span>
+                                );
+                              })}
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </React.Fragment>
+                  );
+                })()}
+              </div>
+              <button onClick={function() { setShowPromoBrowser(false); }} className="w-full mt-3 py-3 text-gray-400 text-sm font-medium">
+                סגור
+              </button>
+            </Modal>
+          )}
+
           {showProfilePicker && (
             <Modal onClose={function() { setShowProfilePicker(false); }}>
               <h3 className="text-lg font-bold text-center mb-4">סדר קטגוריות לפי חנות</h3>
@@ -4601,12 +4683,13 @@
               <div className="space-y-2 max-h-80 overflow-y-auto">
                 {(function() {
                   var entry = candidatesByName[pickerItem.name];
-                  // The wider set (active + any other chain with cached data)
-                  // for display — pickPriceCandidate below still only confirms
-                  // against entry.vendors (active-only), so picking a match
-                  // never writes a barcode-cache entry for a store you don't
-                  // actually shop at.
-                  var searchedVendors = (entry && entry.allVendors) || (entry && entry.vendors) || [];
+                  // Display only this list's active vendors (entry.vendors) —
+                  // the server's search itself is deliberately widened to any
+                  // other chain with cached data (entry.allVendors) to find
+                  // better name matches, but showing those chains' prices
+                  // here was just confusing noise: you can't confirm a match
+                  // against a vendor that isn't active in this group anyway.
+                  var searchedVendors = (entry && entry.vendors) || [];
                   var list = (entry && entry.list) || [];
                   return (
                     <React.Fragment>

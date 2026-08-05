@@ -1619,6 +1619,60 @@ exports.getBasketPrices = onCall(
   }
 );
 
+// A real browsing/search view of a group's promotions — for finding what's
+// actually on sale right now (so you know what to test the inline tags
+// against, or just what to add to a list), scoped to one list's vendor
+// group rather than every group combined like the removed standalone
+// screen was.
+exports.getVendorPromotions = onCall(
+  { timeoutSeconds: 300, memory: '1GiB', region: 'europe-west1' },
+  async (request) => {
+    await requireAuthorized(request);
+    const { groupId } = request.data || {};
+    const activeProfiles = await getUserActiveProfiles(request.auth.uid, groupId);
+    if (activeProfiles.length === 0) return { promotionsByProfile: {}, profiles: activeProfiles };
+
+    // Dedupe by (vendor,branchId) so profiles sharing one branch only fetch
+    // it once — same pattern as getBasketPrices's force-refresh path.
+    const promosByBranch = {};
+    await Promise.all(activeProfiles.map(async (p) => {
+      const key = `${p.vendor}:${p.branchId}`;
+      if (!promosByBranch[key]) {
+        promosByBranch[key] = (async () => {
+          const metaSnap = await db.ref(`vendorPromotionsIndex/${p.vendor}/${p.branchId}/updatedAt`).once('value');
+          const updatedAt = metaSnap.val();
+          if (updatedAt && Date.now() - updatedAt < CATALOG_STALENESS_MS) {
+            const snap = await db.ref(`vendorPromotions/${p.vendor}/${p.branchId}/promotions`).once('value');
+            return snap.val() || [];
+          }
+          return ingestVendorPromotions(p.vendor, p.branchId, request.auth.uid, request.auth.token.email).catch(() => []);
+        })();
+      }
+      return promosByBranch[key];
+    }));
+
+    // Resolve display names only for the barcodes actually referenced —
+    // never pull a whole (multi-MB) catalog just to label a handful of items.
+    const promotionsByProfile = {};
+    await Promise.all(activeProfiles.map(async (p) => {
+      const key = `${p.vendor}:${p.branchId}`;
+      const promotions = await promosByBranch[key];
+      const barcodes = [...new Set(promotions.flatMap(promo => promo.items.map(i => i.barcode)))];
+      const names = {};
+      await Promise.all(barcodes.map(async (barcode) => {
+        const snap = await db.ref(`vendorCatalog/${p.vendor}/${p.branchId}/items/${barcode}/name`).once('value');
+        names[barcode] = snap.val() || '';
+      }));
+      promotionsByProfile[p.id] = promotions.map(promo => ({
+        ...promo,
+        items: promo.items.map(item => ({ ...item, name: names[item.barcode] || '' })),
+      }));
+    }));
+
+    return { promotionsByProfile, profiles: activeProfiles };
+  }
+);
+
 exports.setUserPricingEnabled = onCall(
   { timeoutSeconds: 30, memory: '128MiB', region: 'europe-west1' },
   async (request) => {

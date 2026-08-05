@@ -1,6 +1,6 @@
     const { useState, useEffect, useRef } = React;
 
-    const VERSION = "v6.4";
+    const VERSION = "v6.5";
 
     // ── CONFIG ────────────────────────────────────────────────────────────────────
     const FIREBASE_CONFIG = {
@@ -918,6 +918,14 @@
         return Object.values(vendorProfiles).filter(function(p) { return p && profileActiveInGroup(p, groupId); }).length;
       };
       const activeVendorProfileCount = activeCountInGroup(selectedGroupId);
+      // Shown as the denominator everywhere a group's active count is
+      // displayed — deliberately the total pool size (every branch added
+      // under "כללי"), not the admin cap. The cap still limits how many can
+      // actually be toggled active at once, but showing it as X/cap read as
+      // "wrong" whenever the cap had changed since some were activated,
+      // since active count could then legitimately exceed it. Pool size is
+      // always a real, visible, easy-to-verify number instead.
+      const vendorPoolSize = Object.keys(vendorProfiles).length;
       // [{id, name, activeCount}], default group (id null) always first.
       // Profiles are one shared pool now — a group's "count" is just how
       // many of that pool are toggled active for it, not a member list.
@@ -2458,7 +2466,7 @@
                                   <span onClick={function(e) { e.stopPropagation(); setRenamingGroupId(g.id); setRenameGroupInput(g.name === "כללי" ? "" : g.name); }}
                                     className="text-gray-300 hover:text-blue-500 text-xs">✏️</span>
                                 </div>
-                                <div className="text-xs text-gray-400">{g.activeCount} / {maxActiveVendors} פעילים</div>
+                                <div className="text-xs text-gray-400">{g.activeCount} / {vendorPoolSize} פעילים</div>
                               </div>
                             </div>
                             <span className="text-gray-400 text-xs flex-shrink-0">{isOpen ? "▲ הסתר" : "▼ הצג"}</span>
@@ -2485,7 +2493,7 @@
                                     {resettingToDefault ? <Spinner /> : "↩️"} החזר לרשימת ברירת המחדל
                                   </button>
                                   <div className="text-xs text-gray-400">
-                                    פעילים להשוואה: {activeVendorProfileCount} / {maxActiveVendors}
+                                    פעילים להשוואה: {activeVendorProfileCount} / {vendorPoolSize}
                                   </div>
                                 </div>
                               )}

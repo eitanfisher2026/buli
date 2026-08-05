@@ -1,6 +1,6 @@
     const { useState, useEffect, useRef } = React;
 
-    const VERSION = "v6.6";
+    const VERSION = "v6.7";
 
     // ── CONFIG ────────────────────────────────────────────────────────────────────
     const FIREBASE_CONFIG = {
@@ -378,14 +378,20 @@
     // barcode for. Skips profiles whose price hasn't been fetched yet rather
     // than showing a misleading "not sold here" before the real answer
     // arrives.
-    function itemProfilePrices(item, activeProfiles, priceMap) {
+    function itemProfilePrices(item, activeProfiles, priceMap, promoMap) {
       var out = [];
       activeProfiles.forEach(function(p) {
         var bc = itemVendorBarcode(item, p.vendor);
         if (!bc) return;
         var vendorPrices = priceMap[p.id];
         if (!vendorPrices || !(bc in vendorPrices)) return;
-        out.push({ profile: p, price: vendorPrices[bc] });
+        var price = vendorPrices[bc];
+        var promoPrice = promoMap && promoMap[p.id] ? promoMap[p.id][bc] : null;
+        // Only ever show a promo as the headline price when it's genuinely
+        // cheaper — a rate-only promo computed off a stale catalog price, or
+        // bad source data, could otherwise show a "discount" that isn't one.
+        if (promoPrice != null && price != null && promoPrice >= price) promoPrice = null;
+        out.push({ profile: p, price: price, promoPrice: promoPrice });
       });
       return out;
     }
@@ -3603,6 +3609,10 @@
       // active vendor+branch profiles (see getBasketPrices' `profiles` field).
       const [activeProfiles, setActiveProfiles] = useState(function() { return (priceCacheEntry && priceCacheEntry.activeProfiles) || []; });
       const [priceMap,       setPriceMap]       = useState(function() { return (priceCacheEntry && priceCacheEntry.priceMap) || {}; });
+      // { [profileId]: { [barcode]: promoPrice } } — only ever set for
+      // barcodes with a real single-item promo cheaper than the catalog
+      // price (see itemProfilePrices); everything else is just absent.
+      const [promoMap,       setPromoMap]       = useState(function() { return (priceCacheEntry && priceCacheEntry.promoMap) || {}; });
       // { [itemName]: { vendors: [chainIds searched], list: [candidates] } }
       const [candidatesByName, setCandidatesByName] = useState({});
       const [pickerItem,      setPickerItem]      = useState(null);
@@ -3635,6 +3645,7 @@
         priceCacheByList[listId] = undefined;
         setActiveProfiles([]);
         setPriceMap({});
+        setPromoMap({});
         setShowGroupPicker(false);
       };
 
@@ -3794,11 +3805,18 @@
         if (!hasAny) return Promise.resolve(null);
         return fns.httpsCallable("getBasketPrices")({ barcodesByVendor: barcodesByVendor, force: !!force, groupId: (list && list.vendorGroupId) || null }).then(function(res) {
           var byProfile = res.data.prices || {};
+          var byProfilePromo = res.data.promoPrices || {};
           var nextProfiles = res.data.profiles || activeProfiles;
+          var nextPriceMap;
           setPriceMap(function(prev) {
+            nextPriceMap = Object.assign({}, prev);
+            Object.keys(byProfile).forEach(function(pid) { nextPriceMap[pid] = Object.assign({}, nextPriceMap[pid], byProfile[pid]); });
+            return nextPriceMap;
+          });
+          setPromoMap(function(prev) {
             var next = Object.assign({}, prev);
-            Object.keys(byProfile).forEach(function(pid) { next[pid] = Object.assign({}, next[pid], byProfile[pid]); });
-            priceCacheByList[listId] = { priceMap: next, activeProfiles: nextProfiles };
+            Object.keys(byProfilePromo).forEach(function(pid) { next[pid] = Object.assign({}, next[pid], byProfilePromo[pid]); });
+            priceCacheByList[listId] = { priceMap: nextPriceMap, promoMap: next, activeProfiles: nextProfiles };
             return next;
           });
           if (res.data.profiles) setActiveProfiles(res.data.profiles);
@@ -4086,14 +4104,26 @@
           var vendorBarcodes = {};
           vendorsToConfirm.forEach(function(v) { vendorBarcodes[v] = candidate.barcode; });
           applyItemMatch(item, vendorBarcodes, candidate.name);
-          // The candidate already carries confirmed vendors' prices from the
-          // merged search — apply directly, no follow-up fetch needed.
+          // The candidate already carries confirmed vendors' prices (and any
+          // promo price) from the merged search — apply directly, no
+          // follow-up fetch needed.
           setPriceMap(function(prev) {
             var next = Object.assign({}, prev);
             activeProfiles.forEach(function(p) {
               if (vendorsToConfirm.indexOf(p.vendor) === -1) return;
               next[p.id] = Object.assign({}, next[p.id]);
               next[p.id][candidate.barcode] = candidate.prices[p.vendor];
+            });
+            return next;
+          });
+          setPromoMap(function(prev) {
+            var next = Object.assign({}, prev);
+            activeProfiles.forEach(function(p) {
+              if (vendorsToConfirm.indexOf(p.vendor) === -1) return;
+              var promoPrice = candidate.promoPrices && candidate.promoPrices[p.vendor];
+              if (promoPrice == null) return;
+              next[p.id] = Object.assign({}, next[p.id]);
+              next[p.id][candidate.barcode] = promoPrice;
             });
             return next;
           });
@@ -4263,7 +4293,7 @@
             <div className="space-y-2">
               {[...arr].sort((a,b) => (a.name||"").localeCompare(b.name||"","he")).map(item =>
                 <ItemRow key={item.id} item={item} canEdit={canEditItem(item)} onToggle={toggle} onDelete={remove} onEdit={() => editFn(item)} onUpdateNote={updateNote} isTasks={false} currentUserId={user.uid}
-                  priceMap={priceMap} activeProfiles={activeProfiles} singleShopId={singleShopId} priceCandidates={candidatesByName[item.name]} onPickPrice={() => setPickerItem(item)} isResolving={resolvingNames.has(item.name)} />
+                  priceMap={priceMap} promoMap={promoMap} activeProfiles={activeProfiles} singleShopId={singleShopId} priceCandidates={candidatesByName[item.name]} onPickPrice={() => setPickerItem(item)} isResolving={resolvingNames.has(item.name)} />
               )}
             </div>
           );
@@ -4285,7 +4315,7 @@
             </div>
             <div className="space-y-2">
               {group.items.map(item => <ItemRow key={item.id} item={item} canEdit={canEditItem(item)} onToggle={toggle} onDelete={remove} onEdit={() => editFn(item)} onUpdateNote={updateNote} isTasks={false} currentUserId={user.uid}
-                  priceMap={priceMap} activeProfiles={activeProfiles} singleShopId={singleShopId} priceCandidates={candidatesByName[item.name]} onPickPrice={() => setPickerItem(item)} isResolving={resolvingNames.has(item.name)} />)}
+                  priceMap={priceMap} promoMap={promoMap} activeProfiles={activeProfiles} singleShopId={singleShopId} priceCandidates={candidatesByName[item.name]} onPickPrice={() => setPickerItem(item)} isResolving={resolvingNames.has(item.name)} />)}
             </div>
           </div>
         ));
@@ -4491,7 +4521,7 @@
                 <button onClick={clearAllFilters} className="mt-4 text-sm text-blue-500 bg-blue-50 px-5 py-2 rounded-full">נקה פילטרים</button>
               </div>
             ) : viewMode === "table" && pricingEnabled && !isTasks && !isNotes ? (
-              <PriceComparisonTable items={orderByCategory(items.filter(function(i) { return !i.done; }))} activeProfiles={activeProfiles} priceMap={priceMap} canEditItem={canEditItem} onEditItem={editFn} />
+              <PriceComparisonTable items={orderByCategory(items.filter(function(i) { return !i.done; }))} activeProfiles={activeProfiles} priceMap={priceMap} promoMap={promoMap} canEditItem={canEditItem} onEditItem={editFn} />
             ) : isTasks ? (
               <>
                 {renderGroup(notDone)}
@@ -4676,11 +4706,25 @@
                               {searchedVendors.map(function(v) {
                                 var meta = VENDOR_LIST.find(function(x) { return x.id === v; });
                                 var price = c.prices ? c.prices[v] : null;
+                                var promoPrice = c.promoPrices ? c.promoPrices[v] : null;
+                                if (promoPrice != null && price != null && promoPrice >= price) promoPrice = null;
+                                var effective = promoPrice != null ? promoPrice : price;
                                 var others = searchedVendors.filter(function(o) { return o !== v; })
-                                  .map(function(o) { return c.prices ? c.prices[o] : null; }).filter(function(x) { return x != null; });
+                                  .map(function(o) {
+                                    var op = c.prices ? c.prices[o] : null;
+                                    var opromo = c.promoPrices ? c.promoPrices[o] : null;
+                                    return opromo != null ? opromo : op;
+                                  }).filter(function(x) { return x != null; });
                                 return (
-                                  <span key={v} className={"text-xs font-semibold px-1.5 py-0.5 rounded " + cheapestBadgeClass(price, others)}>
-                                    {meta ? meta.label : v}: {price != null ? "₪" + Number(price).toFixed(2) : "לא נמכר כאן"}
+                                  <span key={v} className={"text-xs font-semibold px-1.5 py-0.5 rounded leading-tight " + cheapestBadgeClass(effective, others)}>
+                                    {promoPrice != null ? (
+                                      <span className="flex flex-col items-start">
+                                        <span>{meta ? meta.label : v}: ₪{promoPrice.toFixed(2)}*</span>
+                                        <span className="text-[10px] opacity-70 font-normal">(₪{Number(price).toFixed(2)})</span>
+                                      </span>
+                                    ) : (
+                                      <span>{meta ? meta.label : v}: {price != null ? "₪" + Number(price).toFixed(2) : "לא נמכר כאן"}</span>
+                                    )}
                                   </span>
                                 );
                               })}
@@ -4764,7 +4808,7 @@
     // shows a price, but not "how many of my items are even in this basket."
     // Sticky first column + horizontal scroll so it still works on mobile
     // with several columns.
-    function PriceComparisonTable({ items, activeProfiles, priceMap, canEditItem, onEditItem }) {
+    function PriceComparisonTable({ items, activeProfiles, priceMap, promoMap, canEditItem, onEditItem }) {
       var notDoneItems = items.filter(function(i) { return !i.done; });
       var doneItems = items.filter(function(i) { return i.done; });
       var ordered = notDoneItems.concat(doneItems);
@@ -4773,9 +4817,12 @@
       activeProfiles.forEach(function(p) { totals[p.id] = { sum: 0, count: 0 }; });
       notDoneItems.forEach(function(item) {
         var qty = item.quantity || 1;
-        itemProfilePrices(item, activeProfiles, priceMap).forEach(function(e) {
+        // The total should reflect what you'd actually pay — a promo price,
+        // when this item has one, not the regular catalog price next to it.
+        itemProfilePrices(item, activeProfiles, priceMap, promoMap).forEach(function(e) {
           if (e.price == null) return;
-          totals[e.profile.id].sum += e.price * qty;
+          var effective = e.promoPrice != null ? e.promoPrice : e.price;
+          totals[e.profile.id].sum += effective * qty;
           totals[e.profile.id].count++;
         });
       });
@@ -4797,9 +4844,9 @@
             </thead>
             <tbody>
               {ordered.map(function(item) {
-                var priced = itemProfilePrices(item, activeProfiles, priceMap);
+                var priced = itemProfilePrices(item, activeProfiles, priceMap, promoMap);
                 var byId = {};
-                priced.forEach(function(e) { byId[e.profile.id] = e.price; });
+                priced.forEach(function(e) { byId[e.profile.id] = e; });
                 var qty = item.quantity || 1;
                 var editable = !!(onEditItem && (!canEditItem || canEditItem(item)));
                 return (
@@ -4813,18 +4860,27 @@
                       var vendorPrices = priceMap[p.id];
                       var fetched = !!(bc && vendorPrices && (bc in vendorPrices));
                       var price = fetched ? vendorPrices[bc] : null;
-                      var others = priced.filter(function(e) { return e.profile.id !== p.id; }).map(function(e) { return e.price; });
-                      var cellClass = !bc ? "text-gray-300" : !fetched ? "text-gray-300" : cheapestTextClass(price, others);
+                      var promoPrice = byId[p.id] ? byId[p.id].promoPrice : null;
+                      var effectivePrice = promoPrice != null ? promoPrice : price;
+                      var others = priced.filter(function(e) { return e.profile.id !== p.id; }).map(function(e) { return e.promoPrice != null ? e.promoPrice : e.price; });
+                      var cellClass = !bc ? "text-gray-300" : !fetched ? "text-gray-300" : cheapestTextClass(effectivePrice, others);
                       return (
                         <td key={p.id} className={"text-center px-3 py-2 border-b border-gray-100 " + cellClass}>
                           {!bc ? "—" : !fetched ? "…" : price != null ? (
                             <div className="leading-tight">
-                              <div>₪{(price * qty).toFixed(2)}</div>
+                              {promoPrice != null ? (
+                                <div>
+                                  <div className="text-orange-600 font-bold">₪{(promoPrice * qty).toFixed(2)}*</div>
+                                  <div className="text-[10px] text-gray-400">(₪{(price * qty).toFixed(2)})</div>
+                                </div>
+                              ) : (
+                                <div>₪{(price * qty).toFixed(2)}</div>
+                              )}
                               {/* The line total above is what actually feeds
                                   the "סה"כ" sum at the bottom — this breakdown
                                   is what makes that arithmetic visible instead
                                   of asking the user to trust a hidden ×qty. */}
-                              {qty !== 1 && <div className="text-[10px] text-gray-400">{qty}x{price.toFixed(2)}</div>}
+                              {qty !== 1 && <div className="text-[10px] text-gray-400">{qty}x{effectivePrice.toFixed(2)}</div>}
                             </div>
                           ) : "אין"}
                         </td>
@@ -4854,7 +4910,7 @@
       );
     }
 
-    function ItemRow({ item, canEdit, onToggle, onDelete, onEdit, onUpdateNote, isTasks, currentUserId, priceMap, activeProfiles, singleShopId, priceCandidates, onPickPrice, isResolving }) {
+    function ItemRow({ item, canEdit, onToggle, onDelete, onEdit, onUpdateNote, isTasks, currentUserId, priceMap, promoMap, activeProfiles, singleShopId, priceCandidates, onPickPrice, isResolving }) {
       const [editingNote, setEditingNote] = useState(false);
       const [noteVal,     setNoteVal]     = useState(item.note || "");
 
@@ -4870,7 +4926,7 @@
       const qtyUnit = (!isTasks && item.unit && item.unit !== "יחידות") ? item.unit : "";
       const qty = [qtyCount, qtyUnit].filter(Boolean).join(" ");
       const dateStr = isTasks ? formatDueDate(item.dueDate) : "";
-      const pricedEntries = (!isTasks && activeProfiles) ? itemProfilePrices(item, activeProfiles, priceMap || {}) : [];
+      const pricedEntries = (!isTasks && activeProfiles) ? itemProfilePrices(item, activeProfiles, priceMap || {}, promoMap || {}) : [];
 
       return (
         <div className="bg-white rounded-xl border border-gray-100 overflow-hidden">
@@ -4906,19 +4962,34 @@
                   if (!e) return null;
                   return (
                     <div className="mt-1">
-                      <span className="text-xs font-semibold text-gray-800">
-                        {e.price != null ? "₪" + e.price.toFixed(2) : "לא נמכר כאן"}
-                      </span>
+                      {e.promoPrice != null ? (
+                        <span className="text-xs font-semibold text-orange-600 flex flex-col items-start leading-tight">
+                          <span>₪{e.promoPrice.toFixed(2)}*</span>
+                          <span className="text-[10px] text-gray-400 font-normal">(₪{e.price.toFixed(2)})</span>
+                        </span>
+                      ) : (
+                        <span className="text-xs font-semibold text-gray-800">
+                          {e.price != null ? "₪" + e.price.toFixed(2) : "לא נמכר כאן"}
+                        </span>
+                      )}
                     </div>
                   );
                 })()
               ) : !isTasks && pricedEntries.length > 0 && (
                 <div className="flex items-center gap-1.5 flex-wrap mt-1">
                   {pricedEntries.map(function(e) {
-                    var others = pricedEntries.filter(function(o) { return o.profile.id !== e.profile.id; }).map(function(o) { return o.price; });
+                    var effective = e.promoPrice != null ? e.promoPrice : e.price;
+                    var others = pricedEntries.filter(function(o) { return o.profile.id !== e.profile.id; }).map(function(o) { return o.promoPrice != null ? o.promoPrice : o.price; });
                     return (
-                      <span key={e.profile.id} className={"text-xs font-semibold px-1.5 py-0.5 rounded " + cheapestBadgeClass(e.price, others)}>
-                        {profileLabel(e.profile, activeProfiles)}: {e.price != null ? "₪" + e.price.toFixed(2) : "לא נמכר כאן"}
+                      <span key={e.profile.id} className={"text-xs font-semibold px-1.5 py-0.5 rounded leading-tight " + cheapestBadgeClass(effective, others)}>
+                        {e.promoPrice != null ? (
+                          <span className="flex flex-col items-start">
+                            <span>{profileLabel(e.profile, activeProfiles)}: ₪{e.promoPrice.toFixed(2)}*</span>
+                            <span className="text-[10px] opacity-70 font-normal">(₪{e.price.toFixed(2)})</span>
+                          </span>
+                        ) : (
+                          <span>{profileLabel(e.profile, activeProfiles)}: {e.price != null ? "₪" + e.price.toFixed(2) : "לא נמכר כאן"}</span>
+                        )}
                       </span>
                     );
                   })}

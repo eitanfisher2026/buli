@@ -964,9 +964,46 @@ async function ingestVendorPromotions(vendor, branchId, uid, email) {
   await db.ref().update({
     [`vendorPromotions/${vendor}/${branchId}`]: { promotions, updatedAt, sizeBytes },
     [`vendorPromotionsIndex/${vendor}/${branchId}`]: { updatedAt, sizeBytes, promotionCount: promotions.length },
+    [`vendorPromoPrices/${vendor}/${branchId}`]: promoPricesByBarcode(promotions),
   });
   await recordPricingUsage({ catalogWriteBytes: sizeBytes, catalogRefreshCount: 1 }, uid, email);
   return promotions;
+}
+
+// A per-barcode index of the *simple* single-item promos (minQty <= 1) —
+// "buy X get Y" and other multi-unit deals are deliberately excluded here,
+// since there's no single "the price" to show inline next to a regular
+// price for those. Lets price-lookup paths (getBasketPrices,
+// resolveItemBarcodes) point-read one barcode's promo instead of scanning
+// every promotion, the same way vendorCatalogIndex avoids scanning the
+// whole catalog. When a barcode qualifies via more than one promotion, an
+// explicit discountedPrice wins over a rate-only one (more precise), and
+// the lower/better price wins between same-quality candidates.
+function promoPricesByBarcode(promotions) {
+  const byBarcode = {};
+  for (const promo of promotions) {
+    for (const item of promo.items) {
+      if (item.minQty > 1) continue;
+      if (item.discountedPrice == null && item.discountRate == null) continue;
+      const candidate = { discountedPrice: item.discountedPrice, discountRate: item.discountRate };
+      const existing = byBarcode[item.barcode];
+      if (!existing) { byBarcode[item.barcode] = candidate; continue; }
+      if (existing.discountedPrice == null && candidate.discountedPrice != null) { byBarcode[item.barcode] = candidate; continue; }
+      if (existing.discountedPrice != null && candidate.discountedPrice != null && candidate.discountedPrice < existing.discountedPrice) { byBarcode[item.barcode] = candidate; continue; }
+      if (existing.discountedPrice == null && candidate.discountedPrice == null && candidate.discountRate > existing.discountRate) { byBarcode[item.barcode] = candidate; }
+    }
+  }
+  return byBarcode;
+}
+
+// Shared by every price-lookup path — the promo index stores raw fields,
+// not a final price, since a rate-only promo needs that barcode's actual
+// catalog price (not available at ingest time) to become a number.
+function effectivePromoPrice(promo, catalogPrice) {
+  if (!promo) return null;
+  if (promo.discountedPrice != null) return promo.discountedPrice;
+  if (promo.discountRate != null && catalogPrice != null) return Math.round(catalogPrice * (1 - promo.discountRate / 100) * 100) / 100;
+  return null;
 }
 
 // Calendar-day comparison in Israel local time (not UTC, and not exact
@@ -1173,7 +1210,7 @@ function scoreCatalogName(name, q, qTokens) {
 // reconcile afterward. Every candidate already carries whichever vendors'
 // prices exist for that exact product, so picking one is the final answer —
 // no follow-up price fetch is needed.
-function fuzzyMatchCatalogs(query, catalogsByVendor) {
+function fuzzyMatchCatalogs(query, catalogsByVendor, promoPricesByVendor) {
   const q = normalizeItemName(query);
   const qTokens = q.split(' ').filter(Boolean);
   const vendorNames = Object.keys(catalogsByVendor);
@@ -1215,14 +1252,23 @@ function fuzzyMatchCatalogs(query, catalogsByVendor) {
     }
   }
 
-  const list = Object.values(byBarcode).map(entry => ({
-    barcode: entry.barcode,
-    name: entry.name,
-    unit: entry.unit,
-    manufacturer: entry.manufacturer,
-    score: entry.bestScore + (vendorNames.length > 1 && vendorNames.every(v => entry.prices[v] != null) ? 20 : 0),
-    prices: entry.prices,
-  }));
+  const list = Object.values(byBarcode).map(entry => {
+    const promoPrices = {};
+    for (const vendor of vendorNames) {
+      const promo = promoPricesByVendor && promoPricesByVendor[vendor] && promoPricesByVendor[vendor][entry.barcode];
+      const p = effectivePromoPrice(promo, entry.prices[vendor]);
+      if (p != null) promoPrices[vendor] = p;
+    }
+    return {
+      barcode: entry.barcode,
+      name: entry.name,
+      unit: entry.unit,
+      manufacturer: entry.manufacturer,
+      score: entry.bestScore + (vendorNames.length > 1 && vendorNames.every(v => entry.prices[v] != null) ? 20 : 0),
+      prices: entry.prices,
+      promoPrices: promoPrices,
+    };
+  });
   list.sort((a, b) => b.score - a.score);
   // A generic single-word query ("במבה") legitimately matches dozens of real
   // SKUs (every flavor and every pack size), most of which tie on score —
@@ -1353,9 +1399,15 @@ exports.resolveItemBarcodes = onCall(
     if (vendorIds.length === 0) throw new HttpsError('invalid-argument', 'no active vendors');
 
     const catalogsByVendor = {};
+    const promoPricesByVendor = {};
     await Promise.all(vendorIds.map(async (vendor) => {
       const p = repProfileByVendor[vendor];
-      catalogsByVendor[vendor] = await ensureFreshCatalog(vendor, p.branchId, false, request.auth.uid, request.auth.token.email).catch(() => ({}));
+      const [items, promoSnap] = await Promise.all([
+        ensureFreshCatalog(vendor, p.branchId, false, request.auth.uid, request.auth.token.email).catch(() => ({})),
+        db.ref(`vendorPromoPrices/${vendor}/${p.branchId}`).once('value'),
+      ]);
+      catalogsByVendor[vendor] = items;
+      promoPricesByVendor[vendor] = promoSnap.val() || {};
     }));
 
     // Widen the SEARCH (not the price comparison) to any other integrated
@@ -1398,7 +1450,7 @@ exports.resolveItemBarcodes = onCall(
       // with cached data) — missingVendors itself stays scoped to active
       // vendors only, since that's what the client needs to know "still
       // needs resolving for my own price comparison."
-      results[name] = { barcodes, missingVendors, searchedVendors, candidates: fuzzyMatchCatalogs(name, searchCatalogsByVendor) };
+      results[name] = { barcodes, missingVendors, searchedVendors, candidates: fuzzyMatchCatalogs(name, searchCatalogsByVendor, promoPricesByVendor) };
     }
     return { results };
   }
@@ -1463,7 +1515,8 @@ exports.getBasketPrices = onCall(
     const activeProfiles = await getUserActiveProfiles(request.auth.uid, groupId);
     const relevantProfiles = activeProfiles.filter(p => Array.isArray(barcodesByVendor[p.vendor]) && barcodesByVendor[p.vendor].length > 0);
     const prices = {};
-    if (relevantProfiles.length === 0) return { prices, profiles: activeProfiles };
+    const promoPrices = {};
+    if (relevantProfiles.length === 0) return { prices, promoPrices, profiles: activeProfiles };
 
     if (force) {
       // Explicit "רענן מחירים" action — a real re-fetch from the vendor is
@@ -1474,7 +1527,11 @@ exports.getBasketPrices = onCall(
       // case serves the already-cached items instead and reports back that
       // nothing changed. Dedupe by (vendor,branchId) so two profiles
       // sharing one branch don't trigger the re-ingest (or the check) twice.
+      // Promotions refresh alongside the catalog on the same schedule —
+      // "refresh prices" means "refresh what I'll see here", promo prices
+      // included.
       const catalogByBranch = {};
+      const promoByBranch = {};
       const refreshedBranches = [];
       const skippedBranches = [];
       await Promise.all(relevantProfiles.map(async (p) => {
@@ -1491,12 +1548,28 @@ exports.getBasketPrices = onCall(
             return ingestVendorCatalog(p.vendor, p.branchId, request.auth.uid, request.auth.token.email).catch(() => ({}));
           })();
         }
+        if (!promoByBranch[key]) {
+          promoByBranch[key] = (async () => {
+            const metaSnap = await db.ref(`vendorPromotionsIndex/${p.vendor}/${p.branchId}/updatedAt`).once('value');
+            if (!sameIsraelDate(metaSnap.val(), Date.now())) {
+              await ingestVendorPromotions(p.vendor, p.branchId, request.auth.uid, request.auth.token.email).catch(() => {});
+            }
+            const snap = await db.ref(`vendorPromoPrices/${p.vendor}/${p.branchId}`).once('value');
+            return snap.val() || {};
+          })();
+        }
         const items = await catalogByBranch[key];
+        const promoMap = await promoByBranch[key];
         prices[p.id] = {};
-        barcodesByVendor[p.vendor].forEach(barcode => { prices[p.id][barcode] = items[barcode]?.price ?? null; });
+        promoPrices[p.id] = {};
+        barcodesByVendor[p.vendor].forEach(barcode => {
+          const price = items[barcode]?.price ?? null;
+          prices[p.id][barcode] = price;
+          promoPrices[p.id][barcode] = effectivePromoPrice(promoMap[barcode], price);
+        });
       }));
       return {
-        prices, profiles: activeProfiles,
+        prices, promoPrices, profiles: activeProfiles,
         refreshResult: { refreshedCount: refreshedBranches.length, skippedSameDayCount: skippedBranches.length },
       };
     }
@@ -1504,18 +1577,26 @@ exports.getBasketPrices = onCall(
     // Default path runs on every list open — must never download a whole
     // catalog (thousands of items, real RTDB bandwidth cost) or trigger a
     // synchronous vendor re-fetch (30-50s) just to read a handful of prices.
-    // Point-reads cost the same regardless of how big the catalog is.
+    // Point-reads cost the same regardless of how big the catalog is. The
+    // promo point-read is a tiny sibling entry (see vendorPromoPrices), not
+    // the multi-MB catalog, so this doesn't meaningfully add to that cost.
     let readCount = 0;
     await Promise.all(relevantProfiles.map(async (p) => {
       prices[p.id] = {};
+      promoPrices[p.id] = {};
       await Promise.all(barcodesByVendor[p.vendor].map(async (barcode) => {
-        const snap = await db.ref(`vendorCatalog/${p.vendor}/${p.branchId}/items/${barcode}/price`).once('value');
-        prices[p.id][barcode] = snap.val() ?? null;
+        const [priceSnap, promoSnap] = await Promise.all([
+          db.ref(`vendorCatalog/${p.vendor}/${p.branchId}/items/${barcode}/price`).once('value'),
+          db.ref(`vendorPromoPrices/${p.vendor}/${p.branchId}/${barcode}`).once('value'),
+        ]);
+        const price = priceSnap.val() ?? null;
+        prices[p.id][barcode] = price;
+        promoPrices[p.id][barcode] = effectivePromoPrice(promoSnap.val(), price);
         readCount++;
       }));
     }));
     await recordPricingUsage({ pointReadCount: readCount }, request.auth.uid, request.auth.token.email);
-    return { prices, profiles: activeProfiles };
+    return { prices, promoPrices, profiles: activeProfiles };
   }
 );
 

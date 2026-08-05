@@ -1059,7 +1059,7 @@ async function fetchOwnerVendorProfiles() {
   const all = snap.val() || {};
   return Object.entries(all)
     .filter(([, p]) => p && VENDOR_IDS.includes(p.vendor) && p.branchId)
-    .map(([, p]) => ({ vendor: p.vendor, branchId: String(p.branchId), active: !!p.active }));
+    .map(([, p]) => ({ vendor: p.vendor, branchId: String(p.branchId), active: profileActiveInGroup(p, null) }));
 }
 
 // A "profile" is one vendor chain + one specific branch the user tracks —
@@ -1068,23 +1068,40 @@ async function fetchOwnerVendorProfiles() {
 // to the admin-set cap are ever actually queried here, regardless of how
 // many the client has marked active, so the cost/latency ceiling always
 // holds no matter what the client sends.
+// Vendor+branch profiles are one shared pool per user (added once, from the
+// default group's branch picker) — a custom group doesn't get its own copy,
+// it just toggles which of the pool's profiles are active *for that group*.
+// `activeIn` is the current shape: { [groupId]: true }, groupId 'default'
+// for the always-present built-in group. Two older shapes are still read
+// for backward compatibility with data written before this existed: a
+// single `groupId` + `active` boolean (this feature's first iteration), and
+// the original pre-groups shape (`active` only, implicitly the default
+// group) — neither is written anymore, only read.
+function profileActiveInGroup(p, groupId) {
+  const gid = groupId || 'default';
+  if (p.activeIn) return !!p.activeIn[gid];
+  return (p.groupId || 'default') === gid && !!p.active;
+}
+function profileActiveAnywhere(p) {
+  if (p.activeIn) return Object.keys(p.activeIn).some((g) => p.activeIn[g]);
+  return !!p.active;
+}
+
 async function getUserActiveProfiles(uid, groupId) {
   const [profilesSnap, cap] = await Promise.all([
     db.ref(`users/${uid}/vendorProfiles`).once('value'),
     getMaxActiveVendors(),
   ]);
   const all = profilesSnap.val() || {};
-  // Profiles with no groupId at all belong to the implicit default group —
-  // every profile that existed before groups did, so nothing breaks for an
-  // account that never creates a second group. The cap is enforced per
-  // group, not across a user's groups combined — a "big buy" group and a
-  // "near home" group each get their own full allowance. groupId === 'all'
-  // is a distinct sentinel (not the same as omitting groupId, which means
-  // "the default group") for callers that intentionally want every group's
-  // active profiles at once — currently only getVendorPromotions, which
-  // isn't list-scoped and hasn't been made group-aware yet.
+  // The cap is enforced per group, not across a user's groups combined — a
+  // "big buy" group and a "near home" group each get their own full
+  // allowance. groupId === 'all' is a distinct sentinel (not the same as
+  // omitting groupId, which means "the default group") for callers that
+  // intentionally want every group's active profiles at once — currently
+  // only getVendorPromotions, which isn't list-scoped.
   let entries = Object.entries(all)
-    .filter(([, p]) => p && p.active && VENDOR_IDS.includes(p.vendor) && p.branchId && (groupId === 'all' || (p.groupId || null) === (groupId || null)));
+    .filter(([, p]) => p && VENDOR_IDS.includes(p.vendor) && p.branchId &&
+      (groupId === 'all' ? profileActiveAnywhere(p) : profileActiveInGroup(p, groupId)));
   if (entries.length === 0) {
     // Nobody has picked profiles yet — fall back to the owner's own current
     // active selections, so a brand-new user starts from whatever the app's

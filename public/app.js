@@ -1,6 +1,6 @@
     const { useState, useEffect, useRef } = React;
 
-    const VERSION = "v6.2";
+    const VERSION = "v6.3";
 
     // ── CONFIG ────────────────────────────────────────────────────────────────────
     const FIREBASE_CONFIG = {
@@ -318,6 +318,17 @@
       "סופר פארם", "גוד פארם", "חצי חינם", "זול ובגדול", "מחסני השוק",
     ]);
 
+    // Vendor+branch profiles are one shared pool per user — a group doesn't
+    // own a copy of a profile, it just toggles whether that profile is
+    // active for it. Mirrors the same-named helper in functions/index.js,
+    // including the fallback for the two shapes written before this existed
+    // (a single groupId+active from this feature's first iteration, and the
+    // original pre-groups active-only shape).
+    function profileActiveInGroup(p, groupId) {
+      var gid = groupId || "default";
+      if (p.activeIn) return !!p.activeIn[gid];
+      return (p.groupId || "default") === gid && !!p.active;
+    }
     // A vendor's own barcode for an item, preferring the new per-vendor map
     // over the legacy single shared `barcode` field (pre-existing items that
     // haven't been re-matched since chains got independent barcodes).
@@ -686,11 +697,10 @@
               <span>👁️ תצוגת משתמש רגיל</span><span className="opacity-70">· חזרה למנהל</span>
             </button>
           )}
-          {screen === "home"       && <HomeScreen       user={user} isAdmin={role === "admin" && !simulateRegular} isRealAdmin={role === "admin"} simulating={simulateRegular} onToggleSimulate={toggleSimulate} onOpenList={goList} onCategories={() => go("categories")} onContacts={() => go("contacts")} onPromotions={() => go("promotions")} showToast={setToast} onAddTask={() => goAdd("tasks_" + user.uid, "tasks")} onCreateShoppingList={(id, name) => goAdd(id, "shopping", name)} onCreateNotesList={(id, name) => goAdd(id, "notes", name)} />}
+          {screen === "home"       && <HomeScreen       user={user} isAdmin={role === "admin" && !simulateRegular} isRealAdmin={role === "admin"} simulating={simulateRegular} onToggleSimulate={toggleSimulate} onOpenList={goList} onCategories={() => go("categories")} onPromotions={() => go("promotions")} showToast={setToast} onAddTask={() => goAdd("tasks_" + user.uid, "tasks")} onCreateShoppingList={(id, name) => goAdd(id, "shopping", name)} onCreateNotesList={(id, name) => goAdd(id, "notes", name)} />}
           {screen === "list"       && <ListScreen       user={user} listId={listId} onBack={goBack} onAdd={(type, name) => goAdd(listId, type, name || listName)} showToast={setToast} />}
           {screen === "add"        && <AddScreen        user={user} listId={listId} listType={listType} listName={listName} onBack={goBack} showToast={setToast} showStickyToast={setStickyToast} />}
           {screen === "categories" && <CategoriesScreen user={user} onBack={goBack} showToast={setToast} />}
-          {screen === "contacts"   && <ContactsScreen   user={user} onBack={goBack} showToast={setToast} />}
           {screen === "promotions" && <PromotionsScreen user={user} onBack={goBack} showToast={setToast} />}
           {toast && <Toast msg={toast} onClose={() => setToast("")} />}
           {stickyToast.length > 0 && (
@@ -747,7 +757,7 @@
     }
 
     // ── HOME ──────────────────────────────────────────────────────────────────────
-    function HomeScreen({ user, isAdmin, isRealAdmin, simulating, onToggleSimulate, onOpenList, onCategories, onContacts, onPromotions, showToast, onAddTask, onCreateShoppingList, onCreateNotesList }) {
+    function HomeScreen({ user, isAdmin, isRealAdmin, simulating, onToggleSimulate, onOpenList, onCategories, onPromotions, showToast, onAddTask, onCreateShoppingList, onCreateNotesList }) {
       const tasksListId = "tasks_" + user.uid;
       const categories = useCategories(user.uid); // for grouping the "copy items" picker by category, same as a list's default view
       const [lists,      setLists]      = useState(function() { return homeDataCache ? homeDataCache.lists : null; });
@@ -866,18 +876,20 @@
       const [vendorRequestsLoading, setVendorRequestsLoading] = useState(false);
       const [vendorRequestsList, setVendorRequestsList] = useState([]);
       const [resettingToDefault, setResettingToDefault] = useState(false);
-      // A "group" is a named set of vendor+branch profiles a list can compare
-      // against (e.g. "קניה גדולה" vs "יומיומי") — every profile with no
-      // groupId belongs to the implicit default group (id null), which is
-      // how every profile that existed before groups did keeps working with
-      // zero migration. The active-vendor cap applies per group, not summed
-      // across a user's groups.
+      // A "group" is a named lens on the one shared pool of vendor+branch
+      // profiles — every profile is visible to every group, a group just
+      // toggles which ones are active for it (see profileActiveInGroup).
+      // The built-in default group (id null client-side, "default" server-
+      // side) is how every profile that existed before groups did keeps
+      // working with zero migration. The active-vendor cap applies per
+      // group, not summed across a user's groups.
       const [vendorGroups, setVendorGroups] = useState({});
       const [selectedGroupId, setSelectedGroupId] = useState(null);
-      const [showVendorSettings, setShowVendorSettings] = useState(false);
+      const [settingsTab, setSettingsTab] = useState("general"); // "general" | "users" | "vendors"
       const [newGroupName, setNewGroupName] = useState("");
       const [renamingGroupId, setRenamingGroupId] = useState(undefined); // undefined = not renaming; null is a valid target (the default group)
       const [renameGroupInput, setRenameGroupInput] = useState("");
+      const [contactMembers, setContactMembers] = useState(null);
 
       useEffect(function() {
         var profilesRef = null, onProfiles = null;
@@ -903,24 +915,18 @@
       }, [user.uid]);
 
       const activeCountInGroup = function(groupId) {
-        return Object.values(vendorProfiles).filter(function(p) { return p && p.active && (p.groupId || null) === (groupId || null); }).length;
+        return Object.values(vendorProfiles).filter(function(p) { return p && profileActiveInGroup(p, groupId); }).length;
       };
       const activeVendorProfileCount = activeCountInGroup(selectedGroupId);
-      // [{id, name, count, activeCount}], default group always first.
+      // [{id, name, activeCount}], default group (id null) always first.
+      // Profiles are one shared pool now — a group's "count" is just how
+      // many of that pool are toggled active for it, not a member list.
       const vendorGroupList = (function() {
-        var counts = {};
-        Object.values(vendorProfiles).forEach(function(p) {
-          if (!p) return;
-          var gid = p.groupId || "default";
-          if (!counts[gid]) counts[gid] = { count: 0, active: 0 };
-          counts[gid].count++;
-          if (p.active) counts[gid].active++;
-        });
-        var named = Object.entries(vendorGroups).map(function(e) {
-          return { id: e[0], name: e[1].name, count: (counts[e[0]] || {}).count || 0, activeCount: (counts[e[0]] || {}).active || 0 };
+        var named = Object.entries(vendorGroups).filter(function(e) { return e[0] !== "default"; }).map(function(e) {
+          return { id: e[0], name: e[1].name, activeCount: activeCountInGroup(e[0]) };
         });
         named.sort(function(a, b) { return (a.name || "").localeCompare(b.name || "", "he"); });
-        var def = { id: null, name: "כללי", count: (counts.default || {}).count || 0, activeCount: (counts.default || {}).active || 0 };
+        var def = { id: null, name: (vendorGroups.default && vendorGroups.default.name) || "כללי", activeCount: activeCountInGroup(null) };
         return [def].concat(named);
       })();
 
@@ -939,29 +945,45 @@
 
       const renameVendorGroup = function(groupId, name) {
         if (!name.trim()) { setRenamingGroupId(undefined); return; }
-        if (groupId === null) {
-          // Promoting the implicit default group to a real record for the
-          // first time — create it, then stamp its id onto every profile
-          // that has no groupId yet (a one-time lazy migration).
-          var ref = db.ref("users/" + user.uid + "/vendorGroups").push();
-          var updates = {};
-          updates["users/" + user.uid + "/vendorGroups/" + ref.key] = { name: name.trim(), createdAt: Date.now() };
-          Object.keys(vendorProfiles).forEach(function(pid) {
-            if (!vendorProfiles[pid].groupId) updates["users/" + user.uid + "/vendorProfiles/" + pid + "/groupId"] = ref.key;
-          });
-          db.ref().update(updates).then(function() { if (selectedGroupId === null) setSelectedGroupId(ref.key); });
-        } else {
-          db.ref("users/" + user.uid + "/vendorGroups/" + groupId + "/name").set(name.trim());
-        }
+        var path = groupId === null ? "default" : groupId;
+        db.ref("users/" + user.uid + "/vendorGroups/" + path).update({ name: name.trim() });
         setRenamingGroupId(undefined);
       };
 
       const deleteVendorGroup = function(groupId) {
         if (groupId === null) { showToast("לא ניתן למחוק את הקבוצה הראשית"); return; }
-        var hasProfiles = Object.values(vendorProfiles).some(function(p) { return p && p.groupId === groupId; });
-        if (hasProfiles) { showToast("יש להסיר קודם את כל הסניפים מהקבוצה"); return; }
         db.ref("users/" + user.uid + "/vendorGroups/" + groupId).remove();
         if (selectedGroupId === groupId) selectGroup(null);
+      };
+
+      // Toggles whether an existing pool profile is active *for one group*
+      // — never creates or removes the profile itself, which is why a
+      // custom group never needs its own "add branch" flow.
+      const toggleVendorProfileActive = function(profileId, groupId) {
+        var p = vendorProfiles[profileId];
+        if (!p) return;
+        var gid = groupId || "default";
+        var currentlyActive = profileActiveInGroup(p, gid);
+        if (!currentlyActive && activeCountInGroup(gid) >= maxActiveVendors) {
+          showToast("ניתן להשוות עד " + maxActiveVendors + " סניפים בו-זמנית בקבוצה זו");
+          return;
+        }
+        var updates = {};
+        if (!p.activeIn) {
+          // First-ever toggle on a profile still in one of the two older
+          // shapes — migrate its existing state into activeIn first, so its
+          // default-group status isn't silently lost the moment some other
+          // group starts toggling it (only the group being toggled right
+          // now would otherwise end up represented).
+          updates["users/" + user.uid + "/vendorProfiles/" + profileId + "/activeIn/" + (p.groupId || "default")] = !!p.active;
+        }
+        updates["users/" + user.uid + "/vendorProfiles/" + profileId + "/activeIn/" + gid] = !currentlyActive;
+        db.ref().update(updates);
+        // Every list caches its own last-known active-profiles snapshot for
+        // the tab's lifetime (see the comment on priceCacheByList) so
+        // reopening a list doesn't always re-fetch. That's stale the moment
+        // the active set actually changes.
+        priceCacheByList = {};
       };
 
       // Each vendor resolves independently — Promise.all previously meant one
@@ -1008,53 +1030,35 @@
         fns.httpsCallable("dismissVendorRequest")({ id: id }).catch(function() { showToast("שגיאה במחיקת הבקשה"); });
       };
 
+      // Adds a new vendor+branch to the shared pool — always, regardless of
+      // which group is currently selected, since the pool isn't per-group.
+      // It starts active only in the default group; other groups toggle it
+      // on deliberately (see toggleVendorProfileActive).
       const addVendorProfile = function(vendor, branchId) {
         if (!vendor || !branchId) return;
-        // Same vendor+branch can exist in more than one group (e.g. Rami
-        // Levy in both a "big buy" and a "near home" group) — only a
-        // duplicate within the SAME group is blocked.
-        var alreadySaved = Object.values(vendorProfiles).some(function(p) { return p && p.vendor === vendor && String(p.branchId) === String(branchId) && (p.groupId || null) === (selectedGroupId || null); });
-        if (alreadySaved) { showToast("הסניף כבר בקבוצה הזו"); return; }
-        var canActivate = activeCountInGroup(selectedGroupId) < maxActiveVendors;
-        var entry = { vendor: vendor, branchId: branchId, active: canActivate, addedAt: Date.now() };
-        if (selectedGroupId) entry.groupId = selectedGroupId;
-        db.ref("users/" + user.uid + "/vendorProfiles").push(entry);
-        priceCacheByList = {}; // see toggleVendorProfileActive for why
-        if (!canActivate) showToast("הסניף נוסף, אך לא הופעל — הגעת למגבלת " + maxActiveVendors + " סניפים פעילים בקבוצה זו");
+        var alreadySaved = Object.values(vendorProfiles).some(function(p) { return p && p.vendor === vendor && String(p.branchId) === String(branchId); });
+        if (alreadySaved) { showToast("הסניף כבר ברשימה שלך"); return; }
+        var canActivate = activeCountInGroup(null) < maxActiveVendors;
+        db.ref("users/" + user.uid + "/vendorProfiles").push({ vendor: vendor, branchId: branchId, addedAt: Date.now(), activeIn: { default: canActivate } });
+        priceCacheByList = {};
+        if (!canActivate) showToast("הסניף נוסף, אך לא הופעל — הגעת למגבלת " + maxActiveVendors + " סניפים פעילים בכללי");
         setNewProfileVendorInput(""); setVendorRequestSent(false);
         setNewProfileBranchId("");
       };
 
+      // Removes a branch from the shared pool entirely — it disappears from
+      // every group's toggle list, not just the one currently open.
       const removeVendorProfile = function(profileId) {
         db.ref("users/" + user.uid + "/vendorProfiles/" + profileId).remove();
-        priceCacheByList = {}; // see toggleVendorProfileActive for why
-      };
-
-      const toggleVendorProfileActive = function(profileId) {
-        var p = vendorProfiles[profileId];
-        if (!p) return;
-        if (!p.active && activeCountInGroup(p.groupId || null) >= maxActiveVendors) {
-          showToast("ניתן להשוות עד " + maxActiveVendors + " סניפים בו-זמנית בקבוצה זו");
-          return;
-        }
-        db.ref("users/" + user.uid + "/vendorProfiles/" + profileId + "/active").set(!p.active);
-        // Every list caches its own last-known active-profiles snapshot for
-        // the tab's lifetime (see the comment on priceCacheByList) so
-        // reopening a list doesn't always re-fetch. That's stale the moment
-        // the active set actually changes — without this, a list opened
-        // before this change kept showing however many profiles existed at
-        // the time it was cached, forever, even though the account now has
-        // more (or fewer) active branches than that.
         priceCacheByList = {};
       };
 
-      // Replaces only the DEFAULT group's profiles, not the whole
-      // vendorProfiles node — groups didn't exist when this used a plain
-      // whole-node .set(), which would otherwise silently wipe out every
-      // other group's profiles too. "Reset to default" only ever applies to
-      // the default group in this version (the button isn't shown for
-      // custom groups) — "match the owner's list exactly, including which
-      // of theirs are active", the same restore point every time.
+      // Syncs the pool + default-group toggles to match the owner's current
+      // default list — adds any branch the owner has that's missing from my
+      // pool, and matches default-group on/off for branches that already
+      // exist, but never deletes: a branch might still be toggled on in one
+      // of my other groups, and this button only ever means "match my
+      // *default* group", not "wipe everything that isn't the owner's".
       const resetToDefaultProfiles = function() {
         if (resettingToDefault) return;
         setResettingToDefault(true);
@@ -1067,15 +1071,22 @@
           }
           var now = Date.now();
           var updates = {};
-          Object.keys(vendorProfiles).forEach(function(pid) {
-            if (!vendorProfiles[pid].groupId) updates["users/" + user.uid + "/vendorProfiles/" + pid] = null;
-          });
           defaults.forEach(function(p) {
-            var key = db.ref("users/" + user.uid + "/vendorProfiles").push().key;
-            updates["users/" + user.uid + "/vendorProfiles/" + key] = { vendor: p.vendor, branchId: p.branchId, active: p.active, addedAt: now };
+            var existing = Object.entries(vendorProfiles).find(function(e) { return e[1].vendor === p.vendor && String(e[1].branchId) === String(p.branchId); });
+            if (existing) {
+              updates["users/" + user.uid + "/vendorProfiles/" + existing[0] + "/activeIn/default"] = !!p.active;
+            } else {
+              var key = db.ref("users/" + user.uid + "/vendorProfiles").push().key;
+              updates["users/" + user.uid + "/vendorProfiles/" + key] = { vendor: p.vendor, branchId: p.branchId, addedAt: now, activeIn: { default: !!p.active } };
+            }
+          });
+          Object.entries(vendorProfiles).forEach(function(entry) {
+            var pid = entry[0], p = entry[1];
+            var stillInDefaults = defaults.some(function(d) { return d.vendor === p.vendor && String(d.branchId) === String(p.branchId); });
+            if (!stillInDefaults && profileActiveInGroup(p, null)) updates["users/" + user.uid + "/vendorProfiles/" + pid + "/activeIn/default"] = false;
           });
           db.ref().update(updates).then(function() {
-            priceCacheByList = {}; // see toggleVendorProfileActive for why
+            priceCacheByList = {};
             setResettingToDefault(false);
             showToast("הרשימה עודכנה לברירת המחדל");
           }, function(err) {
@@ -1113,6 +1124,33 @@
       const [newUserRole,  setNewUserRole]  = useState("user");
       const [userBusy,    setUserBusy]    = useState(false);
       const [userMsg,     setUserMsg]     = useState("");
+
+      // Lazy-loaded the first time the "משתמשים" settings tab opens, not on
+      // every HomeScreen mount — same pattern as the other collapsible
+      // settings sections, just triggered by the tab instead of a toggle.
+      useEffect(function() {
+        if (settingsTab !== "users" || contactMembers !== null) return;
+        fns.httpsCallable("listTeamMembers")().then(function(res) {
+          var others = (res.data.members || []).filter(function(m) { return m.uid !== user.uid; });
+          db.ref("shareDefaults").once("value").then(function(snap) {
+            var defaults = snap.val() || {};
+            others.sort(function(a, b) { return (a.name || "").localeCompare(b.name || "", "he"); });
+            setContactMembers(others.map(function(m) { return Object.assign({}, m, { alwaysShare: !!defaults[m.uid] }); }));
+          });
+        }, function() { setContactMembers([]); showToast("שגיאה בטעינת אנשי קשר"); });
+      }, [settingsTab]);
+
+      const toggleContactAlwaysShare = function(uid) {
+        var next;
+        setContactMembers(function(prev) {
+          return prev.map(function(m) {
+            if (m.uid !== uid) return m;
+            next = !m.alwaysShare;
+            return Object.assign({}, m, { alwaysShare: next });
+          });
+        });
+        db.ref("shareDefaults/" + uid).set(next || null);
+      };
 
       const loadAuthUsers = () => {
         setUsersLoading(true);
@@ -1968,7 +2006,7 @@
           {/* Settings modal */}
           {showSettings && (
             <Modal onClose={() => setShowSettings(false)}>
-              <div className="mb-5 pb-4 border-b border-gray-100">
+              <div className="mb-4 pb-4 border-b border-gray-100">
                 <div className="flex items-center gap-3">
                   {user.photoURL
                     ? <img src={user.photoURL} className="w-10 h-10 rounded-full flex-shrink-0" referrerPolicy="no-referrer" />
@@ -1999,6 +2037,24 @@
                 )}
               </div>
 
+              {/* ── Tabs: everything vendor/pricing-related lives in "רשתות" separately
+                  from general app settings, and Contacts + user management share
+                  "משתמשים" — one Modal, so a backdrop click always just closes
+                  Settings as a whole instead of unpredictably landing on the home
+                  screen depending on which sub-panel happened to be open. ── */}
+              <div className="flex bg-gray-100 rounded-xl p-1 mb-4">
+                {[["general", "כללי"], ["users", "משתמשים"], ["vendors", "רשתות"]].map(function(tab) {
+                  var key = tab[0], label = tab[1];
+                  return (
+                    <button key={key} onClick={function() { setSettingsTab(key); }}
+                      className={"flex-1 py-2 rounded-lg text-sm font-medium transition " + (settingsTab === key ? "bg-white shadow text-blue-600" : "text-gray-500")}>
+                      {label}
+                    </button>
+                  );
+                })}
+              </div>
+
+              {settingsTab === "general" && (<div>
               {/* ── AI Provider ─────────────────────────────────────────────────── */}
               <div className="mt-1">
                 <button onClick={function() { setShowAISettings(function(o) { return !o; }); }}
@@ -2121,17 +2177,9 @@
                   </span>
                 </button>
                 <div className="border-t border-gray-100 my-1" />
-                <button onClick={function() { setShowSettings(false); onContacts(); }} className="w-full text-right px-3 py-3 text-sm text-gray-700 hover:bg-gray-50 rounded-xl flex items-center gap-3">
-                  <span className="text-lg w-7 text-center">👥</span><span>אנשי קשר</span>
-                </button>
                 <button onClick={function() { setShowSettings(false); onCategories(); }} className="w-full text-right px-3 py-3 text-sm text-gray-700 hover:bg-gray-50 rounded-xl flex items-center gap-3">
                   <span className="text-lg w-7 text-center">⚙️</span><span>קטגוריות וחנויות</span>
                 </button>
-                {(myPricingEnabled || isAdmin) && (
-                  <button onClick={function() { setShowSettings(false); setShowVendorSettings(true); }} className="w-full text-right px-3 py-3 text-sm text-gray-700 hover:bg-gray-50 rounded-xl flex items-center gap-3">
-                    <span className="text-lg w-7 text-center">🏪</span><span>רשתות והשוואת מחירים</span>
-                  </button>
-                )}
                 <div className="px-3 py-2.5 flex items-center gap-3">
                   <span className="text-lg w-7 text-center">📝</span>
                   <span className="flex-1 text-sm text-gray-700">מילת מעבר בתפריטים</span>
@@ -2143,6 +2191,41 @@
                   }} dir="rtl" maxLength={20}
                     className={"w-20 border rounded-lg px-2 py-1 text-sm text-center focus:outline-none " + (isAdmin ? "border-gray-200 focus:border-blue-400 text-gray-700" : "border-gray-100 bg-gray-50 text-gray-500")} />
                 </div>
+              </div>
+              </div>)}
+
+              {settingsTab === "users" && (<div>
+              {/* ── Contacts (who gets auto-shared into new lists) ────────────────── */}
+              <div className="mb-4">
+                <div className="text-sm font-semibold text-gray-700 mb-0.5 flex items-center gap-2">
+                  <span className="text-lg w-7 text-center inline-block">👥</span>אנשי קשר
+                </div>
+                <p className="text-xs text-gray-400 mb-2 mr-9">משתמשים שאתה משתף איתם בקביעות</p>
+                {contactMembers === null ? (
+                  <div className="flex justify-center py-6"><Spinner /></div>
+                ) : contactMembers.length === 0 ? (
+                  <p className="text-xs text-gray-400 text-center py-4">אין עדיין משתמשים נוספים</p>
+                ) : (
+                  <div className="space-y-1.5">
+                    {contactMembers.map(function(m) {
+                      return (
+                        <div key={m.uid} className="bg-gray-50 rounded-xl px-3 py-2 flex items-center gap-3">
+                          <div className="flex-1 min-w-0">
+                            <div className="text-sm text-gray-700 truncate">{m.name}</div>
+                            <div className="text-xs text-gray-400 truncate">{m.email}</div>
+                          </div>
+                          <div className="flex flex-col items-center gap-0.5 flex-shrink-0">
+                            <button onClick={function() { toggleContactAlwaysShare(m.uid); }}
+                              className={"relative inline-flex h-6 w-11 items-center rounded-full transition-colors " + (m.alwaysShare ? "bg-blue-600" : "bg-gray-200")}>
+                              <span className={"inline-block h-4 w-4 rounded-full bg-white shadow transition-transform " + (m.alwaysShare ? "translate-x-6" : "translate-x-1")} />
+                            </button>
+                            <span className="text-xs text-gray-400">תמיד</span>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
               </div>
 
               {/* ── Manage Users (admins see everyone; regular users see only themselves) ── */}
@@ -2259,7 +2342,9 @@
                   </div>
                 )}
               </div>
+              </div>)}
 
+              {settingsTab === "general" && (<div>
               {/* ── Usage & Costs ────────────────────────────────────────────────── */}
               <div className="mt-3 mb-2">
                 <button onClick={function() { setShowCosts(function(o) { if (!o) loadCosts(); return !o; }); }}
@@ -2331,15 +2416,11 @@
               <button onClick={function() { auth.signOut(); }} className="w-full text-right px-3 py-3 text-sm text-red-500 hover:bg-red-50 rounded-xl flex items-center gap-3">
                 <span className="text-lg w-7 text-center">🚪</span><span>יציאה</span>
               </button>
-            </Modal>
-          )}
+              </div>)}
 
-          {/* ── Vendors & price comparison (separate menu from general settings) ── */}
-          {showVendorSettings && (
-            <Modal onClose={function() { setShowVendorSettings(false); }}>
-              <h3 className="text-lg font-bold text-center mb-4">רשתות והשוואת מחירים</h3>
+              {settingsTab === "vendors" && (<div>
               {myPricingEnabled && (
-                <button onClick={function() { setShowVendorSettings(false); onPromotions(); }} className="w-full text-right px-3 py-3 mb-2 text-sm text-gray-700 hover:bg-gray-50 rounded-xl flex items-center gap-3 border border-gray-100">
+                <button onClick={function() { setShowSettings(false); onPromotions(); }} className="w-full text-right px-3 py-3 mb-2 text-sm text-gray-700 hover:bg-gray-50 rounded-xl flex items-center gap-3 border border-gray-100">
                   <span className="text-lg w-7 text-center">🏷️</span><span>מבצעים</span>
                 </button>
               )}
@@ -2371,7 +2452,7 @@
                                   <span onClick={function(e) { e.stopPropagation(); setRenamingGroupId(g.id); setRenameGroupInput(g.name === "כללי" ? "" : g.name); }}
                                     className="text-gray-300 hover:text-blue-500 text-xs">✏️</span>
                                 </div>
-                                <div className="text-xs text-gray-400">{g.activeCount} / {maxActiveVendors} פעילים · {g.count} סניפים</div>
+                                <div className="text-xs text-gray-400">{g.activeCount} / {maxActiveVendors} פעילים</div>
                               </div>
                             </div>
                             <span className="text-gray-400 text-xs flex-shrink-0">{isOpen ? "▲ הסתר" : "▼ הצג"}</span>
@@ -2392,7 +2473,10 @@
                                 </div>
                               )}
                               {g.id !== null && (
-                                <div className="flex items-center justify-end">
+                                <div>
+                                  <div className="text-xs text-gray-400 mb-2">
+                                    בחר אילו מהסניפים שלך פעילים בקבוצה הזו — אין צורך להוסיף אותם שוב, הם כבר ב"כללי".
+                                  </div>
                                   <button onClick={function() { deleteVendorGroup(g.id); }}
                                     className="text-xs text-red-400 border border-red-100 bg-red-50 rounded-full px-2.5 py-1">
                                     🗑️ מחק קבוצה
@@ -2400,25 +2484,26 @@
                                 </div>
                               )}
                               {(function() {
-                                var groupProfiles = Object.entries(vendorProfiles).filter(function(e) { return (e[1].groupId || null) === (g.id || null); });
-                                return groupProfiles.length > 0 && (
+                                var poolProfiles = Object.entries(vendorProfiles);
+                                return poolProfiles.length > 0 && (
                                   <div className="space-y-1.5">
-                                    {groupProfiles.map(function(entry) {
+                                    {poolProfiles.map(function(entry) {
                                       var pid = entry[0], p = entry[1];
                                       var meta = VENDOR_LIST.find(function(x) { return x.id === p.vendor; });
                                       var info = (vendorBranchLists[p.vendor] || {})[p.branchId] || {};
+                                      var isActive = profileActiveInGroup(p, g.id);
                                       return (
-                                        <div key={pid} className={"flex items-center justify-between rounded-xl px-3 py-2 border " + (p.active ? "bg-green-50 border-green-200" : "bg-gray-50 border-transparent")}>
+                                        <div key={pid} className={"flex items-center justify-between rounded-xl px-3 py-2 border " + (isActive ? "bg-green-50 border-green-200" : "bg-gray-50 border-transparent")}>
                                           <div className="text-xs text-gray-700 flex-1 text-right">
                                             <span className="font-semibold">{meta ? meta.label : p.vendor}</span>
                                             {" — "}{info.name || ("סניף " + parseInt(p.branchId, 10))}{info.address ? " — " + info.address : ""}
                                           </div>
                                           <div className="flex items-center gap-2 flex-shrink-0">
-                                            <button onClick={function() { toggleVendorProfileActive(pid); }}
-                                              className={"text-xs border rounded-full px-2 py-0.5 " + (p.active ? "text-green-600 border-green-200 bg-white" : "text-gray-400 border-gray-200 bg-white")}>
-                                              {p.active ? "פעיל" : "כבוי"}
+                                            <button onClick={function() { toggleVendorProfileActive(pid, g.id); }}
+                                              className={"text-xs border rounded-full px-2 py-0.5 " + (isActive ? "text-green-600 border-green-200 bg-white" : "text-gray-400 border-gray-200 bg-white")}>
+                                              {isActive ? "פעיל" : "כבוי"}
                                             </button>
-                                            <button onClick={function() { removeVendorProfile(pid); }} className="text-gray-300 hover:text-red-500 text-sm px-1">✕</button>
+                                            {g.id === null && <button onClick={function() { removeVendorProfile(pid); }} className="text-gray-300 hover:text-red-500 text-sm px-1">✕</button>}
                                           </div>
                                         </div>
                                       );
@@ -2426,6 +2511,7 @@
                                   </div>
                                 );
                               })()}
+                              {g.id === null && (
                               <div className="border-t border-gray-100 pt-3">
                                 <div className="text-xs font-semibold text-gray-500 mb-1.5">הוסף סניף להשוואה</div>
                                 <input list="vendor-name-suggestions" value={newProfileVendorInput}
@@ -2485,6 +2571,7 @@
                                   );
                                 })()}
                               </div>
+                              )}
                             </div>
                           </div>
                         )}
@@ -2654,6 +2741,7 @@
                   )}
                 </div>
               )}
+              </div>)}
             </Modal>
           )}
 
@@ -3033,83 +3121,6 @@
             שמור
           </button>
         </Modal>
-      );
-    }
-
-    // ── CONTACTS SCREEN ───────────────────────────────────────────────────────────
-    function ContactsScreen({ user, onBack, showToast }) {
-      // Roster comes from authorized users (Settings → ניהול משתמשים) — nothing to add/remove
-      // here manually. This screen just sets who gets auto-shared into your new lists.
-      const [members,  setMembers]  = useState(null);
-
-      useEffect(function() {
-        fns.httpsCallable("listTeamMembers")().then(function(res) {
-          var others = (res.data.members || []).filter(function(m) { return m.uid !== user.uid; });
-          db.ref("shareDefaults").once("value").then(function(snap) {
-            var defaults = snap.val() || {};
-            others.sort(function(a, b) { return (a.name || "").localeCompare(b.name || "", "he"); });
-            setMembers(others.map(function(m) { return Object.assign({}, m, { alwaysShare: !!defaults[m.uid] }); }));
-          });
-        }, function() { setMembers([]); showToast("שגיאה בטעינת אנשי קשר"); });
-      }, []);
-
-      const toggleAlways = (uid) => {
-        var next;
-        setMembers(function(prev) {
-          return prev.map(function(m) {
-            if (m.uid !== uid) return m;
-            next = !m.alwaysShare;
-            return Object.assign({}, m, { alwaysShare: next });
-          });
-        });
-        db.ref("shareDefaults/" + uid).set(next || null);
-      };
-
-      return (
-        <div className="bg-gray-50 flex flex-col" style={{height:"100dvh"}}>
-          <div className="bg-blue-600 text-white px-4 pt-10 pb-4 flex-shrink-0">
-            <div className="flex items-center gap-3" dir="ltr">
-              <button onClick={onBack} className="flex items-center gap-1 text-white font-semibold text-sm bg-white/20 px-3 py-1.5 rounded-full flex-shrink-0">
-                <span className="text-lg leading-none">‹</span><span>חזרה</span>
-              </button>
-              <h1 className="flex-1 text-lg font-bold text-right">אנשי קשר</h1>
-            </div>
-            <p className="text-white/60 text-xs mt-1 text-right">משתמשים שאתה משתף איתם בקביעות</p>
-          </div>
-
-          <div className="flex-1 overflow-y-auto p-4">
-            {members === null ? (
-              <div className="flex justify-center py-20"><Spinner large /></div>
-            ) : members.length === 0 ? (
-              <div className="text-center py-20 text-gray-400">
-                <div className="text-5xl mb-3">👥</div>
-                <p className="font-medium">אין עדיין משתמשים נוספים</p>
-                <p className="text-sm mt-1">הוסף אנשים תחת הגדרות ← ניהול משתמשים</p>
-              </div>
-            ) : (
-              <div className="space-y-3">
-                {members.map(function(m) {
-                  return (
-                    <div key={m.uid} className="bg-white rounded-2xl border border-gray-100 shadow-sm px-4 py-3 flex items-center gap-3">
-                      <div className="flex-1 min-w-0">
-                        <div className="font-medium text-gray-800">{m.name}</div>
-                        <div className="text-xs text-gray-400 truncate">{m.email}</div>
-                      </div>
-                      <div className="flex flex-col items-center gap-0.5 flex-shrink-0">
-                        <button onClick={function() { toggleAlways(m.uid); }}
-                          className={"relative inline-flex h-6 w-11 items-center rounded-full transition-colors " + (m.alwaysShare ? "bg-blue-600" : "bg-gray-200")}>
-                          <span className={"inline-block h-4 w-4 rounded-full bg-white shadow transition-transform " + (m.alwaysShare ? "translate-x-6" : "translate-x-1")} />
-                        </button>
-                        <span className="text-xs text-gray-400">תמיד</span>
-                      </div>
-                    </div>
-                  );
-                })}
-                <p className="text-xs text-gray-400 text-center pt-2">אנשים עם "תמיד" יתווספו אוטומטית כשרשימה הופכת לשיתופית</p>
-              </div>
-            )}
-          </div>
-        </div>
       );
     }
 
@@ -4480,8 +4491,11 @@
           {refreshDialog && (
             <Modal onClose={function() { setRefreshDialog(null); }}>
               <h3 className="text-lg font-bold text-center mb-2">רענון מחירים</h3>
-              <p className="text-xs text-gray-500 text-center mb-4">
+              <p className="text-xs text-gray-500 text-center mb-1">
                 רענון מושך מחיר עדכני ישירות מהרשת ועשוי לקחת עד דקה לכל רשת — לכן יש לו עלות. רשת שכבר עודכנה היום לא תיטען שוב.
+              </p>
+              <p className="text-xs text-gray-400 text-center mb-4">
+                מרענן רק את הרשתות הפעילות בקבוצה "{list.vendorGroupId && vendorGroups[list.vendorGroupId] ? vendorGroups[list.vendorGroupId].name : "כללי"}" של הרשימה הזו.
               </p>
               {refreshDialog.loading ? (
                 <div className="flex justify-center py-6"><Spinner /></div>

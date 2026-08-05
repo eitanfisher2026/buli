@@ -1068,14 +1068,23 @@ async function fetchOwnerVendorProfiles() {
 // to the admin-set cap are ever actually queried here, regardless of how
 // many the client has marked active, so the cost/latency ceiling always
 // holds no matter what the client sends.
-async function getUserActiveProfiles(uid) {
+async function getUserActiveProfiles(uid, groupId) {
   const [profilesSnap, cap] = await Promise.all([
     db.ref(`users/${uid}/vendorProfiles`).once('value'),
     getMaxActiveVendors(),
   ]);
   const all = profilesSnap.val() || {};
+  // Profiles with no groupId at all belong to the implicit default group —
+  // every profile that existed before groups did, so nothing breaks for an
+  // account that never creates a second group. The cap is enforced per
+  // group, not across a user's groups combined — a "big buy" group and a
+  // "near home" group each get their own full allowance. groupId === 'all'
+  // is a distinct sentinel (not the same as omitting groupId, which means
+  // "the default group") for callers that intentionally want every group's
+  // active profiles at once — currently only getVendorPromotions, which
+  // isn't list-scoped and hasn't been made group-aware yet.
   let entries = Object.entries(all)
-    .filter(([, p]) => p && p.active && VENDOR_IDS.includes(p.vendor) && p.branchId);
+    .filter(([, p]) => p && p.active && VENDOR_IDS.includes(p.vendor) && p.branchId && (groupId === 'all' || (p.groupId || null) === (groupId || null)));
   if (entries.length === 0) {
     // Nobody has picked profiles yet — fall back to the owner's own current
     // active selections, so a brand-new user starts from whatever the app's
@@ -1314,13 +1323,13 @@ exports.resolveItemBarcodes = onCall(
   { timeoutSeconds: 300, memory: '1GiB', region: 'europe-west1' },
   async (request) => {
     await requireAuthorized(request);
-    const { items, force, vendors } = request.data || {};
+    const { items, force, vendors, groupId } = request.data || {};
     if (!Array.isArray(items) || items.length === 0) throw new HttpsError('invalid-argument', 'items array required');
 
     // Name→barcode matching is chain-wide, not branch-specific (a GTIN
     // doesn't change by branch) — so when two active profiles share a
     // chain, one representative branch per chain is enough to search.
-    const activeProfiles = await getUserActiveProfiles(request.auth.uid);
+    const activeProfiles = await getUserActiveProfiles(request.auth.uid, groupId);
     const repProfileByVendor = {};
     activeProfiles.forEach(p => { if (!repProfileByVendor[p.vendor]) repProfileByVendor[p.vendor] = p; });
     const vendorIds = Object.keys(repProfileByVendor).filter(v => !Array.isArray(vendors) || vendors.includes(v));
@@ -1413,7 +1422,8 @@ exports.getActiveCatalogTimestamps = onCall(
   { timeoutSeconds: 30, memory: '128MiB', region: 'europe-west1' },
   async (request) => {
     await requireAuthorized(request);
-    const activeProfiles = await getUserActiveProfiles(request.auth.uid);
+    const { groupId } = request.data || {};
+    const activeProfiles = await getUserActiveProfiles(request.auth.uid, groupId);
     const cache = {};
     const timestamps = await Promise.all(activeProfiles.map(async (p) => {
       const key = `${p.vendor}:${p.branchId}`;
@@ -1430,10 +1440,10 @@ exports.getBasketPrices = onCall(
   { timeoutSeconds: 300, memory: '1GiB', region: 'europe-west1' },
   async (request) => {
     await requireAuthorized(request);
-    const { barcodesByVendor, force } = request.data || {};
+    const { barcodesByVendor, force, groupId } = request.data || {};
     if (!barcodesByVendor || typeof barcodesByVendor !== 'object') throw new HttpsError('invalid-argument', 'barcodesByVendor required');
 
-    const activeProfiles = await getUserActiveProfiles(request.auth.uid);
+    const activeProfiles = await getUserActiveProfiles(request.auth.uid, groupId);
     const relevantProfiles = activeProfiles.filter(p => Array.isArray(barcodesByVendor[p.vendor]) && barcodesByVendor[p.vendor].length > 0);
     const prices = {};
     if (relevantProfiles.length === 0) return { prices, profiles: activeProfiles };
@@ -1496,7 +1506,10 @@ exports.getVendorPromotions = onCall(
   { timeoutSeconds: 300, memory: '1GiB', region: 'europe-west1' },
   async (request) => {
     await requireAuthorized(request);
-    const activeProfiles = await getUserActiveProfiles(request.auth.uid);
+    // Not list-scoped (this is a standalone screen, not per-list), so it
+    // still shows the union of every group's active profiles — promotions
+    // hasn't been made group-aware in this pass.
+    const activeProfiles = await getUserActiveProfiles(request.auth.uid, 'all');
     if (activeProfiles.length === 0) return { promotionsByProfile: {}, profiles: activeProfiles };
 
     // Dedupe by (vendor,branchId) so profiles sharing one branch only fetch

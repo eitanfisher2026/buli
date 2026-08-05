@@ -1,6 +1,6 @@
     const { useState, useEffect, useRef } = React;
 
-    const VERSION = "v6.10";
+    const VERSION = "v6.11";
 
     // ── CONFIG ────────────────────────────────────────────────────────────────────
     const FIREBASE_CONFIG = {
@@ -4661,6 +4661,7 @@
                     });
                   });
                   if (results.length === 0) return <p className="text-center text-gray-400 text-sm py-10">{q ? "לא נמצאו מבצעים תואמים" : "אין מבצעים כרגע"}</p>;
+                  results.sort(function(a, b) { return (a.item.name || "").localeCompare(b.item.name || "", "he"); });
                   var total = results.length;
                   var capped = results.slice(0, 150);
                   return (

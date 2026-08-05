@@ -1,6 +1,6 @@
     const { useState, useEffect, useRef } = React;
 
-    const VERSION = "v6.9";
+    const VERSION = "v6.10";
 
     // ── CONFIG ────────────────────────────────────────────────────────────────────
     const FIREBASE_CONFIG = {
@@ -411,6 +411,14 @@
     // could describe the deal even once active, so it's shared rather than
     // reimplemented per call site.
     function promoTagPhrase(promo) {
+      // Weighed goods (produce, deli, bulk) publish MinQty as a near-zero kg
+      // threshold (e.g. 0.01), not a real unit count — showing that number
+      // ("0.01 ב-₪X") is meaningless; DiscountedPrice there is already a
+      // per-kg price. This path is only reached from the promo browser,
+      // which shows raw (un-normalized) promo data — the inline list price
+      // already normalizes weighted items server-side (see
+      // effectivePromoInfo) and never hits the tag branch for them.
+      if (promo.weighted && promo.discountedPrice != null) return "₪" + promo.discountedPrice.toFixed(2) + " לק\"ג";
       if (promo.discountedPrice != null) return promo.minQty + " ב-₪" + promo.discountedPrice.toFixed(2);
       if (promo.discountRate != null) return "-" + Math.round(promo.discountRate) + "%";
       return "";
@@ -3571,12 +3579,53 @@
       const [showPromoBrowser, setShowPromoBrowser] = useState(false);
       const [promoBrowserData, setPromoBrowserData] = useState(null); // { promotionsByProfile, profiles } | "error" | null (loading)
       const [promoSearchQuery, setPromoSearchQuery] = useState("");
+      // { [profileId + ":" + barcode]: { profile, item } }
+      const [selectedPromoItems, setSelectedPromoItems] = useState({});
       const openPromoBrowser = function() {
         setShowPromoBrowser(true);
+        setSelectedPromoItems({});
         if (promoBrowserData !== null) return;
         fns.httpsCallable("getVendorPromotions")({ groupId: (list && list.vendorGroupId) || null }).then(function(res) {
           setPromoBrowserData(res.data);
         }, function() { setPromoBrowserData("error"); showToast("שגיאה בטעינת מבצעים"); });
+      };
+      const togglePromoItemSelected = function(key, profile, item) {
+        setSelectedPromoItems(function(prev) {
+          var next = Object.assign({}, prev);
+          if (next[key]) delete next[key];
+          else next[key] = { profile: profile, item: item };
+          return next;
+        });
+      };
+      // New items get their barcode pre-set for the vendor the promo came
+      // from, so a price (and, once qty catches up, the promo itself) shows
+      // immediately — no separate name-matching round-trip needed.
+      const addSelectedPromoItems = function() {
+        var selected = Object.values(selectedPromoItems);
+        if (selected.length === 0) return;
+        var now = Date.now();
+        var updates = {};
+        var newItemsForPricing = [];
+        selected.forEach(function(sel, idx) {
+          var key = db.ref("items/" + listId).push().key;
+          var emoji = guessEmoji(sel.item.name);
+          var cat = categories.find(function(c) { return c.emoji === emoji; });
+          var barcodes = {};
+          barcodes[sel.profile.vendor] = sel.item.barcode;
+          updates["items/" + listId + "/" + key] = {
+            name: sel.item.name, category: cat ? cat.label : "שונות", categoryEmoji: emoji,
+            quantity: 1, unit: "יחידות", note: "", done: false, barcodes: barcodes,
+            addedBy: user.uid, addedByName: user.displayName, addedByColor: getUserColor(user.uid),
+            createdAt: now + idx,
+          };
+          newItemsForPricing.push({ barcodes: barcodes });
+        });
+        db.ref().update(updates).then(function() {
+          showToast(selected.length + " פריטים נוספו!");
+          setSelectedPromoItems({});
+          setShowPromoBrowser(false);
+          fetchPrices(collectBarcodesByVendor(newItemsForPricing));
+        }, function(err) { showToast("שגיאה: " + (err && err.message || "?")); });
       };
 
       const setListVendorGroup = function(groupId) {
@@ -4581,7 +4630,7 @@
               <input value={promoSearchQuery} onChange={function(e) { setPromoSearchQuery(e.target.value); }}
                 placeholder="חפש מוצר, למשל: קפה" dir="rtl"
                 className="w-full border border-gray-200 rounded-xl px-3 py-2 text-sm mb-3" />
-              <div className="max-h-96 overflow-y-auto space-y-2">
+              <div className="max-h-96 overflow-y-auto space-y-1.5">
                 {promoBrowserData === null ? (
                   <div className="flex justify-center py-10"><Spinner large /></div>
                 ) : promoBrowserData === "error" ? (
@@ -4590,12 +4639,25 @@
                   var profiles = promoBrowserData.profiles || [];
                   if (profiles.length === 0) return <p className="text-center text-gray-400 text-sm py-10">אין רשתות פעילות בקבוצה זו</p>;
                   var q = promoSearchQuery.trim();
+                  // Flatten every promotion's items into one list and dedupe
+                  // by (vendor, barcode) — the same real product sometimes
+                  // shows up under more than one promotion record, which
+                  // read as literal duplicates with nothing to tell them
+                  // apart. Items with no resolved name (unmatched/garbage
+                  // barcodes) aren't actionable here, so they're dropped too.
+                  var seen = {};
                   var results = [];
                   profiles.forEach(function(profile) {
                     var promos = (promoBrowserData.promotionsByProfile[profile.id] || []);
                     promos.forEach(function(promo) {
-                      var matched = !q || promo.items.some(function(it) { return (it.name || "").indexOf(q) !== -1; });
-                      if (matched) results.push({ profile: profile, promo: promo });
+                      promo.items.forEach(function(item) {
+                        if (!item.name) return;
+                        var key = profile.id + ":" + item.barcode;
+                        if (seen[key]) return;
+                        if (q && item.name.indexOf(q) === -1) return;
+                        seen[key] = true;
+                        results.push({ key: key, profile: profile, item: item });
+                      });
                     });
                   });
                   if (results.length === 0) return <p className="text-center text-gray-400 text-sm py-10">{q ? "לא נמצאו מבצעים תואמים" : "אין מבצעים כרגע"}</p>;
@@ -4606,30 +4668,41 @@
                       {!q && total > capped.length && (
                         <p className="text-xs text-gray-400 text-center mb-2">מוצגים {capped.length} מתוך {total} — חפש כדי לצמצם</p>
                       )}
-                      {capped.map(function(r, idx) {
+                      {capped.map(function(r) {
+                        var phrase = promoTagPhrase(r.item);
+                        var isSelected = !!selectedPromoItems[r.key];
                         return (
-                          <div key={r.profile.id + ":" + r.promo.id + ":" + idx} className="bg-gray-50 rounded-xl px-3 py-2">
-                            <div className="text-xs text-gray-400 mb-1">{profileLabel(r.profile, profiles)}</div>
-                            <div className="flex flex-wrap gap-1.5">
-                              {r.promo.items.map(function(item, i2) {
-                                var phrase = promoTagPhrase(item);
-                                return (
-                                  <span key={i2} className="text-xs bg-blue-50 text-blue-700 rounded-full px-2.5 py-1">
-                                    {item.name || item.barcode}{phrase && (" · " + phrase)}
-                                  </span>
-                                );
-                              })}
+                          <button key={r.key} onClick={function() { togglePromoItemSelected(r.key, r.profile, r.item); }}
+                            className={"w-full text-right flex items-center justify-between gap-2 rounded-xl px-3 py-2 border " + (isSelected ? "bg-blue-50 border-blue-200" : "bg-gray-50 border-transparent")}>
+                            <div className="flex-1 min-w-0">
+                              <div className="text-sm text-gray-800 truncate">{r.item.name}</div>
+                              <div className="text-xs text-gray-400 flex items-center gap-1.5">
+                                <span>{profileLabel(r.profile, profiles)}</span>
+                                {phrase && <span className="text-orange-600 font-medium">{phrase}</span>}
+                              </div>
                             </div>
-                          </div>
+                            <span className={"w-5 h-5 rounded-full border flex-shrink-0 flex items-center justify-center text-xs " + (isSelected ? "bg-blue-600 border-blue-600 text-white" : "border-gray-300 text-transparent")}>✓</span>
+                          </button>
                         );
                       })}
                     </React.Fragment>
                   );
                 })()}
               </div>
-              <button onClick={function() { setShowPromoBrowser(false); }} className="w-full mt-3 py-3 text-gray-400 text-sm font-medium">
-                סגור
-              </button>
+              {Object.keys(selectedPromoItems).length > 0 ? (
+                <div className="flex gap-2 mt-3">
+                  <button onClick={function() { setSelectedPromoItems({}); }} className="flex-1 py-3 text-gray-400 text-sm font-medium">
+                    ביטול
+                  </button>
+                  <button onClick={addSelectedPromoItems} className="flex-1 bg-blue-600 text-white py-3 rounded-2xl font-semibold">
+                    הוסף ({Object.keys(selectedPromoItems).length})
+                  </button>
+                </div>
+              ) : (
+                <button onClick={function() { setShowPromoBrowser(false); }} className="w-full mt-3 py-3 text-gray-400 text-sm font-medium">
+                  סגור
+                </button>
+              )}
             </Modal>
           )}
 

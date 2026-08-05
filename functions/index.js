@@ -812,16 +812,37 @@ function promotionsFromXml(obj) {
   for (const promo of asArray(root.Promotions?.Promotion)) {
     const endDate = String(promo.PromotionEndDateTime ?? '').trim();
     if (endDate && new Date(endDate).getTime() < now) continue;
+    // Multiple Groups is how this feed represents real cross-item bundles
+    // ("buy from group 1, something in group 2 gets discounted/free") — even
+    // the SAME barcode can appear in more than one group with a different
+    // role (an unpriced "trigger" entry in one, a 100%-off "reward" entry in
+    // another). Verified live: treating each item's own MinQty/Discount
+    // fields as self-sufficient regardless of grouping — the original
+    // assumption here — showed some of these as unconditionally free when
+    // they actually require a separate qualifying purchase. Excluded
+    // entirely rather than shown wrong; representing real bundles correctly
+    // is future work.
+    const groups = asArray(promo.Groups?.Group);
+    if (groups.length > 1) continue;
     const items = [];
-    for (const group of asArray(promo.Groups?.Group)) {
+    for (const group of groups) {
       for (const item of asArray(group.PromotionItems?.PromotionItem)) {
+        // "0" is a real placeholder value this feed uses for a non-item
+        // line (verified live) — not a real barcode.
         const barcode = String(item.ItemCode ?? '').trim();
-        if (!barcode) continue;
+        if (!barcode || barcode === '0') continue;
         items.push({
           barcode,
           minQty: Number(item.MinQty) || 1,
           discountedPrice: Number.isFinite(parseFloat(item.DiscountedPrice)) && parseFloat(item.DiscountedPrice) > 0 ? parseFloat(item.DiscountedPrice) : null,
           discountRate: Number.isFinite(parseFloat(item.DiscountRate)) && parseFloat(item.DiscountRate) > 0 ? parseFloat(item.DiscountRate) : null,
+          // Weighed goods (produce, deli, bulk) publish MinQty as a near-zero
+          // kg threshold (e.g. 0.01) rather than a real unit count, and
+          // DiscountedPrice is already a per-kg price (matches
+          // DiscountedPricePerMida in the source), not a bundle price to
+          // divide down — verified live. Buli doesn't track cart weight, so
+          // these are just treated as always-active per-unit prices.
+          weighted: Number(item.bIsWeighted) === 1,
         });
       }
     }
@@ -994,7 +1015,7 @@ function promoPricesByBarcode(promotions) {
     if (promo.additionalIsCoupon) continue;
     for (const item of promo.items) {
       if (item.discountedPrice == null && item.discountRate == null) continue;
-      const candidate = { discountedPrice: item.discountedPrice, discountRate: item.discountRate, minQty: item.minQty || 1 };
+      const candidate = { discountedPrice: item.discountedPrice, discountRate: item.discountRate, minQty: item.minQty || 1, weighted: !!item.weighted };
       const existing = byBarcode[item.barcode];
       if (!existing) { byBarcode[item.barcode] = candidate; continue; }
       if (candidate.minQty < existing.minQty) { byBarcode[item.barcode] = candidate; continue; }
@@ -1019,10 +1040,17 @@ function effectivePromoInfo(promo, catalogPrice) {
   if (!promo) return null;
   const minQty = promo.minQty || 1;
   let price = null;
-  if (promo.discountedPrice != null) price = Math.round((promo.discountedPrice / minQty) * 100) / 100;
-  else if (promo.discountRate != null && catalogPrice != null) price = Math.round(catalogPrice * (1 - promo.discountRate / 100) * 100) / 100;
+  if (promo.discountedPrice != null) {
+    // Weighed goods already publish a per-kg price here (matches
+    // DiscountedPricePerMida in the source), not a bundle price for MinQty
+    // units — dividing by MinQty (often a near-zero kg threshold like 0.01)
+    // would produce a nonsense number.
+    price = promo.weighted ? promo.discountedPrice : Math.round((promo.discountedPrice / minQty) * 100) / 100;
+  } else if (promo.discountRate != null && catalogPrice != null) {
+    price = Math.round(catalogPrice * (1 - promo.discountRate / 100) * 100) / 100;
+  }
   if (price == null) return null;
-  return { price, minQty, discountedPrice: promo.discountedPrice, discountRate: promo.discountRate };
+  return { price, minQty: promo.weighted ? 1 : minQty, discountedPrice: promo.discountedPrice, discountRate: promo.discountRate };
 }
 
 // Calendar-day comparison in Israel local time (not UTC, and not exact

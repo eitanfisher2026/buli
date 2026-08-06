@@ -1,6 +1,6 @@
     const { useState, useEffect, useRef } = React;
 
-    const VERSION = "v6.20";
+    const VERSION = "v6.21";
 
     // ── CONFIG ────────────────────────────────────────────────────────────────────
     const FIREBASE_CONFIG = {
@@ -368,6 +368,25 @@
         count++;
       });
       return count > 1;
+    }
+    // The name to actually display for an item: if every vendor that has
+    // been matched agrees on the product name, show that (it's more
+    // specific/useful than whatever the user first typed). The moment they
+    // disagree, showing any one vendor's name would misrepresent the
+    // others, so fall back to the original typed name instead.
+    function itemDisplayName(item) {
+      var names = item.matchedNames || {};
+      var uniq = {};
+      var list = [];
+      Object.keys(names).forEach(function(v) {
+        var n = names[v];
+        if (!n || uniq[n]) return;
+        uniq[n] = true;
+        list.push(n);
+      });
+      if (list.length === 1) return list[0];
+      if (list.length > 1) return item.originalName || item.name;
+      return item.name;
     }
 
     // "mine" wins (green) only if it's strictly cheaper than every other
@@ -5021,7 +5040,7 @@
                   <tr key={item.id} className={editable ? "cursor-pointer active:bg-gray-50" : ""} onClick={editable ? function() { onEditItem(item); } : undefined}>
                     <td className={"sticky right-0 bg-white z-10 px-3 py-2 border-b border-gray-100 text-right " + (item.done ? "line-through text-gray-400" : (editable ? "text-blue-600 underline decoration-blue-200 underline-offset-2" : "text-gray-800"))}>
                       {itemHasMixedVendorMatches(item) && <span className="text-amber-500 font-bold" title="הרשתות מותאמות למוצרים שונים">! </span>}
-                      {item.name}
+                      {itemDisplayName(item)}
                       {qty !== 1 && <span className="text-gray-400"> ({qty})</span>}
                     </td>
                     {activeProfiles.map(function(p) {
@@ -5119,7 +5138,7 @@
               <span onClick={!isTasks && canEdit ? function(e) { e.stopPropagation(); onEdit(); } : undefined}
                 className={`font-medium text-sm ${item.done ? "line-through text-gray-400" : (!isTasks && canEdit ? "text-blue-600 underline decoration-blue-200 underline-offset-2" : "text-gray-800")} ${!isTasks && canEdit ? "cursor-pointer" : ""}`}>
                 {!isTasks && itemHasMixedVendorMatches(item) && <span className="text-amber-500 no-underline" title="הרשתות מותאמות למוצרים שונים">! </span>}
-                {item.name}
+                {itemDisplayName(item)}
               </span>
               {currentUserId && item.addedBy && item.addedBy !== currentUserId && (
                 <span style={{color: item.addedByColor || getUserColor(item.addedBy)}} className="block text-xs font-medium mt-0.5">

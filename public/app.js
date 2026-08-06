@@ -1,6 +1,6 @@
     const { useState, useEffect, useRef } = React;
 
-    const VERSION = "v6.13";
+    const VERSION = "v6.14";
 
     // ── CONFIG ────────────────────────────────────────────────────────────────────
     const FIREBASE_CONFIG = {
@@ -5332,7 +5332,7 @@
                     {priceCandidates.list.length === 0 ? (
                       <p className="text-center text-gray-400 text-xs py-4">לא נמצאו התאמות</p>
                     ) : priceCandidates.list.map(function(c) {
-                      var searchedVendors = priceCandidates.allVendors || priceCandidates.vendors || [];
+                      var searchedVendors = priceCandidates.vendors || [];
                       return (
                         <button key={c.barcode} onClick={() => onPickCandidate(item, c)}
                           className="w-full text-right rounded-xl px-3 py-2.5 bg-gray-50 hover:bg-gray-100">

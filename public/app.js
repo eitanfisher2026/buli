@@ -1,6 +1,6 @@
     const { useState, useEffect, useRef } = React;
 
-    const VERSION = "v6.23";
+    const VERSION = "v6.24";
 
     // ── CONFIG ────────────────────────────────────────────────────────────────────
     const FIREBASE_CONFIG = {
@@ -782,7 +782,7 @@
             </button>
           )}
           {screen === "home"       && <HomeScreen       user={user} isAdmin={role === "admin" && !simulateRegular} isRealAdmin={role === "admin"} simulating={simulateRegular} onToggleSimulate={toggleSimulate} onOpenList={goList} onCategories={() => go("categories")} showToast={setToast} onAddTask={() => goAdd("tasks_" + user.uid, "tasks")} onCreateShoppingList={(id, name) => goAdd(id, "shopping", name)} onCreateNotesList={(id, name) => goAdd(id, "notes", name)} />}
-          {screen === "list"       && <ListScreen       user={user} listId={listId} onBack={goBack} onAdd={(type, name) => goAdd(listId, type, name || listName)} showToast={setToast} />}
+          {screen === "list"       && <ListScreen       user={user} listId={listId} onBack={goBack} onHome={goHome} onAdd={(type, name) => goAdd(listId, type, name || listName)} showToast={setToast} />}
           {screen === "add"        && <AddScreen        user={user} listId={listId} listType={listType} listName={listName} onBack={goBack} showToast={setToast} showStickyToast={setStickyToast} />}
           {screen === "categories" && <CategoriesScreen user={user} onBack={goBack} showToast={setToast} />}
           {toast && <Toast msg={toast} onClose={() => setToast("")} />}
@@ -3552,7 +3552,7 @@
     }
 
     // ── LIST SCREEN ───────────────────────────────────────────────────────────────
-    function ListScreen({ user, listId, onBack, onAdd, showToast }) {
+    function ListScreen({ user, listId, onBack, onHome, onAdd, showToast }) {
       const [categories, setCategories] = useState([]);
       const [list,       setList]       = useState(null);
       const [items,      setItems]      = useState([]);
@@ -4199,9 +4199,30 @@
       // renders the search bar, per-vendor scope, and results all inline in
       // its own רשתות tab, so searching/picking/cancelling stay in one
       // persistent view instead of swapping between different-looking
-      // screens. Every search is scoped to exactly one vendor — the same
-      // item can have a different barcode per vendor, so there's no
-      // meaningful "search every vendor at once" anymore.
+      // screens.
+
+      // Non-destructive: searches every active vendor for the given query
+      // without touching any vendor's existing barcode match. The default
+      // scope in EditItemModal's search bar — much more convenient than
+      // matching one vendor at a time when most vendors carry the same
+      // product; per-vendor scope stays available for when they don't.
+      const matchAllVendors = (item, queryText) => {
+        var q = (queryText || item.name || "").trim();
+        if (!q) return;
+        setResolvingNames(function(prev) { var next = new Set(prev); next.add(item.name); return next; });
+        fns.httpsCallable("resolveItemBarcodes")({ items: [q], force: true, groupId: (list && list.vendorGroupId) || null }).then(function(res) {
+          setResolvingNames(function(prev) { var next = new Set(prev); next.delete(item.name); return next; });
+          var r = (res.data.results || {})[q];
+          setCandidatesByName(function(prev) {
+            var next = Object.assign({}, prev);
+            next[item.name] = { vendors: (r && r.missingVendors) || [], allVendors: (r && r.searchedVendors) || [], list: (r && r.candidates) || [] };
+            return next;
+          });
+        }, function() {
+          setResolvingNames(function(prev) { var next = new Set(prev); next.delete(item.name); return next; });
+          showToast("שגיאה בחיפוש");
+        });
+      };
 
       // Searches (and lets the user confirm) a match for exactly one vendor,
       // regardless of whether that vendor already has a match — reused for
@@ -4426,6 +4447,9 @@
             <div className="flex items-center gap-3" dir="ltr">
               <button onClick={function() { if (viewMode === "table") { setViewMode("list"); } else { onBack(); } }} className="flex items-center gap-1 text-white font-semibold text-sm bg-white/20 px-3 py-1.5 rounded-full flex-shrink-0">
                 <span className="text-lg leading-none">‹</span><span>חזרה</span>
+              </button>
+              <button onClick={onHome} title="למסך הבית" className="flex items-center justify-center text-white bg-white/20 w-8 h-8 rounded-full flex-shrink-0">
+                <span className="text-sm leading-none">🏠</span>
               </button>
               <h1 className="flex-1 text-lg font-bold truncate text-right">{list.name}</h1>
               {!isNotes && !isTasks && (
@@ -4654,7 +4678,7 @@
           )}
 
           {editItem && <EditItemModal item={editItem} categories={categories} onChange={setEditItem} onSave={saveEdit} onClearMatch={clearItemMatch} pricingEnabled={pricingEnabled}
-            priceCandidates={candidatesByName[editItem.name]} onMatchVendor={matchSingleVendor} onCancelMatch={cancelVendorMatch} onPickCandidate={pickPriceCandidate} isResolving={resolvingNames.has(editItem.name)}
+            priceCandidates={candidatesByName[editItem.name]} onMatchVendor={matchSingleVendor} onMatchAllVendors={matchAllVendors} onCancelMatch={cancelVendorMatch} onPickCandidate={pickPriceCandidate} isResolving={resolvingNames.has(editItem.name)}
             activeProfiles={activeProfiles} priceMap={priceMap} promoMap={promoMap} onClose={() => setEditItem(null)} />}
           {noteEdit && <NoteEditModal item={noteEdit} onSave={saveNoteEdit} onClose={function() { setNoteEdit(null); }} />}
           {taskEdit && <TaskEditModal item={taskEdit} onChange={setTaskEdit} onSave={saveTaskEdit} onDelete={deleteTask} onClose={() => setTaskEdit(null)} />}
@@ -5301,27 +5325,28 @@
       );
     }
 
-    function EditItemModal({ item, categories, onChange, onSave, onClearMatch, onCancelMatch, onPickCandidate, pricingEnabled, priceCandidates, onMatchVendor, isResolving, activeProfiles, priceMap, promoMap, onClose }) {
+    function EditItemModal({ item, categories, onChange, onSave, onClearMatch, onCancelMatch, onPickCandidate, pricingEnabled, priceCandidates, onMatchVendor, onMatchAllVendors, isResolving, activeProfiles, priceMap, promoMap, onClose }) {
       const [editTab, setEditTab] = useState(pricingEnabled ? "vendors" : "details");
       const showVendorsTab = pricingEnabled && editTab === "vendors";
-      // Every search is scoped to exactly one vendor — the same item can
-      // have a different barcode (and name) per vendor, so there's no
-      // meaningful "search all vendors at once" anymore. Default scope is
-      // just the first active vendor. Nothing searches until חפש is pressed.
-      const firstVendorId = (activeProfiles && activeProfiles[0] && activeProfiles[0].vendor) || null;
-      const [searchScope, setSearchScope] = useState(firstVendorId);
-      const [searchQuery, setSearchQuery] = useState(itemVendorMatchedName(item, firstVendorId) || item.name || "");
+      // Scope null = search every active vendor at once (the default — much
+      // more convenient than one-by-one when most vendors carry the exact
+      // same product); a vendor id scopes to just that one, for when the
+      // same item has a different product/barcode per vendor. Nothing
+      // searches until חפש is pressed.
+      const [searchScope, setSearchScope] = useState(null);
+      const [searchQuery, setSearchQuery] = useState(item.originalName || item.name || "");
       // Switching which vendor is being searched also refreshes the query
-      // box to that vendor's own matched name, per vendor — not a shared
-      // generic item name.
+      // box to that vendor's own matched name (or the generic item name for
+      // the "all vendors" scope) — not always a shared generic name.
       const selectScope = function(vendorId) {
         setSearchScope(vendorId);
-        setSearchQuery(itemVendorMatchedName(item, vendorId) || item.name || "");
+        setSearchQuery((vendorId && itemVendorMatchedName(item, vendorId)) || item.name || "");
       };
       const runSearch = function() {
         var q = searchQuery.trim();
-        if (!q || !searchScope) return;
-        onMatchVendor(item, searchScope, q);
+        if (!q) return;
+        if (searchScope) onMatchVendor(item, searchScope, q);
+        else onMatchAllVendors(item, q);
       };
       return (
         <Modal onClose={onClose}>
@@ -5420,14 +5445,14 @@
                     var revertTo = (item.originalName && item.originalName.trim()) || item.name || "";
                     onClearMatch(item, revertTo);
                     setSearchQuery(revertTo);
-                    setSearchScope(firstVendorId);
+                    setSearchScope(null);
                   }} className="text-blue-600 font-medium">נקה והתחל מחדש</button>
                 </div>
               )}
-              {/* One persistent search bar — every search is scoped to the
-                  vendor selected below (a status row), which also fills the
-                  box with that vendor's own matched name. Nothing runs
-                  until חפש is pressed. */}
+              {/* One persistent search bar — searching every vendor at once
+                  or just one is a scope choice (כל הרשתות, or tapping a
+                  vendor's status row below), not a different screen. Nothing
+                  runs until חפש is pressed. */}
               <div className="flex gap-2">
                 <input value={searchQuery} dir="rtl" placeholder="שם המוצר לחיפוש"
                   onChange={function(e) { setSearchQuery(e.target.value); }}
@@ -5438,6 +5463,10 @@
                   {isResolving ? <Spinner /> : "חפש"}
                 </button>
               </div>
+              <button onClick={function() { selectScope(null); }}
+                className={"text-xs px-3 py-1.5 rounded-full border font-medium " + (searchScope === null ? "bg-blue-600 text-white border-blue-600" : "bg-white text-gray-600 border-gray-200")}>
+                כל הרשתות
+              </button>
               {priceCandidates && priceCandidates.list && (
                 // Search results, shown inline right under the search bar —
                 // picking or dismissing both stay in this same view.
@@ -5452,7 +5481,7 @@
                     ) : priceCandidates.list.map(function(c) {
                       var searchedVendors = priceCandidates.vendors || [];
                       return (
-                        <button key={c.barcode} onClick={() => { onPickCandidate(item, c); onClose(); }}
+                        <button key={c.barcode} onClick={() => onPickCandidate(item, c)}
                           className="w-full text-right rounded-xl px-3 py-2.5 bg-gray-50 hover:bg-gray-100">
                           <div className="text-sm font-medium text-gray-800">{c.name}</div>
                           <div className="text-xs text-gray-500 mb-1">

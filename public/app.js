@@ -1,6 +1,6 @@
     const { useState, useEffect, useRef } = React;
 
-    const VERSION = "v6.31";
+    const VERSION = "v6.32";
 
     // ── CONFIG ────────────────────────────────────────────────────────────────────
     const FIREBASE_CONFIG = {
@@ -5739,15 +5739,19 @@
                 {rows.map(function(row) {
                   var others = rows.filter(function(r) { return r.p.id !== row.p.id; }).map(function(r) { return r.effective; });
                   var textClass = (!row.bc || !row.fetched || row.price == null) ? "text-gray-400" : cheapestTextClass(row.effective, others);
+                  // Both "never matched" and "matched, but this vendor
+                  // doesn't actually sell that barcode" need the same fix —
+                  // search again for this vendor — so both get the same
+                  // one-tap action instead of a dead-end status label.
+                  var needsAction = !row.bc || (row.fetched && row.price == null);
                   var statusText;
-                  if (!row.bc) statusText = null; // "מצא מחיר" action shown instead
+                  if (needsAction) statusText = null;
                   else if (!row.fetched) statusText = "בודק מחיר...";
-                  else if (row.price == null) statusText = "לא נמכר כאן";
                   else if (row.promoActive) statusText = "₪" + row.promo.price.toFixed(2) + "* (₪" + row.price.toFixed(2) + ")";
                   else statusText = "₪" + row.price.toFixed(2);
                   var matchedName = itemVendorMatchedName(item, row.p.vendor);
                   return (
-                    <button key={row.p.id} onClick={function() { if (!row.bc) findPriceForVendor(row.p.vendor); else selectScope(row.p.vendor); }}
+                    <button key={row.p.id} onClick={function() { if (needsAction) findPriceForVendor(row.p.vendor); else selectScope(row.p.vendor); }}
                       className={"w-full flex items-center justify-between gap-2 rounded-xl px-3 py-2.5 hover:bg-gray-100 text-right " + (searchScope === row.p.vendor ? "bg-blue-50 ring-1 ring-blue-200" : "bg-gray-50")}>
                       <div className="min-w-0 flex-1">
                         <div className="text-sm text-gray-700">{profileLabel(row.p, activeProfiles)}</div>
@@ -5758,7 +5762,7 @@
                           </div>
                         )}
                       </div>
-                      {!row.bc ? (
+                      {needsAction ? (
                         <span className="text-xs flex-shrink-0 font-semibold text-blue-600 bg-blue-50 px-2.5 py-1 rounded-full">🔍 מצא מחיר</span>
                       ) : (
                         <span className={"text-xs flex-shrink-0 font-semibold " + textClass}>{statusText}</span>
@@ -6017,15 +6021,19 @@
                 {rows.map(function(row) {
                   var others = rows.filter(function(r) { return r.p.id !== row.p.id; }).map(function(r) { return r.effective; });
                   var textClass = (!row.bc || !row.fetched || row.price == null) ? "text-gray-400" : cheapestTextClass(row.effective, others);
+                  // Both "never matched" and "matched, but this vendor
+                  // doesn't actually sell that barcode" need the same fix —
+                  // search again for this vendor — so both get the same
+                  // one-tap action instead of a dead-end status label.
+                  var needsAction = !row.bc || (row.fetched && row.price == null);
                   var statusText;
-                  if (!row.bc) statusText = null; // "מצא מחיר" action shown instead
+                  if (needsAction) statusText = null;
                   else if (!row.fetched) statusText = "בודק מחיר...";
-                  else if (row.price == null) statusText = "לא נמכר כאן";
                   else if (row.promoActive) statusText = "₪" + row.promo.price.toFixed(2) + "* (₪" + row.price.toFixed(2) + ")";
                   else statusText = "₪" + row.price.toFixed(2);
                   var matchedName = draft.matchedNames[row.p.vendor];
                   return (
-                    <button key={row.p.id} onClick={function() { if (!row.bc) findPriceForVendor(row.p.vendor); else selectScope(row.p.vendor); }}
+                    <button key={row.p.id} onClick={function() { if (needsAction) findPriceForVendor(row.p.vendor); else selectScope(row.p.vendor); }}
                       className={"w-full flex items-center justify-between gap-2 rounded-xl px-3 py-2.5 hover:bg-gray-100 text-right " + (searchScope === row.p.vendor ? "bg-blue-50 ring-1 ring-blue-200" : "bg-gray-50")}>
                       <div className="min-w-0 flex-1">
                         <div className="text-sm text-gray-700">{profileLabel(row.p, activeProfiles)}</div>
@@ -6036,7 +6044,7 @@
                           </div>
                         )}
                       </div>
-                      {!row.bc ? (
+                      {needsAction ? (
                         <span className="text-xs flex-shrink-0 font-semibold text-blue-600 bg-blue-50 px-2.5 py-1 rounded-full">🔍 מצא מחיר</span>
                       ) : (
                         <span className={"text-xs flex-shrink-0 font-semibold " + textClass}>{statusText}</span>

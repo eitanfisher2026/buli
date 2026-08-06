@@ -1,6 +1,6 @@
     const { useState, useEffect, useRef } = React;
 
-    const VERSION = "v6.22";
+    const VERSION = "v6.23";
 
     // ── CONFIG ────────────────────────────────────────────────────────────────────
     const FIREBASE_CONFIG = {
@@ -352,17 +352,25 @@
     function itemVendorMatchedName(item, vendorId) {
       return (item.matchedNames && item.matchedNames[vendorId]) || null;
     }
-    // True when two vendors are matched to genuinely different barcodes for
-    // the same list item — i.e. the price comparison is silently comparing
-    // different physical products under one shared display name, not the
-    // same product at different vendors. A vendor with no match yet doesn't
-    // count either way.
-    function itemHasMixedVendorMatches(item) {
+    // True when two *currently relevant* vendors are matched to genuinely
+    // different barcodes for the same list item — i.e. the price comparison
+    // is silently comparing different physical products under one shared
+    // display name, not the same product at different vendors. Only counts
+    // vendors passed in relevantVendorIds (the active profiles actually
+    // being shown) — a stale barcode left over from a vendor no longer
+    // active/shown must never trigger a warning about a comparison the user
+    // can't even see. A vendor with no match yet doesn't count either way.
+    // String-trims values so a stray whitespace difference between two feed
+    // sources can't look like "different" barcodes that render identically.
+    function itemHasMixedVendorMatches(item, relevantVendorIds) {
       var barcodes = item.barcodes || {};
+      var vendorIds = relevantVendorIds || Object.keys(barcodes);
       var uniq = {};
       var count = 0;
-      Object.keys(barcodes).forEach(function(v) {
-        var bc = barcodes[v];
+      vendorIds.forEach(function(v) {
+        var raw = barcodes[v];
+        if (!raw) return;
+        var bc = String(raw).trim();
         if (!bc || uniq[bc]) return;
         uniq[bc] = true;
         count++;
@@ -5039,7 +5047,7 @@
                 return (
                   <tr key={item.id} className={editable ? "cursor-pointer active:bg-gray-50" : ""} onClick={editable ? function() { onEditItem(item); } : undefined}>
                     <td className={"sticky right-0 bg-white z-10 px-3 py-2 border-b border-gray-100 text-right " + (item.done ? "line-through text-gray-400" : (editable ? "text-blue-600 underline decoration-blue-200 underline-offset-2" : "text-gray-800"))}>
-                      {itemHasMixedVendorMatches(item) && <span className="text-amber-500 font-bold" title="הרשתות מותאמות למוצרים שונים">! </span>}
+                      {itemHasMixedVendorMatches(item, activeProfiles.map(function(p) { return p.vendor; })) && <span className="text-amber-500 font-bold" title="הרשתות מותאמות למוצרים שונים">! </span>}
                       {itemDisplayName(item)}
                       {qty !== 1 && <span className="text-gray-400"> ({qty})</span>}
                     </td>
@@ -5137,7 +5145,7 @@
             <div className="flex-1 min-w-0">
               <span onClick={!isTasks && canEdit ? function(e) { e.stopPropagation(); onEdit(); } : undefined}
                 className={`font-medium text-sm ${item.done ? "line-through text-gray-400" : (!isTasks && canEdit ? "text-blue-600 underline decoration-blue-200 underline-offset-2" : "text-gray-800")} ${!isTasks && canEdit ? "cursor-pointer" : ""}`}>
-                {!isTasks && itemHasMixedVendorMatches(item) && <span className="text-amber-500 no-underline" title="הרשתות מותאמות למוצרים שונים">! </span>}
+                {!isTasks && activeProfiles && itemHasMixedVendorMatches(item, activeProfiles.map(function(p) { return p.vendor; })) && <span className="text-amber-500 no-underline" title="הרשתות מותאמות למוצרים שונים">! </span>}
                 {itemDisplayName(item)}
               </span>
               {currentUserId && item.addedBy && item.addedBy !== currentUserId && (
@@ -5505,7 +5513,7 @@
                   );
                 })}
               </div>
-              {itemHasMixedVendorMatches(item) && (
+              {itemHasMixedVendorMatches(item, rows.map(function(r) { return r.p.vendor; })) && (
                 <div className="text-[11px] text-amber-600 bg-amber-50 border border-amber-100 rounded-xl px-3 py-2">
                   ⚠️ הרשתות מותאמות לברקודים שונים — ייתכן שאלו מוצרים שונים (למשל גודל אריזה שונה), לא בהכרח אותו פריט
                 </div>

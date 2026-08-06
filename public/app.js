@@ -1,6 +1,6 @@
     const { useState, useEffect, useRef } = React;
 
-    const VERSION = "v6.28";
+    const VERSION = "v6.29";
 
     // ── CONFIG ────────────────────────────────────────────────────────────────────
     const FIREBASE_CONFIG = {
@@ -561,12 +561,13 @@
         </div>
       );
     }
-    function Modal({ onClose, children }) {
+    function Modal({ onClose, children, disableClose }) {
       const [dragY, setDragY] = React.useState(0);
       const startYRef = React.useRef(null);
       const handleRef = React.useRef(null);
 
       const onPointerDown = (e) => {
+        if (disableClose) return;
         startYRef.current = e.clientY;
         if (handleRef.current) handleRef.current.setPointerCapture(e.pointerId);
       };
@@ -581,15 +582,17 @@
       };
 
       return (
-        <div className="fixed inset-0 bg-black/40 z-40 flex items-end" onClick={onClose}>
+        <div className="fixed inset-0 bg-black/40 z-40 flex items-end" onClick={disableClose ? undefined : onClose}>
           <div className="relative bg-white w-full max-w-md mx-auto rounded-t-3xl flex flex-col"
             style={{ transform: "translateY(" + dragY + "px)", transition: dragY === 0 ? "transform 0.2s ease" : "none", maxHeight: "88dvh" }}
             onClick={e => e.stopPropagation()}>
             <div className="relative flex-shrink-0 px-6 pt-6">
               <div ref={handleRef}
                 onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={onPointerUp}
-                className="w-10 h-1.5 bg-gray-200 rounded-full mx-auto mb-4 cursor-grab active:cursor-grabbing touch-none" />
-              <button onClick={onClose} className="absolute top-4 left-4 text-gray-400 hover:text-gray-600 text-2xl leading-none w-8 h-8 flex items-center justify-center">×</button>
+                className={"w-10 h-1.5 bg-gray-200 rounded-full mx-auto mb-4 " + (disableClose ? "" : "cursor-grab active:cursor-grabbing touch-none")} />
+              {!disableClose && (
+                <button onClick={onClose} className="absolute top-4 left-4 text-gray-400 hover:text-gray-600 text-2xl leading-none w-8 h-8 flex items-center justify-center">×</button>
+              )}
             </div>
             <div className="overflow-y-auto px-6 pb-8">
               {children}
@@ -942,6 +945,10 @@
       // ── Price comparison vendor profiles (own preference, admin controls
       // the on/off flag and the max-active-at-once cap) ──
       const [myPricingEnabled, setMyPricingEnabled] = useState(false);
+      const [myMenusEnabled, setMyMenusEnabled] = useState(true);
+      const [myTasksEnabled, setMyTasksEnabled] = useState(true);
+      const [myAddMode, setMyAddMode] = useState("group"); // "group" | "single"
+      const [myNickname, setMyNickname] = useState("");
       const [showPricingSettings, setShowPricingSettings] = useState(false);
       const [pricingBranchesLoading, setPricingBranchesLoading] = useState(false);
       const [vendorBranchLists, setVendorBranchLists] = useState(function() {
@@ -977,9 +984,21 @@
       useEffect(function() {
         var profilesRef = null, onProfiles = null;
         var groupsRef = null, onGroups = null;
-        db.ref("users/" + user.uid + "/pricingEnabled").once("value").then(function(snap) {
-          var enabled = !!snap.val();
+        Promise.all([
+          db.ref("users/" + user.uid + "/pricingEnabled").once("value"),
+          db.ref("users/" + user.uid + "/menusEnabled").once("value"),
+          db.ref("users/" + user.uid + "/tasksEnabled").once("value"),
+          db.ref("users/" + user.uid + "/addMode").once("value"),
+          db.ref("users/" + user.uid + "/nickname").once("value"),
+        ]).then(function(snaps) {
+          var enabled = !!snaps[0].val();
           setMyPricingEnabled(enabled);
+          // Unset (never chosen) defaults to on — opt-out, not opt-in, so
+          // nobody's menus/tasks silently vanish just because this feature shipped.
+          setMyMenusEnabled(snaps[1].val() !== false);
+          setMyTasksEnabled(snaps[2].val() !== false);
+          setMyAddMode(snaps[3].val() === "single" ? "single" : "group");
+          setMyNickname(snaps[4].val() || "");
           if (!enabled) return; // no pricing for this user — skip the vendor-profile listener and settings call entirely
           profilesRef = db.ref("users/" + user.uid + "/vendorProfiles");
           onProfiles = function(snap2) { setVendorProfiles(snap2.val() || {}); };
@@ -1296,6 +1315,11 @@
         setUserBusy(true); setUserMsg("");
         fns.httpsCallable("setUserPricingEnabled")({ email: email, enabled: nextEnabled }).then(function() {
           setUserBusy(false);
+          // loadAuthUsers() only refreshes selfUserInfo/authUsers (the admin
+          // "ניהול משתמשים" list) — the always-visible profile card up top
+          // reads its own myPricingEnabled state, which that call never
+          // touches, so toggling self would otherwise look like a no-op.
+          if (email.trim().toLowerCase() === (user.email || "").toLowerCase()) setMyPricingEnabled(nextEnabled);
           loadAuthUsers();
         }, function(e) { setUserMsg("⚠ " + e.message); setUserBusy(false); });
       };
@@ -1306,6 +1330,12 @@
           loadAuthUsers();
         }, function(e) { setUserMsg("⚠ " + e.message); setUserBusy(false); });
       };
+      // Personal display preferences — plain self-only fields (rules already
+      // allow a user to write their own users/{uid}/* besides the two
+      // special-cased ones), so no callable round-trip is needed here.
+      const setMyMenusEnabledPref = function(v) { setMyMenusEnabled(v); db.ref("users/" + user.uid + "/menusEnabled").set(v); };
+      const setMyTasksEnabledPref = function(v) { setMyTasksEnabled(v); db.ref("users/" + user.uid + "/tasksEnabled").set(v); };
+      const setMyAddModePref = function(v) { setMyAddMode(v); db.ref("users/" + user.uid + "/addMode").set(v); };
 
       // ── Usage & Costs ────────────────────────────────────────────────────────
       const [showCosts,    setShowCosts]    = useState(false);
@@ -1391,6 +1421,13 @@
       };
       const [activeTab, setActiveTab] = useState(function() { return localStorage.getItem("buli_active_tab") || "shopping"; });
       const setTab = function(t) { setActiveTab(t); localStorage.setItem("buli_active_tab", t); };
+      // If the tab the user was last on got disabled (from a previous
+      // session, another device, or just now in settings), fall back to
+      // shopping rather than rendering a dead tab.
+      useEffect(function() {
+        if (activeTab === "notes" && !myMenusEnabled) setTab("shopping");
+        if (activeTab === "tasks" && !myTasksEnabled) setTab("shopping");
+      }, [myMenusEnabled, myTasksEnabled]);
       const toggleAutoOpen = () => {
         var next = !autoOpenMajor;
         localStorage.setItem("buli_auto_open_major", next ? "true" : "false");
@@ -1907,8 +1944,11 @@
             </div>
             <p className="text-white/60 text-sm mt-1 text-right">שלום, {user.displayName.split(" ")[0]}</p>
           </div>
+          {(myMenusEnabled || myTasksEnabled) && (
           <div className="bg-white border-b border-gray-200 flex-shrink-0 flex" dir="rtl">
-            {[["shopping","🛒","קניות"],["notes","📝","תפריטים"],["tasks","✅","מטלות"]].map(function(t) {
+            {[["shopping","🛒","קניות"],["notes","📝","תפריטים"],["tasks","✅","מטלות"]]
+              .filter(function(t) { return t[0] === "shopping" || (t[0] === "notes" && myMenusEnabled) || (t[0] === "tasks" && myTasksEnabled); })
+              .map(function(t) {
               var id = t[0], icon = t[1], label = t[2];
               return (
                 <button key={id} onClick={function(e) { e.stopPropagation(); setTab(id); }}
@@ -1919,6 +1959,7 @@
               );
             })}
           </div>
+          )}
 
           <div className="flex-1 overflow-y-auto p-4 pb-24">
 
@@ -2156,7 +2197,7 @@
                   Settings as a whole instead of unpredictably landing on the home
                   screen depending on which sub-panel happened to be open. ── */}
               <div className="flex bg-gray-100 rounded-xl p-1 mb-4">
-                {[["vendors", "רשתות"], ["general", "כללי"], ["users", "משתמשים"]].map(function(tab) {
+                {[["vendors", "רשתות"], ["general", "כללי"], ["users", "פרופיל"]].map(function(tab) {
                   var key = tab[0], label = tab[1];
                   return (
                     <button key={key} onClick={function() { switchSettingsTab(key); }}
@@ -2304,6 +2345,58 @@
               </div>)}
 
               {settingsTab === "users" && (<div>
+              {/* ── Your profile — surfaced at the top instead of buried behind
+                  the "ניהול משתמשים" toggle, since it's what most people open
+                  this tab for. ── */}
+              <div className="mb-4 bg-gray-50 rounded-2xl p-4">
+                <div className="flex items-center justify-between mb-2">
+                  <span className="text-sm text-gray-700 truncate">{user.email}</span>
+                  <span className="text-xs font-bold text-gray-400 uppercase flex-shrink-0">{isRealAdmin ? "מנהל" : "משתמש"}</span>
+                </div>
+                <input key={"mynick:" + myNickname} type="text" defaultValue={myNickname}
+                  placeholder="כינוי (יוצג ברשימת שיתוף)" dir="rtl"
+                  onBlur={function(e) { var v = e.target.value.trim(); if (v !== myNickname) { setMyNickname(v); handleSaveNickname(user.email, v); } }}
+                  className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm bg-white focus:outline-none focus:border-blue-400 mb-3" />
+                <div className="space-y-2.5">
+                  <div className="flex items-center justify-between">
+                    <span className="text-sm text-gray-700">💰 השוואת מחירים</span>
+                    <button onClick={function() { handleTogglePricing(user.email, !myPricingEnabled); }} disabled={userBusy}
+                      className={"relative inline-flex h-6 w-11 items-center rounded-full transition-colors disabled:opacity-40 " + (myPricingEnabled ? "bg-blue-600" : "bg-gray-200")}>
+                      <span className={"inline-block h-4 w-4 rounded-full bg-white shadow transition-transform " + (myPricingEnabled ? "translate-x-6" : "translate-x-1")} />
+                    </button>
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <span className="text-sm text-gray-700">📝 תפריטים</span>
+                    <button onClick={function() { setMyMenusEnabledPref(!myMenusEnabled); }}
+                      className={"relative inline-flex h-6 w-11 items-center rounded-full transition-colors " + (myMenusEnabled ? "bg-blue-600" : "bg-gray-200")}>
+                      <span className={"inline-block h-4 w-4 rounded-full bg-white shadow transition-transform " + (myMenusEnabled ? "translate-x-6" : "translate-x-1")} />
+                    </button>
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <span className="text-sm text-gray-700">✅ מטלות</span>
+                    <button onClick={function() { setMyTasksEnabledPref(!myTasksEnabled); }}
+                      className={"relative inline-flex h-6 w-11 items-center rounded-full transition-colors " + (myTasksEnabled ? "bg-blue-600" : "bg-gray-200")}>
+                      <span className={"inline-block h-4 w-4 rounded-full bg-white shadow transition-transform " + (myTasksEnabled ? "translate-x-6" : "translate-x-1")} />
+                    </button>
+                  </div>
+                  {myPricingEnabled && (
+                    <div>
+                      <div className="text-sm text-gray-700 mb-1">🛒 הוספת פריטים לרשימה</div>
+                      <div className="flex bg-white rounded-xl border border-gray-200 p-1">
+                        <button onClick={function() { setMyAddModePref("group"); }}
+                          className={"flex-1 py-1.5 rounded-lg text-xs font-medium transition " + (myAddMode === "group" ? "bg-blue-600 text-white" : "text-gray-500")}>
+                          קבוצה
+                        </button>
+                        <button onClick={function() { setMyAddModePref("single"); }}
+                          className={"flex-1 py-1.5 rounded-lg text-xs font-medium transition " + (myAddMode === "single" ? "bg-blue-600 text-white" : "text-gray-500")}>
+                          אחד בכל פעם
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </div>
+
               {/* ── Contacts (who gets auto-shared into new lists) ────────────────── */}
               <div className="mb-4">
                 <div className="text-sm font-semibold text-gray-700 mb-0.5 flex items-center gap-2">
@@ -2337,7 +2430,11 @@
                 )}
               </div>
 
-              {/* ── Manage Users (admins see everyone; regular users see only themselves) ── */}
+              {/* ── Manage Users — admin-only now; a regular user's own info
+                  already lives in the profile card above, so this section
+                  (managing OTHER people's access) has nothing left to show
+                  them. ── */}
+              {isAdmin && (
               <div className="mt-3">
                 <button onClick={function() { setShowUsers(function(o) { if (!o) loadAuthUsers(); return !o; }); }}
                   className={"w-full flex items-center justify-between px-3 py-3 rounded-xl border transition " + (showUsers ? "bg-white border-blue-200" : "bg-gray-50 border-transparent hover:bg-gray-100")}>
@@ -2451,6 +2548,7 @@
                   </div>
                 )}
               </div>
+              )}
               </div>)}
 
               {settingsTab === "general" && (<div>
@@ -3583,6 +3681,8 @@
       useEffect(function() { localStorage.setItem("buli_filter_vendor", filterVendorProfile); }, [filterVendorProfile]);
       const [showFilters, setShowFilters] = useState(false);
       const [pricingEnabled, setPricingEnabled] = useState(false);
+      const [addMode, setAddMode] = useState("group"); // "group" | "single"
+      const [showQuickAdd, setShowQuickAdd] = useState(false);
       // Survives ListScreen unmounting (leaving the list, adding items, etc.) —
       // without this, every re-entry into the same list re-fetched every
       // price from scratch even seconds after you'd just seen them, since
@@ -3680,6 +3780,30 @@
         }, function(err) { showToast("שגיאה: " + (err && err.message || "?")); });
       };
 
+      // Inserts one item from the quick-add ("one at a time") wizard. Prices
+      // aren't re-applied from the wizard's own local lookups here — once
+      // the new item lands via the live items listener, the existing
+      // missing-barcode effect fetches/verifies its prices the normal way,
+      // same as any other newly-added or newly-matched item.
+      const insertQuickAddItem = function(draft, done) {
+        var name = (draft.name || "").trim();
+        if (!name) { done(); return; }
+        var key = db.ref("items/" + listId).push().key;
+        var hasBarcodes = draft.barcodes && Object.keys(draft.barcodes).length > 0;
+        var payload = {
+          name: name, category: draft.category || "שונות", categoryEmoji: draft.categoryEmoji || "🛍️",
+          quantity: draft.quantity || 1, unit: draft.unit || "יחידות", note: draft.note || "", done: false,
+          barcodes: hasBarcodes ? draft.barcodes : null,
+          matchedNames: hasBarcodes ? draft.matchedNames : null,
+          addedBy: user.uid, addedByName: user.displayName, addedByColor: getUserColor(user.uid),
+          createdAt: Date.now(),
+        };
+        db.ref("items/" + listId + "/" + key).set(payload).then(function() {
+          showToast("נוסף: " + name);
+          done();
+        }, function(err) { showToast("שגיאה: " + (err && err.message || "?")); done(); });
+      };
+
       const setListVendorGroup = function(groupId) {
         db.ref("lists/" + listId + "/vendorGroupId").set(groupId || null);
         setList(function(prev) { return prev ? Object.assign({}, prev, { vendorGroupId: groupId }) : prev; });
@@ -3765,6 +3889,9 @@
 
         db.ref("users/" + user.uid + "/pricingEnabled").once("value").then(function(snap) {
           setPricingEnabled(!!snap.val());
+        });
+        db.ref("users/" + user.uid + "/addMode").once("value").then(function(snap) {
+          setAddMode(snap.val() === "single" ? "single" : "group");
         });
       };
       useEffect(function() {
@@ -4677,7 +4804,10 @@
           </div>
 
           {canAddItems && !(viewMode === "table" && pricingEnabled && !isTasks && !isNotes) && (
-            <button onClick={() => onAdd(list.type, list.name)} className="fixed bottom-6 left-1/2 -translate-x-1/2 bg-blue-600 text-white px-8 py-4 rounded-2xl shadow-xl font-semibold text-base flex items-center gap-2 no-print">
+            <button onClick={() => {
+              if (!isTasks && !isNotes && pricingEnabled && addMode === "single") setShowQuickAdd(true);
+              else onAdd(list.type, list.name);
+            }} className="fixed bottom-6 left-1/2 -translate-x-1/2 bg-blue-600 text-white px-8 py-4 rounded-2xl shadow-xl font-semibold text-base flex items-center gap-2 no-print">
               <span className="text-xl font-light">+</span> {isTasks ? "הוסף מטלה" : isNotes ? "הוסף מנות" : "הוסף פריטים"}
             </button>
           )}
@@ -4685,6 +4815,8 @@
           {editItem && <EditItemModal item={editItem} categories={categories} onChange={setEditItem} onSave={saveEdit} onClearMatch={clearItemMatch} pricingEnabled={pricingEnabled}
             priceCandidates={candidatesByName[editItem.name]} onMatchVendor={matchSingleVendor} onMatchAllVendors={matchAllVendors} onCancelMatch={cancelVendorMatch} onPickCandidate={pickPriceCandidate} isResolving={resolvingNames.has(editItem.name)}
             activeProfiles={activeProfiles} priceMap={priceMap} promoMap={promoMap} onClose={() => setEditItem(null)} />}
+          {showQuickAdd && <QuickAddItemModal listId={listId} groupId={(list && list.vendorGroupId) || null} user={user} categories={categories}
+            activeProfiles={activeProfiles} showToast={showToast} onInsert={insertQuickAddItem} onCancel={() => setShowQuickAdd(false)} />}
           {noteEdit && <NoteEditModal item={noteEdit} onSave={saveNoteEdit} onClose={function() { setNoteEdit(null); }} />}
           {taskEdit && <TaskEditModal item={taskEdit} onChange={setTaskEdit} onSave={saveTaskEdit} onDelete={deleteTask} onClose={() => setTaskEdit(null)} />}
           {confirmDialog && <ConfirmDialog message={confirmDialog.message} confirmLabel={confirmDialog.confirmLabel} onConfirm={confirmDialog.onConfirm} onClose={function() { setConfirmDialog(null); }} />}
@@ -5575,6 +5707,261 @@
             className="w-full bg-blue-600 text-white py-4 rounded-2xl font-semibold mt-5 disabled:opacity-40">
             שמור שינויים
           </button>
+        </Modal>
+      );
+    }
+
+    // ── QUICK ADD (one-at-a-time, with price check) ─────────────────────────────
+    // A self-contained wizard for the "add items one at a time" preference:
+    // details tab (name/qty/category/note) then a רשתות tab that reuses the
+    // same search/scope/candidate pattern as EditItemModal, but against a
+    // local draft — nothing is written to the list until "הוסף לרשימה".
+    // No X/backdrop/swipe close (Modal disableClose) — only the two explicit
+    // buttons at the bottom can leave, per how this was scoped.
+    function QuickAddItemModal({ listId, groupId, user, categories, activeProfiles, onInsert, onCancel, showToast }) {
+      const blankDraft = function() {
+        return { name: "", category: "שונות", categoryEmoji: "🛍️", quantity: 1, unit: "יחידות", note: "", barcodes: {}, matchedNames: {} };
+      };
+      const [draft, setDraft] = useState(blankDraft());
+      const [tab, setTab] = useState("details");
+      const [searchScope, setSearchScope] = useState(null); // null = כל הרשתות
+      const [searchQuery, setSearchQuery] = useState("");
+      const [candidates, setCandidates] = useState(null); // { vendors, list } | null
+      const [isResolving, setIsResolving] = useState(false);
+      const [priceMap, setPriceMap] = useState({});   // { profileId: { barcode: price } }
+      const [promoMap, setPromoMap] = useState({});   // { profileId: { barcode: promoInfo } }
+      const [saving, setSaving] = useState(false);
+
+      const selectScope = function(vendorId) {
+        setSearchScope(vendorId);
+        setSearchQuery((vendorId && draft.matchedNames[vendorId]) || draft.name || "");
+      };
+
+      const runSearch = function() {
+        var q = searchQuery.trim();
+        if (!q) return;
+        setIsResolving(true);
+        var payload = { items: [q], force: true, groupId: groupId || null };
+        if (searchScope) payload.vendors = [searchScope];
+        fns.httpsCallable("resolveItemBarcodes")(payload).then(function(res) {
+          setIsResolving(false);
+          var r = (res.data.results || {})[q];
+          setCandidates({ vendors: (r && r.missingVendors) || (searchScope ? [searchScope] : []), list: (r && r.candidates) || [] });
+        }, function() { setIsResolving(false); showToast("שגיאה בחיפוש"); });
+      };
+
+      const pickCandidate = function(c) {
+        var searchedVendors = (candidates && candidates.vendors) || Object.keys(c.prices || {});
+        var vendorsToConfirm = searchedVendors.filter(function(v) { return c.prices && c.prices[v] != null; });
+        if (vendorsToConfirm.length === 0) return;
+        fns.httpsCallable("confirmItemBarcode")({ name: draft.name, barcode: c.barcode, matchedName: c.name, vendors: vendorsToConfirm }).then(function() {
+          setDraft(function(prev) {
+            var nb = Object.assign({}, prev.barcodes), nn = Object.assign({}, prev.matchedNames);
+            vendorsToConfirm.forEach(function(v) { nb[v] = c.barcode; nn[v] = c.name; });
+            return Object.assign({}, prev, { barcodes: nb, matchedNames: nn });
+          });
+          setPriceMap(function(prev) {
+            var next = Object.assign({}, prev);
+            (activeProfiles || []).forEach(function(p) {
+              if (vendorsToConfirm.indexOf(p.vendor) === -1) return;
+              next[p.id] = Object.assign({}, next[p.id]);
+              next[p.id][c.barcode] = c.prices[p.vendor];
+            });
+            return next;
+          });
+          setPromoMap(function(prev) {
+            var next = Object.assign({}, prev);
+            (activeProfiles || []).forEach(function(p) {
+              if (vendorsToConfirm.indexOf(p.vendor) === -1) return;
+              var promoInfo = c.promoPrices && c.promoPrices[p.vendor];
+              if (!promoInfo) return;
+              next[p.id] = Object.assign({}, next[p.id]);
+              next[p.id][c.barcode] = promoInfo;
+            });
+            return next;
+          });
+          setCandidates(null);
+        }, function() { showToast("שגיאה באישור התאמה"); });
+      };
+
+      const handleInsert = function() {
+        if (!draft.name.trim() || saving) return;
+        setSaving(true);
+        onInsert(draft, function() {
+          setSaving(false);
+          setDraft(blankDraft());
+          setTab("details");
+          setSearchScope(null);
+          setSearchQuery("");
+          setCandidates(null);
+          setPriceMap({});
+          setPromoMap({});
+        });
+      };
+
+      var rows = (activeProfiles || []).map(function(p) {
+        var bc = draft.barcodes[p.vendor] || null;
+        var vendorPrices = priceMap[p.id];
+        var fetched = !!(bc && vendorPrices && (bc in vendorPrices));
+        var price = fetched ? vendorPrices[bc] : null;
+        var promo = (bc && promoMap[p.id]) ? promoMap[p.id][bc] : null;
+        var promoActive = !!(promo && (parseFloat(draft.quantity) || 1) >= (promo.minQty || 1));
+        return { p: p, bc: bc, fetched: fetched, price: price, promo: promo, promoActive: promoActive, effective: promoActive ? promo.price : price };
+      });
+
+      return (
+        <Modal onClose={onCancel} disableClose>
+          <h3 className="text-lg font-bold text-center mb-1">הוספת פריט</h3>
+          <div className="flex bg-gray-100 rounded-xl p-1 mb-4">
+            {[["details", "פרטי פריט"], ["vendors", "בדיקת מחירים"]].map(function(t) {
+              var key = t[0], label = t[1];
+              return (
+                <button key={key} onClick={function() { setTab(key); }}
+                  className={"flex-1 py-2 rounded-lg text-sm font-medium transition " + (tab === key ? "bg-white shadow text-blue-600" : "text-gray-500")}>
+                  {label}
+                </button>
+              );
+            })}
+          </div>
+          {tab === "details" && (
+            <div className="space-y-3">
+              <div>
+                <label className="text-xs text-gray-500 block mb-1">שם</label>
+                <input value={draft.name} autoFocus onChange={function(e) { setDraft(Object.assign({}, draft, { name: e.target.value })); }}
+                  className="w-full border border-gray-200 rounded-xl px-4 py-3 text-right focus:outline-none focus:border-blue-400" />
+              </div>
+              <div className="grid grid-cols-2 gap-2">
+                <div>
+                  <label className="text-xs text-gray-500 block mb-1">כמות</label>
+                  <div className="flex items-center gap-1">
+                    <button type="button"
+                      onClick={function() { setDraft(Object.assign({}, draft, { quantity: Math.max(0.1, Math.round(((parseFloat(draft.quantity) || 1) - 1) * 10) / 10) })); }}
+                      className="w-10 h-11 rounded-xl bg-gray-100 text-gray-600 text-xl font-bold flex items-center justify-center active:bg-gray-200 flex-shrink-0">−</button>
+                    <input type="number" min="0.1" step="0.1" value={draft.quantity} onChange={function(e) { setDraft(Object.assign({}, draft, { quantity: e.target.value })); }}
+                      className="w-full min-w-0 border border-gray-200 rounded-xl px-1 py-3 text-center focus:outline-none focus:border-blue-400" />
+                    <button type="button"
+                      onClick={function() { setDraft(Object.assign({}, draft, { quantity: Math.round(((parseFloat(draft.quantity) || 0) + 1) * 10) / 10 })); }}
+                      className="w-10 h-11 rounded-xl bg-blue-50 text-blue-600 text-xl font-bold flex items-center justify-center active:bg-blue-100 flex-shrink-0">+</button>
+                  </div>
+                </div>
+                <div>
+                  <label className="text-xs text-gray-500 block mb-1">יחידה</label>
+                  <select value={draft.unit} onChange={function(e) { setDraft(Object.assign({}, draft, { unit: e.target.value })); }}
+                    className="w-full border border-gray-200 rounded-xl px-3 py-3 text-right focus:outline-none focus:border-blue-400 bg-white">
+                    {UNITS.map(function(u) { return <option key={u} value={u}>{u}</option>; })}
+                  </select>
+                </div>
+              </div>
+              <div>
+                <label className="text-xs text-gray-500 block mb-1">קטגוריה</label>
+                <div className="flex flex-wrap gap-1.5 max-h-28 overflow-y-auto">
+                  {(categories && categories.length > 0 ? categories : DEFAULT_CATEGORIES).map(function(cat) {
+                    return (
+                      <button key={cat.id} onClick={function() { setDraft(Object.assign({}, draft, { category: cat.label, categoryEmoji: cat.emoji })); }}
+                        className={"text-xs px-2.5 py-1 rounded-full border transition " + (draft.category === cat.label ? "bg-blue-600 text-white border-blue-600" : "bg-white text-gray-600 border-gray-200")}>
+                        {cat.emoji} {cat.label}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+              <div>
+                <label className="text-xs text-gray-500 block mb-1">הערה</label>
+                <input value={draft.note} onChange={function(e) { setDraft(Object.assign({}, draft, { note: e.target.value })); }} placeholder="אופציונלי"
+                  className="w-full border border-gray-200 rounded-xl px-4 py-3 text-right focus:outline-none focus:border-blue-400" />
+              </div>
+            </div>
+          )}
+          {tab === "vendors" && (
+            <div className="space-y-2">
+              <div className="flex gap-2">
+                <input value={searchQuery} dir="rtl" placeholder="שם המוצר לחיפוש"
+                  onChange={function(e) { setSearchQuery(e.target.value); }}
+                  onKeyDown={function(e) { if (e.key === "Enter") runSearch(); }}
+                  className="flex-1 min-w-0 border border-gray-200 rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:border-blue-400" />
+                <button onClick={runSearch} disabled={!searchQuery.trim() || isResolving}
+                  className="px-4 rounded-xl bg-blue-600 text-white text-sm font-medium disabled:opacity-40 flex-shrink-0">
+                  {isResolving ? <Spinner /> : "חפש"}
+                </button>
+              </div>
+              <button onClick={function() { selectScope(null); }}
+                className={"text-xs px-3 py-1.5 rounded-full border font-medium " + (searchScope === null ? "bg-blue-600 text-white border-blue-600" : "bg-white text-gray-600 border-gray-200")}>
+                כל הרשתות
+              </button>
+              {candidates && (
+                <div>
+                  <div className="flex items-center justify-between mb-1 mt-1">
+                    <button onClick={function() { setCandidates(null); }} className="text-xs text-gray-400 font-medium">✕ סגור תוצאות</button>
+                    <div className="text-xs font-semibold text-gray-500">תוצאות חיפוש</div>
+                  </div>
+                  <div className="space-y-2 max-h-60 overflow-y-auto">
+                    {candidates.list.length === 0 ? (
+                      <p className="text-center text-gray-400 text-xs py-4">לא נמצאו התאמות</p>
+                    ) : candidates.list.map(function(c) {
+                      var searchedVendors = candidates.vendors || [];
+                      return (
+                        <button key={c.barcode} onClick={function() { pickCandidate(c); }}
+                          className="w-full text-right rounded-xl px-3 py-2.5 bg-gray-50 hover:bg-gray-100">
+                          <div className="text-sm font-medium text-gray-800">{c.name}</div>
+                          <div className="text-xs text-gray-500 mb-1">
+                            {c.manufacturer ? ("יצרן/מותג: " + c.manufacturer + " · ") : ""}ברקוד: {c.barcode}
+                          </div>
+                          <div className="flex items-center gap-1.5 flex-wrap">
+                            {searchedVendors.map(function(v) {
+                              var meta = VENDOR_LIST.find(function(x) { return x.id === v; });
+                              var price = c.prices ? c.prices[v] : null;
+                              var promo = c.promoPrices ? c.promoPrices[v] : null;
+                              var promoActive = !!(promo && price != null && promo.price < price);
+                              return (
+                                <span key={v} className="text-xs bg-white border border-gray-200 rounded-full px-2 py-0.5">
+                                  {meta ? meta.label : v}: {promoActive ? ("₪" + promo.price.toFixed(2) + "*") : (price != null ? "₪" + Number(price).toFixed(2) : "לא נמכר כאן")}
+                                </span>
+                              );
+                            })}
+                          </div>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+              <div className="space-y-1.5">
+                {rows.map(function(row) {
+                  var others = rows.filter(function(r) { return r.p.id !== row.p.id; }).map(function(r) { return r.effective; });
+                  var textClass = (!row.bc || !row.fetched || row.price == null) ? "text-gray-400" : cheapestTextClass(row.effective, others);
+                  var statusText;
+                  if (!row.bc) statusText = "לא הותאם";
+                  else if (!row.fetched) statusText = "בודק מחיר...";
+                  else if (row.price == null) statusText = "לא נמכר כאן";
+                  else if (row.promoActive) statusText = "₪" + row.promo.price.toFixed(2) + "* (₪" + row.price.toFixed(2) + ")";
+                  else statusText = "₪" + row.price.toFixed(2);
+                  var matchedName = draft.matchedNames[row.p.vendor];
+                  return (
+                    <button key={row.p.id} onClick={function() { selectScope(row.p.vendor); }}
+                      className={"w-full flex items-center justify-between gap-2 rounded-xl px-3 py-2.5 hover:bg-gray-100 text-right " + (searchScope === row.p.vendor ? "bg-blue-50 ring-1 ring-blue-200" : "bg-gray-50")}>
+                      <div className="min-w-0 flex-1">
+                        <div className="text-sm text-gray-700">{profileLabel(row.p, activeProfiles)}</div>
+                        {(matchedName || row.bc) && (
+                          <div className="text-[10px] text-gray-400 truncate flex items-center gap-1">
+                            {matchedName && <span className="text-gray-500">{matchedName}</span>}
+                            {row.bc && <span className="font-mono" dir="ltr">{row.bc}</span>}
+                          </div>
+                        )}
+                      </div>
+                      <span className={"text-xs flex-shrink-0 font-semibold " + textClass}>{statusText}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+          <div className="flex gap-2 mt-5">
+            <button onClick={onCancel} className="flex-1 py-4 rounded-2xl border border-gray-200 text-gray-600 font-medium">ביטול</button>
+            <button onClick={handleInsert} disabled={!draft.name.trim() || saving}
+              className="flex-1 bg-blue-600 text-white py-4 rounded-2xl font-semibold disabled:opacity-40">
+              {saving ? <Spinner /> : "הוסף לרשימה"}
+            </button>
+          </div>
         </Modal>
       );
     }

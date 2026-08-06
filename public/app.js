@@ -1,6 +1,6 @@
     const { useState, useEffect, useRef } = React;
 
-    const VERSION = "v6.14";
+    const VERSION = "v6.15";
 
     // ── CONFIG ────────────────────────────────────────────────────────────────────
     const FIREBASE_CONFIG = {
@@ -4135,16 +4135,18 @@
       // EditItemModal renders the results inline in its own רשתות tab, so
       // searching/picking/cancelling all stay within the same dialog
       // instead of bouncing out to the list and back.
-      const handleResetMatch = (item) => {
+      const handleResetMatch = (item, queryText) => {
         var revertedName = item.originalName || item.name;
         var cleared = { barcodes: null, barcode: null, originalName: null, name: revertedName };
         setItems(function(prev) { return prev.map(function(i) { return i.id === item.id ? Object.assign({}, i, cleared) : i; }); });
         db.ref("items/" + listId + "/" + item.id).update(cleared);
         setEditItem(function(prev) { return prev ? Object.assign({}, prev, cleared) : prev; });
+        var q = (queryText || revertedName || "").trim();
+        if (!q) return;
         setResolvingNames(function(prev) { var next = new Set(prev); next.add(revertedName); return next; });
-        fns.httpsCallable("resolveItemBarcodes")({ items: [revertedName], force: true, groupId: (list && list.vendorGroupId) || null }).then(function(res) {
+        fns.httpsCallable("resolveItemBarcodes")({ items: [q], force: true, groupId: (list && list.vendorGroupId) || null }).then(function(res) {
           setResolvingNames(function(prev) { var next = new Set(prev); next.delete(revertedName); return next; });
-          var r = (res.data.results || {})[revertedName];
+          var r = (res.data.results || {})[q];
           if (r && r.candidates && r.candidates.length > 0) {
             setCandidatesByName(function(prev) { var next = Object.assign({}, prev); next[revertedName] = { vendors: r.missingVendors, allVendors: r.searchedVendors || r.missingVendors, list: r.candidates }; return next; });
           } else {
@@ -4162,11 +4164,13 @@
       // matched row, same action either way. Scoping the server call itself
       // to `vendors: [vendorId]` keeps the candidate list scoped to just
       // this vendor too (see fuzzyMatchCatalogs/resolveItemBarcodes).
-      const matchSingleVendor = (item, vendorId) => {
+      const matchSingleVendor = (item, vendorId, queryText) => {
+        var q = (queryText || item.name || "").trim();
+        if (!q) return;
         setResolvingNames(function(prev) { var next = new Set(prev); next.add(item.name); return next; });
-        fns.httpsCallable("resolveItemBarcodes")({ items: [item.name], force: true, vendors: [vendorId], groupId: (list && list.vendorGroupId) || null }).then(function(res) {
+        fns.httpsCallable("resolveItemBarcodes")({ items: [q], force: true, vendors: [vendorId], groupId: (list && list.vendorGroupId) || null }).then(function(res) {
           setResolvingNames(function(prev) { var next = new Set(prev); next.delete(item.name); return next; });
-          var r = (res.data.results || {})[item.name];
+          var r = (res.data.results || {})[q];
           setCandidatesByName(function(prev) {
             var next = Object.assign({}, prev);
             next[item.name] = { vendors: (r && r.missingVendors) || [vendorId], allVendors: (r && r.searchedVendors) || [vendorId], list: (r && r.candidates) || [] };
@@ -5236,6 +5240,16 @@
     function EditItemModal({ item, categories, onChange, onSave, onResetMatch, onCancelMatch, onPickCandidate, pricingEnabled, priceCandidates, onMatchVendor, isResolving, activeProfiles, priceMap, promoMap, onClose }) {
       const [editTab, setEditTab] = useState(pricingEnabled ? "vendors" : "details");
       const showVendorsTab = pricingEnabled && editTab === "vendors";
+      // Tapping a vendor row (or "search again") no longer searches right
+      // away — it opens an editable query box defaulting to the item name,
+      // and only the חפש button actually triggers resolveItemBarcodes.
+      const [matchMode, setMatchMode] = useState(null); // null | { vendorId: string|null, query: string }
+      const runMatchSearch = function() {
+        var q = (matchMode.query || "").trim();
+        if (!q) return;
+        if (matchMode.vendorId) onMatchVendor(item, matchMode.vendorId, q);
+        else onResetMatch(item, q);
+      };
       return (
         <Modal onClose={onClose}>
           <h3 className="text-lg font-bold text-center mb-1">עריכת פריט</h3>
@@ -5325,7 +5339,7 @@
                 // instead of bouncing out to the list.
                 <div>
                   <div className="flex items-center justify-between mb-2">
-                    <button onClick={() => onCancelMatch(item.name)} className="text-xs text-gray-400 font-medium">✕ סגור חיפוש</button>
+                    <button onClick={() => { onCancelMatch(item.name); setMatchMode(null); }} className="text-xs text-gray-400 font-medium">✕ סגור חיפוש</button>
                     <div className="text-xs font-semibold text-gray-500">בחר התאמה</div>
                   </div>
                   <div className="space-y-2 max-h-72 overflow-y-auto">
@@ -5358,9 +5372,31 @@
                     })}
                   </div>
                 </div>
+              ) : matchMode ? (
+                // Editable query box, defaulting to the item's name — the
+                // actual search only fires when the user presses חפש, not
+                // just from tapping a vendor row.
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between mb-1">
+                    <button onClick={() => setMatchMode(null)} className="text-xs text-gray-400 font-medium">✕ ביטול</button>
+                    <div className="text-xs font-semibold text-gray-500">
+                      {matchMode.vendorId ? ("חיפוש עבור " + (VENDOR_LIST.find(function(v) { return v.id === matchMode.vendorId; }) || {}).label) : "חיפוש התאמה מחדש (כל הרשתות)"}
+                    </div>
+                  </div>
+                  <div className="flex gap-2">
+                    <input value={matchMode.query} autoFocus dir="rtl"
+                      onChange={function(e) { setMatchMode(Object.assign({}, matchMode, { query: e.target.value })); }}
+                      onKeyDown={function(e) { if (e.key === "Enter") runMatchSearch(); }}
+                      className="flex-1 min-w-0 border border-gray-200 rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:border-blue-400" />
+                    <button onClick={runMatchSearch} disabled={!matchMode.query.trim() || isResolving}
+                      className="px-4 rounded-xl bg-blue-600 text-white text-sm font-medium disabled:opacity-40 flex-shrink-0">
+                      {isResolving ? <Spinner /> : "חפש"}
+                    </button>
+                  </div>
+                </div>
               ) : (
                 <React.Fragment>
-                  <button onClick={() => onResetMatch(item)} className="text-xs text-blue-600 font-medium">
+                  <button onClick={() => setMatchMode({ vendorId: null, query: item.originalName || item.name || "" })} className="text-xs text-blue-600 font-medium">
                     🔄 חפש התאמת פריט מחדש (כל הרשתות)
                   </button>
                   {/* One row per active vendor — status (price / promo / not
@@ -5369,9 +5405,9 @@
                       look the same. Color reflects which vendor is actually
                       cheapest (using the promo price where one applies) —
                       the "*" is the only thing that marks a promo, color
-                      is never hijacked by it. Tapping any row re-searches
-                      just that one vendor via matchSingleVendor's
-                      `vendors: [vendorId]`. */}
+                      is never hijacked by it. Tapping any row opens an
+                      editable search box scoped to just that vendor via
+                      matchSingleVendor's `vendors: [vendorId]`. */}
                   <div className="space-y-1.5">
                     {(function() {
                       var rows = (activeProfiles || []).map(function(p) {
@@ -5393,7 +5429,7 @@
                         else if (row.promoActive) statusText = "₪" + row.promo.price.toFixed(2) + "* (₪" + row.price.toFixed(2) + ")";
                         else statusText = "₪" + row.price.toFixed(2);
                         return (
-                          <button key={row.p.id} onClick={function() { onMatchVendor(item, row.p.vendor); }}
+                          <button key={row.p.id} onClick={function() { setMatchMode({ vendorId: row.p.vendor, query: item.name || "" }); }}
                             className="w-full flex items-center justify-between gap-2 rounded-xl px-3 py-2.5 bg-gray-50 hover:bg-gray-100 text-right">
                             <div className="min-w-0 flex-1">
                               <div className="text-sm text-gray-700">{profileLabel(row.p, activeProfiles)}</div>

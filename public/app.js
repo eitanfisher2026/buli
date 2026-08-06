@@ -1,6 +1,6 @@
     const { useState, useEffect, useRef } = React;
 
-    const VERSION = "v6.29";
+    const VERSION = "v6.30";
 
     // ── CONFIG ────────────────────────────────────────────────────────────────────
     const FIREBASE_CONFIG = {
@@ -944,10 +944,10 @@
 
       // ── Price comparison vendor profiles (own preference, admin controls
       // the on/off flag and the max-active-at-once cap) ──
-      const [myPricingEnabled, setMyPricingEnabled] = useState(false);
-      const [myMenusEnabled, setMyMenusEnabled] = useState(true);
-      const [myTasksEnabled, setMyTasksEnabled] = useState(true);
-      const [myAddMode, setMyAddMode] = useState("group"); // "group" | "single"
+      const [myPricingEnabled, setMyPricingEnabled] = useState(true);
+      const [myMenusEnabled, setMyMenusEnabled] = useState(false);
+      const [myTasksEnabled, setMyTasksEnabled] = useState(false);
+      const [myAddMode, setMyAddMode] = useState("single"); // "group" | "single"
       const [myNickname, setMyNickname] = useState("");
       const [showPricingSettings, setShowPricingSettings] = useState(false);
       const [pricingBranchesLoading, setPricingBranchesLoading] = useState(false);
@@ -991,13 +991,13 @@
           db.ref("users/" + user.uid + "/addMode").once("value"),
           db.ref("users/" + user.uid + "/nickname").once("value"),
         ]).then(function(snaps) {
-          var enabled = !!snaps[0].val();
+          // Defaults for a brand-new user who's never touched these:
+          // pricing on, menus off, tasks off, add items one at a time.
+          var enabled = snaps[0].val() !== false;
           setMyPricingEnabled(enabled);
-          // Unset (never chosen) defaults to on — opt-out, not opt-in, so
-          // nobody's menus/tasks silently vanish just because this feature shipped.
-          setMyMenusEnabled(snaps[1].val() !== false);
-          setMyTasksEnabled(snaps[2].val() !== false);
-          setMyAddMode(snaps[3].val() === "single" ? "single" : "group");
+          setMyMenusEnabled(snaps[1].val() === true);
+          setMyTasksEnabled(snaps[2].val() === true);
+          setMyAddMode(snaps[3].val() === "group" ? "group" : "single");
           setMyNickname(snaps[4].val() || "");
           if (!enabled) return; // no pricing for this user — skip the vendor-profile listener and settings call entirely
           profilesRef = db.ref("users/" + user.uid + "/vendorProfiles");
@@ -1235,6 +1235,9 @@
       const [selfUserInfo, setSelfUserInfo] = useState(null);
       const [ownerEmail,  setOwnerEmail]  = useState("");
       const [ownerPricingEnabled, setOwnerPricingEnabled] = useState(false);
+      const [ownerMenusEnabled, setOwnerMenusEnabled] = useState(false);
+      const [ownerTasksEnabled, setOwnerTasksEnabled] = useState(false);
+      const [ownerAddMode, setOwnerAddMode] = useState("single");
       const [ownerNickname, setOwnerNickname] = useState("");
       const [ownerLastLogin, setOwnerLastLogin] = useState(null);
       const [newUserEmail, setNewUserEmail] = useState("");
@@ -1245,8 +1248,9 @@
       // Lazy-loaded the first time the "משתמשים" settings tab opens, not on
       // every HomeScreen mount — same pattern as the other collapsible
       // settings sections, just triggered by the tab instead of a toggle.
-      useEffect(function() {
-        if (settingsTab !== "users" || contactMembers !== null) return;
+      const [showContacts, setShowContacts] = useState(false);
+      const loadContacts = function() {
+        if (contactMembers !== null) return;
         fns.httpsCallable("listTeamMembers")().then(function(res) {
           var others = (res.data.members || []).filter(function(m) { return m.uid !== user.uid; });
           db.ref("shareDefaults").once("value").then(function(snap) {
@@ -1255,7 +1259,7 @@
             setContactMembers(others.map(function(m) { return Object.assign({}, m, { alwaysShare: !!defaults[m.uid] }); }));
           });
         }, function() { setContactMembers([]); showToast("שגיאה בטעינת אנשי קשר"); });
-      }, [settingsTab]);
+      };
 
       const toggleContactAlwaysShare = function(uid) {
         var next;
@@ -1277,6 +1281,9 @@
           } else {
             setOwnerEmail(res.data.owner || "");
             setOwnerPricingEnabled(!!res.data.ownerPricingEnabled);
+            setOwnerMenusEnabled(!!res.data.ownerMenusEnabled);
+            setOwnerTasksEnabled(!!res.data.ownerTasksEnabled);
+            setOwnerAddMode(res.data.ownerAddMode === "group" ? "group" : "single");
             setOwnerNickname(res.data.ownerNickname || "");
             setOwnerLastLogin(res.data.ownerLastLogin || null);
             setAuthUsers(res.data.users || []);
@@ -1320,6 +1327,20 @@
           // reads its own myPricingEnabled state, which that call never
           // touches, so toggling self would otherwise look like a no-op.
           if (email.trim().toLowerCase() === (user.email || "").toLowerCase()) setMyPricingEnabled(nextEnabled);
+          loadAuthUsers();
+        }, function(e) { setUserMsg("⚠ " + e.message); setUserBusy(false); });
+      };
+      // One callable for the other three per-user preferences — pass just
+      // the one(s) changing, same self-or-admin gate as pricing/nickname.
+      const handleSetUserPref = (email, patch) => {
+        setUserBusy(true); setUserMsg("");
+        fns.httpsCallable("setUserPreferences")(Object.assign({ email: email }, patch)).then(function() {
+          setUserBusy(false);
+          if (email.trim().toLowerCase() === (user.email || "").toLowerCase()) {
+            if ("menusEnabled" in patch) setMyMenusEnabled(patch.menusEnabled);
+            if ("tasksEnabled" in patch) setMyTasksEnabled(patch.tasksEnabled);
+            if ("addMode" in patch) setMyAddMode(patch.addMode);
+          }
           loadAuthUsers();
         }, function(e) { setUserMsg("⚠ " + e.message); setUserBusy(false); });
       };
@@ -1404,6 +1425,7 @@
         setShowPricingSettings(false);
         setShowVendorRequests(false);
         setShowUsers(false);
+        setShowContacts(false);
         setShowCosts(false);
         setShowVendorCatalogs(false);
         setShowFirebaseUsage(false);
@@ -2398,34 +2420,45 @@
               </div>
 
               {/* ── Contacts (who gets auto-shared into new lists) ────────────────── */}
-              <div className="mb-4">
-                <div className="text-sm font-semibold text-gray-700 mb-0.5 flex items-center gap-2">
-                  <span className="text-lg w-7 text-center inline-block">👥</span>אנשי קשר
-                </div>
-                <p className="text-xs text-gray-400 mb-2 mr-9">משתמשים שאתה משתף איתם בקביעות</p>
-                {contactMembers === null ? (
-                  <div className="flex justify-center py-6"><Spinner /></div>
-                ) : contactMembers.length === 0 ? (
-                  <p className="text-xs text-gray-400 text-center py-4">אין עדיין משתמשים נוספים</p>
-                ) : (
-                  <div className="space-y-1.5">
-                    {contactMembers.map(function(m) {
-                      return (
-                        <div key={m.uid} className="bg-gray-50 rounded-xl px-3 py-2 flex items-center gap-3">
-                          <div className="flex-1 min-w-0">
-                            <div className="text-sm text-gray-700 truncate">{m.name}</div>
-                            <div className="text-xs text-gray-400 truncate">{m.email}</div>
-                          </div>
-                          <div className="flex flex-col items-center gap-0.5 flex-shrink-0">
-                            <button onClick={function() { toggleContactAlwaysShare(m.uid); }}
-                              className={"relative inline-flex h-6 w-11 items-center rounded-full transition-colors " + (m.alwaysShare ? "bg-blue-600" : "bg-gray-200")}>
-                              <span className={"inline-block h-4 w-4 rounded-full bg-white shadow transition-transform " + (m.alwaysShare ? "translate-x-6" : "translate-x-1")} />
-                            </button>
-                            <span className="text-xs text-gray-400">תמיד</span>
-                          </div>
-                        </div>
-                      );
-                    })}
+              <div className="mb-3">
+                <button onClick={function() { setShowContacts(function(o) { if (!o) loadContacts(); return !o; }); }}
+                  className={"w-full flex items-center justify-between px-3 py-3 rounded-xl border transition " + (showContacts ? "bg-white border-blue-200" : "bg-gray-50 border-transparent hover:bg-gray-100")}>
+                  <div className="flex items-center gap-3">
+                    <span className="text-lg w-7 text-center">👥</span>
+                    <div className="text-right">
+                      <div className="text-sm font-semibold text-gray-700">אנשי קשר</div>
+                      <div className="text-xs text-gray-400">משתמשים שאתה משתף איתם בקביעות</div>
+                    </div>
+                  </div>
+                  <span className="text-gray-400 text-xs flex-shrink-0">{showContacts ? "▲ הסתר" : "▼ הצג"}</span>
+                </button>
+                {showContacts && (
+                  <div className="mt-2 bg-white border border-gray-100 rounded-2xl p-4">
+                    {contactMembers === null ? (
+                      <div className="flex justify-center py-6"><Spinner /></div>
+                    ) : contactMembers.length === 0 ? (
+                      <p className="text-xs text-gray-400 text-center py-4">אין עדיין משתמשים נוספים</p>
+                    ) : (
+                      <div className="space-y-1.5">
+                        {contactMembers.map(function(m) {
+                          return (
+                            <div key={m.uid} className="bg-gray-50 rounded-xl px-3 py-2 flex items-center gap-3">
+                              <div className="flex-1 min-w-0">
+                                <div className="text-sm text-gray-700 truncate">{m.name}</div>
+                                <div className="text-xs text-gray-400 truncate">{m.email}</div>
+                              </div>
+                              <div className="flex flex-col items-center gap-0.5 flex-shrink-0">
+                                <button onClick={function() { toggleContactAlwaysShare(m.uid); }}
+                                  className={"relative inline-flex h-6 w-11 items-center rounded-full transition-colors " + (m.alwaysShare ? "bg-blue-600" : "bg-gray-200")}>
+                                  <span className={"inline-block h-4 w-4 rounded-full bg-white shadow transition-transform " + (m.alwaysShare ? "translate-x-6" : "translate-x-1")} />
+                                </button>
+                                <span className="text-xs text-gray-400">תמיד</span>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
                   </div>
                 )}
               </div>
@@ -2491,9 +2524,23 @@
                               placeholder="כינוי (יוצג ברשימת שיתוף)" dir="rtl" disabled={userBusy}
                               onBlur={function(e) { var v = e.target.value.trim(); if (v !== ownerNickname) handleSaveNickname(ownerEmail, v); }}
                               className="flex-1 min-w-0 border border-gray-200 rounded-lg px-2 py-1 text-xs bg-white focus:outline-none focus:border-blue-400" />
+                          </div>
+                          <div className="flex items-center gap-1.5 flex-wrap mt-1.5">
                             <button onClick={function() { handleTogglePricing(ownerEmail, !ownerPricingEnabled); }} disabled={userBusy} title="השוואת מחירים"
                               className={"text-xs border rounded-full px-2 py-1 disabled:opacity-40 flex-shrink-0 " + (ownerPricingEnabled ? "text-green-600 border-green-200 bg-green-50" : "text-gray-400 border-gray-200 bg-white")}>
                               💰{ownerPricingEnabled ? "" : "🚫"}
+                            </button>
+                            <button onClick={function() { handleSetUserPref(ownerEmail, { menusEnabled: !ownerMenusEnabled }); }} disabled={userBusy} title="תפריטים"
+                              className={"text-xs border rounded-full px-2 py-1 disabled:opacity-40 flex-shrink-0 " + (ownerMenusEnabled ? "text-green-600 border-green-200 bg-green-50" : "text-gray-400 border-gray-200 bg-white")}>
+                              📝{ownerMenusEnabled ? "" : "🚫"}
+                            </button>
+                            <button onClick={function() { handleSetUserPref(ownerEmail, { tasksEnabled: !ownerTasksEnabled }); }} disabled={userBusy} title="מטלות"
+                              className={"text-xs border rounded-full px-2 py-1 disabled:opacity-40 flex-shrink-0 " + (ownerTasksEnabled ? "text-green-600 border-green-200 bg-green-50" : "text-gray-400 border-gray-200 bg-white")}>
+                              ✅{ownerTasksEnabled ? "" : "🚫"}
+                            </button>
+                            <button onClick={function() { handleSetUserPref(ownerEmail, { addMode: ownerAddMode === "single" ? "group" : "single" }); }} disabled={userBusy} title="הוספת פריטים לרשימה"
+                              className="text-xs border border-gray-200 rounded-full px-2 py-1 disabled:opacity-40 flex-shrink-0 text-gray-500 bg-white">
+                              {ownerAddMode === "single" ? "1️⃣ אחד בכל פעם" : "📦 קבוצה"}
                             </button>
                           </div>
                         </div>
@@ -2521,9 +2568,23 @@
                                   <option value="user">User</option>
                                   <option value="admin">Admin</option>
                                 </select>
-                                <button onClick={function() { handleTogglePricing(u.email, !u.pricingEnabled); }} disabled={userBusy} title="השוואת מחירים עבור המשתמש הזה"
+                              </div>
+                              <div className="flex items-center gap-1.5 flex-wrap mt-1.5">
+                                <button onClick={function() { handleTogglePricing(u.email, !u.pricingEnabled); }} disabled={userBusy} title="השוואת מחירים"
                                   className={"text-xs border rounded-full px-2 py-1 disabled:opacity-40 flex-shrink-0 " + (u.pricingEnabled ? "text-green-600 border-green-200 bg-green-50" : "text-gray-400 border-gray-200 bg-white")}>
                                   💰{u.pricingEnabled ? "" : "🚫"}
+                                </button>
+                                <button onClick={function() { handleSetUserPref(u.email, { menusEnabled: !u.menusEnabled }); }} disabled={userBusy} title="תפריטים"
+                                  className={"text-xs border rounded-full px-2 py-1 disabled:opacity-40 flex-shrink-0 " + (u.menusEnabled ? "text-green-600 border-green-200 bg-green-50" : "text-gray-400 border-gray-200 bg-white")}>
+                                  📝{u.menusEnabled ? "" : "🚫"}
+                                </button>
+                                <button onClick={function() { handleSetUserPref(u.email, { tasksEnabled: !u.tasksEnabled }); }} disabled={userBusy} title="מטלות"
+                                  className={"text-xs border rounded-full px-2 py-1 disabled:opacity-40 flex-shrink-0 " + (u.tasksEnabled ? "text-green-600 border-green-200 bg-green-50" : "text-gray-400 border-gray-200 bg-white")}>
+                                  ✅{u.tasksEnabled ? "" : "🚫"}
+                                </button>
+                                <button onClick={function() { handleSetUserPref(u.email, { addMode: u.addMode === "single" ? "group" : "single" }); }} disabled={userBusy} title="הוספת פריטים לרשימה"
+                                  className="text-xs border border-gray-200 rounded-full px-2 py-1 disabled:opacity-40 flex-shrink-0 text-gray-500 bg-white">
+                                  {u.addMode === "single" ? "1️⃣ אחד בכל פעם" : "📦 קבוצה"}
                                 </button>
                               </div>
                             </div>
@@ -3680,8 +3741,8 @@
       const [filterVendorProfile, setFilterVendorProfile] = useState(function() { return localStorage.getItem("buli_filter_vendor") || "all"; });
       useEffect(function() { localStorage.setItem("buli_filter_vendor", filterVendorProfile); }, [filterVendorProfile]);
       const [showFilters, setShowFilters] = useState(false);
-      const [pricingEnabled, setPricingEnabled] = useState(false);
-      const [addMode, setAddMode] = useState("group"); // "group" | "single"
+      const [pricingEnabled, setPricingEnabled] = useState(true);
+      const [addMode, setAddMode] = useState("single"); // "group" | "single"
       const [showQuickAdd, setShowQuickAdd] = useState(false);
       // Survives ListScreen unmounting (leaving the list, adding items, etc.) —
       // without this, every re-entry into the same list re-fetched every
@@ -3888,10 +3949,10 @@
         });
 
         db.ref("users/" + user.uid + "/pricingEnabled").once("value").then(function(snap) {
-          setPricingEnabled(!!snap.val());
+          setPricingEnabled(snap.val() !== false);
         });
         db.ref("users/" + user.uid + "/addMode").once("value").then(function(snap) {
-          setAddMode(snap.val() === "single" ? "single" : "group");
+          setAddMode(snap.val() === "group" ? "group" : "single");
         });
       };
       useEffect(function() {
@@ -5816,7 +5877,14 @@
             {[["details", "פרטי פריט"], ["vendors", "בדיקת מחירים"]].map(function(t) {
               var key = t[0], label = t[1];
               return (
-                <button key={key} onClick={function() { setTab(key); }}
+                <button key={key} onClick={function() {
+                  // Moving into the price-check tab should start the search
+                  // from whatever name was just typed, not a blank box —
+                  // only fills in if the box is still empty so it doesn't
+                  // clobber a query the user already edited themselves.
+                  if (key === "vendors" && !searchQuery.trim() && draft.name.trim()) setSearchQuery(draft.name);
+                  setTab(key);
+                }}
                   className={"flex-1 py-2 rounded-lg text-sm font-medium transition " + (tab === key ? "bg-white shadow text-blue-600" : "text-gray-500")}>
                   {label}
                 </button>

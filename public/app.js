@@ -1,6 +1,6 @@
     const { useState, useEffect, useRef } = React;
 
-    const VERSION = "v6.30";
+    const VERSION = "v6.31";
 
     // ── CONFIG ────────────────────────────────────────────────────────────────────
     const FIREBASE_CONFIG = {
@@ -5550,6 +5550,15 @@
         if (searchScope) onMatchVendor(item, searchScope, q);
         else onMatchAllVendors(item, q);
       };
+      // "מצא מחיר" on an unmatched vendor row — same as picking that vendor
+      // then pressing חפש, just in one tap instead of two.
+      const findPriceForVendor = function(vendorId) {
+        var q = (item.originalName || item.name || "").trim();
+        setSearchScope(vendorId);
+        setSearchQuery(q);
+        if (!q) return;
+        onMatchVendor(item, vendorId, q);
+      };
       return (
         <Modal onClose={onClose}>
           <h3 className="text-lg font-bold text-center mb-1">עריכת פריט</h3>
@@ -5731,14 +5740,14 @@
                   var others = rows.filter(function(r) { return r.p.id !== row.p.id; }).map(function(r) { return r.effective; });
                   var textClass = (!row.bc || !row.fetched || row.price == null) ? "text-gray-400" : cheapestTextClass(row.effective, others);
                   var statusText;
-                  if (!row.bc) statusText = "לא הותאם";
+                  if (!row.bc) statusText = null; // "מצא מחיר" action shown instead
                   else if (!row.fetched) statusText = "בודק מחיר...";
                   else if (row.price == null) statusText = "לא נמכר כאן";
                   else if (row.promoActive) statusText = "₪" + row.promo.price.toFixed(2) + "* (₪" + row.price.toFixed(2) + ")";
                   else statusText = "₪" + row.price.toFixed(2);
                   var matchedName = itemVendorMatchedName(item, row.p.vendor);
                   return (
-                    <button key={row.p.id} onClick={function() { selectScope(row.p.vendor); }}
+                    <button key={row.p.id} onClick={function() { if (!row.bc) findPriceForVendor(row.p.vendor); else selectScope(row.p.vendor); }}
                       className={"w-full flex items-center justify-between gap-2 rounded-xl px-3 py-2.5 hover:bg-gray-100 text-right " + (searchScope === row.p.vendor ? "bg-blue-50 ring-1 ring-blue-200" : "bg-gray-50")}>
                       <div className="min-w-0 flex-1">
                         <div className="text-sm text-gray-700">{profileLabel(row.p, activeProfiles)}</div>
@@ -5749,9 +5758,11 @@
                           </div>
                         )}
                       </div>
-                      <span className={"text-xs flex-shrink-0 font-semibold " + textClass}>
-                        {statusText}
-                      </span>
+                      {!row.bc ? (
+                        <span className="text-xs flex-shrink-0 font-semibold text-blue-600 bg-blue-50 px-2.5 py-1 rounded-full">🔍 מצא מחיר</span>
+                      ) : (
+                        <span className={"text-xs flex-shrink-0 font-semibold " + textClass}>{statusText}</span>
+                      )}
                     </button>
                   );
                 })}
@@ -5798,17 +5809,26 @@
         setSearchQuery((vendorId && draft.matchedNames[vendorId]) || draft.name || "");
       };
 
-      const runSearch = function() {
-        var q = searchQuery.trim();
+      const runSearchWith = function(vendorId, query) {
+        var q = (query || "").trim();
         if (!q) return;
         setIsResolving(true);
         var payload = { items: [q], force: true, groupId: groupId || null };
-        if (searchScope) payload.vendors = [searchScope];
+        if (vendorId) payload.vendors = [vendorId];
         fns.httpsCallable("resolveItemBarcodes")(payload).then(function(res) {
           setIsResolving(false);
           var r = (res.data.results || {})[q];
-          setCandidates({ vendors: (r && r.missingVendors) || (searchScope ? [searchScope] : []), list: (r && r.candidates) || [] });
+          setCandidates({ vendors: (r && r.missingVendors) || (vendorId ? [vendorId] : []), list: (r && r.candidates) || [] });
         }, function() { setIsResolving(false); showToast("שגיאה בחיפוש"); });
+      };
+      const runSearch = function() { runSearchWith(searchScope, searchQuery); };
+      // "מצא מחיר" on an unmatched vendor row — same as picking that vendor
+      // then pressing חפש, just in one tap instead of two.
+      const findPriceForVendor = function(vendorId) {
+        var q = (draft.name || "").trim();
+        setSearchScope(vendorId);
+        setSearchQuery(q);
+        runSearchWith(vendorId, q);
       };
 
       const pickCandidate = function(c) {
@@ -5998,14 +6018,14 @@
                   var others = rows.filter(function(r) { return r.p.id !== row.p.id; }).map(function(r) { return r.effective; });
                   var textClass = (!row.bc || !row.fetched || row.price == null) ? "text-gray-400" : cheapestTextClass(row.effective, others);
                   var statusText;
-                  if (!row.bc) statusText = "לא הותאם";
+                  if (!row.bc) statusText = null; // "מצא מחיר" action shown instead
                   else if (!row.fetched) statusText = "בודק מחיר...";
                   else if (row.price == null) statusText = "לא נמכר כאן";
                   else if (row.promoActive) statusText = "₪" + row.promo.price.toFixed(2) + "* (₪" + row.price.toFixed(2) + ")";
                   else statusText = "₪" + row.price.toFixed(2);
                   var matchedName = draft.matchedNames[row.p.vendor];
                   return (
-                    <button key={row.p.id} onClick={function() { selectScope(row.p.vendor); }}
+                    <button key={row.p.id} onClick={function() { if (!row.bc) findPriceForVendor(row.p.vendor); else selectScope(row.p.vendor); }}
                       className={"w-full flex items-center justify-between gap-2 rounded-xl px-3 py-2.5 hover:bg-gray-100 text-right " + (searchScope === row.p.vendor ? "bg-blue-50 ring-1 ring-blue-200" : "bg-gray-50")}>
                       <div className="min-w-0 flex-1">
                         <div className="text-sm text-gray-700">{profileLabel(row.p, activeProfiles)}</div>
@@ -6016,7 +6036,11 @@
                           </div>
                         )}
                       </div>
-                      <span className={"text-xs flex-shrink-0 font-semibold " + textClass}>{statusText}</span>
+                      {!row.bc ? (
+                        <span className="text-xs flex-shrink-0 font-semibold text-blue-600 bg-blue-50 px-2.5 py-1 rounded-full">🔍 מצא מחיר</span>
+                      ) : (
+                        <span className={"text-xs flex-shrink-0 font-semibold " + textClass}>{statusText}</span>
+                      )}
                     </button>
                   );
                 })}

@@ -1,6 +1,6 @@
     const { useState, useEffect, useRef } = React;
 
-    const VERSION = "v6.21";
+    const VERSION = "v6.22";
 
     // ── CONFIG ────────────────────────────────────────────────────────────────────
     const FIREBASE_CONFIG = {
@@ -5303,7 +5303,6 @@
       const firstVendorId = (activeProfiles && activeProfiles[0] && activeProfiles[0].vendor) || null;
       const [searchScope, setSearchScope] = useState(firstVendorId);
       const [searchQuery, setSearchQuery] = useState(itemVendorMatchedName(item, firstVendorId) || item.name || "");
-      const [originalNameInput, setOriginalNameInput] = useState(item.originalName || item.name || "");
       // Switching which vendor is being searched also refreshes the query
       // box to that vendor's own matched name, per vendor — not a shared
       // generic item name.
@@ -5402,12 +5401,15 @@
                 <div className="text-xs text-gray-500 bg-blue-50 border border-blue-100 rounded-xl p-3 space-y-2">
                   <div className="flex items-center gap-2">
                     <span className="flex-shrink-0">שם מקורי:</span>
-                    <input value={originalNameInput} dir="rtl"
-                      onChange={function(e) { setOriginalNameInput(e.target.value); }}
+                    {/* Bound directly to the item, like every other field
+                        here — שמור שינויים persists it, it isn't local-only
+                        state that only takes effect via נקה והתחל מחדש. */}
+                    <input value={item.originalName || ""} dir="rtl"
+                      onChange={function(e) { onChange({ ...item, originalName: e.target.value }); }}
                       className="flex-1 min-w-0 border border-blue-200 rounded-lg px-2 py-1 text-xs bg-white focus:outline-none focus:border-blue-400" />
                   </div>
                   <button onClick={function() {
-                    var revertTo = originalNameInput.trim() || item.originalName || item.name || "";
+                    var revertTo = (item.originalName && item.originalName.trim()) || item.name || "";
                     onClearMatch(item, revertTo);
                     setSearchQuery(revertTo);
                     setSearchScope(firstVendorId);

@@ -1,6 +1,6 @@
     const { useState, useEffect, useRef } = React;
 
-    const VERSION = "v6.26";
+    const VERSION = "v6.27";
 
     // ── CONFIG ────────────────────────────────────────────────────────────────────
     const FIREBASE_CONFIG = {
@@ -5444,6 +5444,11 @@
                     <input value={item.originalName || ""} dir="rtl"
                       onChange={function(e) { onChange({ ...item, originalName: e.target.value }); }}
                       className="flex-1 min-w-0 border border-blue-200 rounded-lg px-2 py-1 text-xs bg-white focus:outline-none focus:border-blue-400" />
+                    <button type="button" onClick={function() { setSearchQuery(item.originalName || ""); }}
+                      disabled={!item.originalName} title="העתק לתיבת החיפוש"
+                      className="px-2 py-1 rounded-lg border border-blue-200 text-gray-500 bg-white disabled:opacity-40 flex-shrink-0">
+                      📋
+                    </button>
                   </div>
                   <button onClick={function() {
                     var revertTo = (item.originalName && item.originalName.trim()) || item.name || "";

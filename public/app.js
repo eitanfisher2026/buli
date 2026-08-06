@@ -1,6 +1,6 @@
     const { useState, useEffect, useRef } = React;
 
-    const VERSION = "v6.18";
+    const VERSION = "v6.19";
 
     // ── CONFIG ────────────────────────────────────────────────────────────────────
     const FIREBASE_CONFIG = {
@@ -4161,32 +4161,14 @@
         }, function() { setResolveBusy(false); });
       };
 
-      // None of these close the edit dialog or open a separate picker modal
-      // — they only populate candidatesByName, and EditItemModal renders
-      // the search bar, per-vendor scope, and results all inline in its own
-      // רשתות tab, so searching/picking/cancelling stay in one persistent
-      // view instead of swapping between different-looking screens.
-
-      // Non-destructive: searches every active vendor for the given query
-      // without touching any vendor's existing barcode match. Reused as the
-      // "כל הרשתות" scope in EditItemModal's search bar.
-      const matchAllVendors = (item, queryText) => {
-        var q = (queryText || item.name || "").trim();
-        if (!q) return;
-        setResolvingNames(function(prev) { var next = new Set(prev); next.add(item.name); return next; });
-        fns.httpsCallable("resolveItemBarcodes")({ items: [q], force: true, groupId: (list && list.vendorGroupId) || null }).then(function(res) {
-          setResolvingNames(function(prev) { var next = new Set(prev); next.delete(item.name); return next; });
-          var r = (res.data.results || {})[q];
-          setCandidatesByName(function(prev) {
-            var next = Object.assign({}, prev);
-            next[item.name] = { vendors: (r && r.missingVendors) || [], allVendors: (r && r.searchedVendors) || [], list: (r && r.candidates) || [] };
-            return next;
-          });
-        }, function() {
-          setResolvingNames(function(prev) { var next = new Set(prev); next.delete(item.name); return next; });
-          showToast("שגיאה בחיפוש");
-        });
-      };
+      // Neither of these closes the edit dialog or opens a separate picker
+      // modal — they only populate candidatesByName, and EditItemModal
+      // renders the search bar, per-vendor scope, and results all inline in
+      // its own רשתות tab, so searching/picking/cancelling stay in one
+      // persistent view instead of swapping between different-looking
+      // screens. Every search is scoped to exactly one vendor — the same
+      // item can have a different barcode per vendor, so there's no
+      // meaningful "search every vendor at once" anymore.
 
       // Searches (and lets the user confirm) a match for exactly one vendor,
       // regardless of whether that vendor already has a match — reused for
@@ -4221,13 +4203,13 @@
       };
 
       // Explicit, separate from searching: wipes every vendor's existing
-      // barcode match and reverts the item's name back to what the user
-      // originally typed (undoing a previous match's product name) — does
-      // NOT search on its own, so it never fires a request the user didn't
-      // ask for; EditItemModal reloads its search box with the reverted
-      // name afterward so the user can edit and press חפש themselves.
-      const clearItemMatch = (item) => {
-        var revertedName = item.originalName || item.name;
+      // barcode match and reverts the item's name to the given (editable in
+      // EditItemModal, defaults to what the user originally typed) name —
+      // does NOT search on its own, so it never fires a request the user
+      // didn't ask for; EditItemModal reloads its search box with the
+      // reverted name afterward so the user can edit and press חפש themselves.
+      const clearItemMatch = (item, revertToName) => {
+        var revertedName = (revertToName && revertToName.trim()) || item.originalName || item.name;
         var cleared = { barcodes: null, barcode: null, originalName: null, name: revertedName, matchedNames: null };
         setItems(function(prev) { return prev.map(function(i) { return i.id === item.id ? Object.assign({}, i, cleared) : i; }); });
         db.ref("items/" + listId + "/" + item.id).update(cleared);
@@ -4639,7 +4621,7 @@
           )}
 
           {editItem && <EditItemModal item={editItem} categories={categories} onChange={setEditItem} onSave={saveEdit} onClearMatch={clearItemMatch} pricingEnabled={pricingEnabled}
-            priceCandidates={candidatesByName[editItem.name]} onMatchVendor={matchSingleVendor} onMatchAllVendors={matchAllVendors} onCancelMatch={cancelVendorMatch} onPickCandidate={pickPriceCandidate} isResolving={resolvingNames.has(editItem.name)}
+            priceCandidates={candidatesByName[editItem.name]} onMatchVendor={matchSingleVendor} onCancelMatch={cancelVendorMatch} onPickCandidate={pickPriceCandidate} isResolving={resolvingNames.has(editItem.name)}
             activeProfiles={activeProfiles} priceMap={priceMap} promoMap={promoMap} onClose={() => setEditItem(null)} />}
           {noteEdit && <NoteEditModal item={noteEdit} onSave={saveNoteEdit} onClose={function() { setNoteEdit(null); }} />}
           {taskEdit && <TaskEditModal item={taskEdit} onChange={setTaskEdit} onSave={saveTaskEdit} onDelete={deleteTask} onClose={() => setTaskEdit(null)} />}
@@ -5286,22 +5268,28 @@
       );
     }
 
-    function EditItemModal({ item, categories, onChange, onSave, onClearMatch, onCancelMatch, onPickCandidate, pricingEnabled, priceCandidates, onMatchVendor, onMatchAllVendors, isResolving, activeProfiles, priceMap, promoMap, onClose }) {
+    function EditItemModal({ item, categories, onChange, onSave, onClearMatch, onCancelMatch, onPickCandidate, pricingEnabled, priceCandidates, onMatchVendor, isResolving, activeProfiles, priceMap, promoMap, onClose }) {
       const [editTab, setEditTab] = useState(pricingEnabled ? "vendors" : "details");
       const showVendorsTab = pricingEnabled && editTab === "vendors";
-      // One persistent search bar + vendor-scope selector, always visible —
-      // no more swapping between a "browse vendors" screen and a separate
-      // "search" screen. Scope null = search every active vendor; a vendor
-      // id = scope to just that one (the same item can have a different
-      // barcode per vendor, so a broad search alone isn't always enough).
-      // Nothing searches until the חפש button is pressed.
-      const [searchQuery, setSearchQuery] = useState(item.originalName || item.name || "");
-      const [searchScope, setSearchScope] = useState(null);
+      // Every search is scoped to exactly one vendor — the same item can
+      // have a different barcode (and name) per vendor, so there's no
+      // meaningful "search all vendors at once" anymore. Default scope is
+      // just the first active vendor. Nothing searches until חפש is pressed.
+      const firstVendorId = (activeProfiles && activeProfiles[0] && activeProfiles[0].vendor) || null;
+      const [searchScope, setSearchScope] = useState(firstVendorId);
+      const [searchQuery, setSearchQuery] = useState(itemVendorMatchedName(item, firstVendorId) || item.name || "");
+      const [originalNameInput, setOriginalNameInput] = useState(item.originalName || item.name || "");
+      // Switching which vendor is being searched also refreshes the query
+      // box to that vendor's own matched name, per vendor — not a shared
+      // generic item name.
+      const selectScope = function(vendorId) {
+        setSearchScope(vendorId);
+        setSearchQuery(itemVendorMatchedName(item, vendorId) || item.name || "");
+      };
       const runSearch = function() {
         var q = searchQuery.trim();
-        if (!q) return;
-        if (searchScope) onMatchVendor(item, searchScope, q);
-        else onMatchAllVendors(item, q);
+        if (!q || !searchScope) return;
+        onMatchVendor(item, searchScope, q);
       };
       return (
         <Modal onClose={onClose}>
@@ -5386,18 +5374,25 @@
             return (
             <div className="space-y-2">
               {item.originalName && (
-                <div className="text-xs text-gray-500 bg-blue-50 border border-blue-100 rounded-xl p-3 flex items-center justify-between gap-2">
-                  <span>השם שהזנת במקור: <span className="font-medium text-gray-700">{item.originalName}</span></span>
+                <div className="text-xs text-gray-500 bg-blue-50 border border-blue-100 rounded-xl p-3 space-y-2">
+                  <div className="flex items-center gap-2">
+                    <span className="flex-shrink-0">שם מקורי:</span>
+                    <input value={originalNameInput} dir="rtl"
+                      onChange={function(e) { setOriginalNameInput(e.target.value); }}
+                      className="flex-1 min-w-0 border border-blue-200 rounded-lg px-2 py-1 text-xs bg-white focus:outline-none focus:border-blue-400" />
+                  </div>
                   <button onClick={function() {
-                    onClearMatch(item);
-                    setSearchQuery(item.originalName || item.name || "");
-                    setSearchScope(null);
-                  }} className="text-blue-600 font-medium flex-shrink-0">נקה והתחל מחדש</button>
+                    var revertTo = originalNameInput.trim() || item.originalName || item.name || "";
+                    onClearMatch(item, revertTo);
+                    setSearchQuery(revertTo);
+                    setSearchScope(firstVendorId);
+                  }} className="text-blue-600 font-medium">נקה והתחל מחדש</button>
                 </div>
               )}
-              {/* One persistent search bar for every case — searching all
-                  vendors or just one is a scope choice (the chips below),
-                  not a different screen. Nothing runs until חפש is pressed. */}
+              {/* One persistent search bar — every search is scoped to the
+                  vendor selected below (a status row), which also fills the
+                  box with that vendor's own matched name. Nothing runs
+                  until חפש is pressed. */}
               <div className="flex gap-2">
                 <input value={searchQuery} dir="rtl" placeholder="שם המוצר לחיפוש"
                   onChange={function(e) { setSearchQuery(e.target.value); }}
@@ -5407,20 +5402,6 @@
                   className="px-4 rounded-xl bg-blue-600 text-white text-sm font-medium disabled:opacity-40 flex-shrink-0">
                   {isResolving ? <Spinner /> : "חפש"}
                 </button>
-              </div>
-              <div className="flex flex-wrap gap-1.5">
-                <button onClick={function() { setSearchScope(null); }}
-                  className={"text-xs px-3 py-1.5 rounded-full border font-medium " + (searchScope === null ? "bg-blue-600 text-white border-blue-600" : "bg-white text-gray-600 border-gray-200")}>
-                  כל הרשתות
-                </button>
-                {rows.map(function(row) {
-                  return (
-                    <button key={row.p.id} onClick={function() { setSearchScope(row.p.vendor); }}
-                      className={"text-xs px-3 py-1.5 rounded-full border font-medium " + (searchScope === row.p.vendor ? "bg-blue-600 text-white border-blue-600" : "bg-white text-gray-600 border-gray-200")}>
-                      {profileLabel(row.p, activeProfiles)}
-                    </button>
-                  );
-                })}
               </div>
               {priceCandidates && priceCandidates.list && (
                 // Search results, shown inline right under the search bar —
@@ -5479,12 +5460,16 @@
                   else statusText = "₪" + row.price.toFixed(2);
                   var matchedName = itemVendorMatchedName(item, row.p.vendor);
                   return (
-                    <button key={row.p.id} onClick={function() { setSearchScope(row.p.vendor); }}
+                    <button key={row.p.id} onClick={function() { selectScope(row.p.vendor); }}
                       className={"w-full flex items-center justify-between gap-2 rounded-xl px-3 py-2.5 hover:bg-gray-100 text-right " + (searchScope === row.p.vendor ? "bg-blue-50 ring-1 ring-blue-200" : "bg-gray-50")}>
                       <div className="min-w-0 flex-1">
                         <div className="text-sm text-gray-700">{profileLabel(row.p, activeProfiles)}</div>
-                        {matchedName && <div className="text-[10px] text-gray-500 truncate">{matchedName}</div>}
-                        {row.bc && <div className="text-[10px] text-gray-400 font-mono truncate" dir="ltr">{row.bc}</div>}
+                        {(matchedName || row.bc) && (
+                          <div className="text-[10px] text-gray-400 truncate flex items-center gap-1">
+                            {matchedName && <span className="text-gray-500">{matchedName}</span>}
+                            {row.bc && <span className="font-mono" dir="ltr">{row.bc}</span>}
+                          </div>
+                        )}
                       </div>
                       <span className={"text-xs flex-shrink-0 font-semibold " + textClass}>
                         {statusText}

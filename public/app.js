@@ -1,6 +1,6 @@
     const { useState, useEffect, useRef } = React;
 
-    const VERSION = "v6.19";
+    const VERSION = "v6.20";
 
     // ── CONFIG ────────────────────────────────────────────────────────────────────
     const FIREBASE_CONFIG = {
@@ -4120,12 +4120,18 @@
         // and keep their own "match separately" affordance.
         var vendorsToConfirm = searchedVendors.filter(function(v) { return candidate.prices && candidate.prices[v] != null; });
         if (vendorsToConfirm.length === 0) return;
+        // The item's own shared name only comes from a matched product on
+        // the very first-ever match (mirrors the auto-resolve flow below) —
+        // picking a candidate for one vendor when others are already
+        // matched must never rename the item out from under them; each
+        // vendor's own matched product name lives in matchedNames instead.
+        var hadNone = !itemHasAnyBarcode(item);
         setResolveBusy(true);
         fns.httpsCallable("confirmItemBarcode")({ name: item.name, barcode: candidate.barcode, matchedName: candidate.name, vendors: vendorsToConfirm }).then(function() {
           var vendorBarcodes = {};
           var vendorNames = {};
           vendorsToConfirm.forEach(function(v) { vendorBarcodes[v] = candidate.barcode; vendorNames[v] = candidate.name; });
-          applyItemMatch(item, vendorBarcodes, candidate.name, vendorNames);
+          applyItemMatch(item, vendorBarcodes, hadNone ? candidate.name : null, vendorNames);
           // The candidate already carries confirmed vendors' prices (and any
           // promo price) from the merged search — apply directly, no
           // follow-up fetch needed.

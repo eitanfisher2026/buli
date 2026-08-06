@@ -1,6 +1,6 @@
     const { useState, useEffect, useRef } = React;
 
-    const VERSION = "v6.17";
+    const VERSION = "v6.18";
 
     // ── CONFIG ────────────────────────────────────────────────────────────────────
     const FIREBASE_CONFIG = {
@@ -345,6 +345,29 @@
     }
     function itemHasAnyBarcode(item) {
       return !!(item.barcode || (item.barcodes && Object.keys(item.barcodes).length > 0));
+    }
+    // The vendor-matched product's own name, when it differs from a plain
+    // barcode lookup — populated at match time (search result or auto-
+    // resolve), not derivable from the barcode alone.
+    function itemVendorMatchedName(item, vendorId) {
+      return (item.matchedNames && item.matchedNames[vendorId]) || null;
+    }
+    // True when two vendors are matched to genuinely different barcodes for
+    // the same list item — i.e. the price comparison is silently comparing
+    // different physical products under one shared display name, not the
+    // same product at different vendors. A vendor with no match yet doesn't
+    // count either way.
+    function itemHasMixedVendorMatches(item) {
+      var barcodes = item.barcodes || {};
+      var uniq = {};
+      var count = 0;
+      Object.keys(barcodes).forEach(function(v) {
+        var bc = barcodes[v];
+        if (!bc || uniq[bc]) return;
+        uniq[bc] = true;
+        count++;
+      });
+      return count > 1;
     }
 
     // "mine" wins (green) only if it's strictly cheaper than every other
@@ -3612,9 +3635,11 @@
           var cat = categories.find(function(c) { return c.emoji === emoji; });
           var barcodes = {};
           barcodes[sel.profile.vendor] = sel.item.barcode;
+          var matchedNames = {};
+          matchedNames[sel.profile.vendor] = sel.item.name;
           updates["items/" + listId + "/" + key] = {
             name: sel.item.name, category: cat ? cat.label : "שונות", categoryEmoji: emoji,
-            quantity: 1, unit: "יחידות", note: "", done: false, barcodes: barcodes,
+            quantity: 1, unit: "יחידות", note: "", done: false, barcodes: barcodes, matchedNames: matchedNames,
             addedBy: user.uid, addedByName: user.displayName, addedByColor: getUserColor(user.uid),
             createdAt: now + idx,
           };
@@ -3781,9 +3806,12 @@
         });
         return out;
       }
-      const applyItemMatch = (item, vendorBarcodes, matchedName) => {
+      const applyItemMatch = (item, vendorBarcodes, matchedName, vendorNames) => {
         var nextBarcodes = Object.assign({}, item.barcodes, vendorBarcodes);
         var updates = { barcodes: nextBarcodes };
+        if (vendorNames && Object.keys(vendorNames).length > 0) {
+          updates.matchedNames = Object.assign({}, item.matchedNames, vendorNames);
+        }
         if (matchedName && matchedName !== item.name) {
           updates.originalName = item.originalName || item.name;
           updates.name = matchedName;
@@ -3949,12 +3977,14 @@
             var hadNone = !itemHasAnyBarcode(item);
             if (r.barcodes && Object.keys(r.barcodes).length > 0) {
               var vendorBarcodes = {};
+              var vendorNames = {};
               var firstMatchedName = null;
               Object.keys(r.barcodes).forEach(function(v) {
                 vendorBarcodes[v] = r.barcodes[v].barcode;
+                vendorNames[v] = r.barcodes[v].name;
                 if (!firstMatchedName) firstMatchedName = r.barcodes[v].name;
               });
-              applyItemMatch(item, vendorBarcodes, hadNone ? firstMatchedName : null);
+              applyItemMatch(item, vendorBarcodes, hadNone ? firstMatchedName : null, vendorNames);
               newlyResolved.push(Object.assign({}, item, { barcodes: Object.assign({}, item.barcodes, vendorBarcodes) }));
             }
             if (r.missingVendors && r.missingVendors.length > 0 && r.candidates) {
@@ -4093,8 +4123,9 @@
         setResolveBusy(true);
         fns.httpsCallable("confirmItemBarcode")({ name: item.name, barcode: candidate.barcode, matchedName: candidate.name, vendors: vendorsToConfirm }).then(function() {
           var vendorBarcodes = {};
-          vendorsToConfirm.forEach(function(v) { vendorBarcodes[v] = candidate.barcode; });
-          applyItemMatch(item, vendorBarcodes, candidate.name);
+          var vendorNames = {};
+          vendorsToConfirm.forEach(function(v) { vendorBarcodes[v] = candidate.barcode; vendorNames[v] = candidate.name; });
+          applyItemMatch(item, vendorBarcodes, candidate.name, vendorNames);
           // The candidate already carries confirmed vendors' prices (and any
           // promo price) from the merged search — apply directly, no
           // follow-up fetch needed.
@@ -4197,7 +4228,7 @@
       // name afterward so the user can edit and press חפש themselves.
       const clearItemMatch = (item) => {
         var revertedName = item.originalName || item.name;
-        var cleared = { barcodes: null, barcode: null, originalName: null, name: revertedName };
+        var cleared = { barcodes: null, barcode: null, originalName: null, name: revertedName, matchedNames: null };
         setItems(function(prev) { return prev.map(function(i) { return i.id === item.id ? Object.assign({}, i, cleared) : i; }); });
         db.ref("items/" + listId + "/" + item.id).update(cleared);
         setEditItem(function(prev) { return prev ? Object.assign({}, prev, cleared) : prev; });
@@ -5001,6 +5032,7 @@
                 return (
                   <tr key={item.id} className={editable ? "cursor-pointer active:bg-gray-50" : ""} onClick={editable ? function() { onEditItem(item); } : undefined}>
                     <td className={"sticky right-0 bg-white z-10 px-3 py-2 border-b border-gray-100 text-right " + (item.done ? "line-through text-gray-400" : (editable ? "text-blue-600 underline decoration-blue-200 underline-offset-2" : "text-gray-800"))}>
+                      {itemHasMixedVendorMatches(item) && <span className="text-amber-500 font-bold" title="הרשתות מותאמות למוצרים שונים">! </span>}
                       {item.name}
                       {qty !== 1 && <span className="text-gray-400"> ({qty})</span>}
                     </td>
@@ -5097,7 +5129,10 @@
             )}
             <div className="flex-1 min-w-0">
               <span onClick={!isTasks && canEdit ? function(e) { e.stopPropagation(); onEdit(); } : undefined}
-                className={`font-medium text-sm ${item.done ? "line-through text-gray-400" : (!isTasks && canEdit ? "text-blue-600 underline decoration-blue-200 underline-offset-2" : "text-gray-800")} ${!isTasks && canEdit ? "cursor-pointer" : ""}`}>{item.name}</span>
+                className={`font-medium text-sm ${item.done ? "line-through text-gray-400" : (!isTasks && canEdit ? "text-blue-600 underline decoration-blue-200 underline-offset-2" : "text-gray-800")} ${!isTasks && canEdit ? "cursor-pointer" : ""}`}>
+                {!isTasks && itemHasMixedVendorMatches(item) && <span className="text-amber-500 no-underline" title="הרשתות מותאמות למוצרים שונים">! </span>}
+                {item.name}
+              </span>
               {currentUserId && item.addedBy && item.addedBy !== currentUserId && (
                 <span style={{color: item.addedByColor || getUserColor(item.addedBy)}} className="block text-xs font-medium mt-0.5">
                   ● {item.addedByName ? item.addedByName.split(" ")[0] : ""}
@@ -5442,11 +5477,13 @@
                   else if (row.price == null) statusText = "לא נמכר כאן";
                   else if (row.promoActive) statusText = "₪" + row.promo.price.toFixed(2) + "* (₪" + row.price.toFixed(2) + ")";
                   else statusText = "₪" + row.price.toFixed(2);
+                  var matchedName = itemVendorMatchedName(item, row.p.vendor);
                   return (
                     <button key={row.p.id} onClick={function() { setSearchScope(row.p.vendor); }}
                       className={"w-full flex items-center justify-between gap-2 rounded-xl px-3 py-2.5 hover:bg-gray-100 text-right " + (searchScope === row.p.vendor ? "bg-blue-50 ring-1 ring-blue-200" : "bg-gray-50")}>
                       <div className="min-w-0 flex-1">
                         <div className="text-sm text-gray-700">{profileLabel(row.p, activeProfiles)}</div>
+                        {matchedName && <div className="text-[10px] text-gray-500 truncate">{matchedName}</div>}
                         {row.bc && <div className="text-[10px] text-gray-400 font-mono truncate" dir="ltr">{row.bc}</div>}
                       </div>
                       <span className={"text-xs flex-shrink-0 font-semibold " + textClass}>
@@ -5456,6 +5493,11 @@
                   );
                 })}
               </div>
+              {itemHasMixedVendorMatches(item) && (
+                <div className="text-[11px] text-amber-600 bg-amber-50 border border-amber-100 rounded-xl px-3 py-2">
+                  ⚠️ הרשתות מותאמות לברקודים שונים — ייתכן שאלו מוצרים שונים (למשל גודל אריזה שונה), לא בהכרח אותו פריט
+                </div>
+              )}
             </div>
             );
           })()}

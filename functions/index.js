@@ -1091,7 +1091,11 @@ async function ensureFreshCatalog(vendor, branchId, force, uid, email) {
 // list-open action is never the thing waiting on a 30-50s FTP re-ingest —
 // see ensureFreshCatalog above for the request-time half of this fix.
 // Only refreshes branches someone actually has active, not every branch
-// ever historically ingested.
+// ever historically ingested. Prices only — promotions are deliberately
+// NOT refreshed here (cost concern): they only ever refresh on an explicit
+// "רענן מחירים" action (getBasketPrices' force path) or when the promo
+// browser first ingests a branch that's never been fetched at all. No
+// automatic background refresh for promotions.
 exports.refreshActiveVendorCatalogs = onSchedule(
   { schedule: 'every 12 hours', region: 'europe-west1', timeoutSeconds: 540, memory: '512MiB' },
   async () => {
@@ -1105,10 +1109,9 @@ exports.refreshActiveVendorCatalogs = onSchedule(
         }
       });
     });
-    await Promise.all(Object.values(pairs).flatMap(({ vendor, branchId }) => [
-      ingestVendorCatalog(vendor, branchId).catch(() => {}),
-      ingestVendorPromotions(vendor, branchId).catch(() => {}),
-    ]));
+    await Promise.all(Object.values(pairs).map(({ vendor, branchId }) =>
+      ingestVendorCatalog(vendor, branchId).catch(() => {})
+    ));
   }
 );
 
@@ -1660,21 +1663,16 @@ exports.getVendorPromotions = onCall(
     const activeProfiles = await getUserActiveProfiles(request.auth.uid, groupId);
     if (activeProfiles.length === 0) return { promotionsByProfile: {}, profiles: activeProfiles };
 
-    // Dedupe by (vendor,branchId) so profiles sharing one branch only fetch
-    // it once — same pattern as getBasketPrices's force-refresh path.
+    // Dedupe by (vendor,branchId) so profiles sharing one branch only read
+    // it once. Read-only — never triggers a live vendor fetch here, however
+    // stale or missing the cached data is. Promotions only ever refresh via
+    // an explicit "רענן מחירים" action (getBasketPrices' force path); this
+    // just shows whatever that last produced.
     const promosByBranch = {};
     await Promise.all(activeProfiles.map(async (p) => {
       const key = `${p.vendor}:${p.branchId}`;
       if (!promosByBranch[key]) {
-        promosByBranch[key] = (async () => {
-          const metaSnap = await db.ref(`vendorPromotionsIndex/${p.vendor}/${p.branchId}/updatedAt`).once('value');
-          const updatedAt = metaSnap.val();
-          if (updatedAt && Date.now() - updatedAt < CATALOG_STALENESS_MS) {
-            const snap = await db.ref(`vendorPromotions/${p.vendor}/${p.branchId}/promotions`).once('value');
-            return snap.val() || [];
-          }
-          return ingestVendorPromotions(p.vendor, p.branchId, request.auth.uid, request.auth.token.email).catch(() => []);
-        })();
+        promosByBranch[key] = db.ref(`vendorPromotions/${p.vendor}/${p.branchId}/promotions`).once('value').then(snap => snap.val() || []);
       }
       return promosByBranch[key];
     }));

@@ -1,6 +1,6 @@
     const { useState, useEffect, useRef } = React;
 
-    const VERSION = "v6.11";
+    const VERSION = "v6.12";
 
     // ── CONFIG ────────────────────────────────────────────────────────────────────
     const FIREBASE_CONFIG = {
@@ -4147,6 +4147,30 @@
         }, function() { showToast("שגיאה בחיפוש"); });
       };
 
+      // Searches (and lets the user confirm) a match for exactly one vendor,
+      // regardless of whether that vendor already has a match — reused for
+      // both "still missing" rows and "re-check this one" on an already-
+      // matched row, same action either way. Scoping the server call itself
+      // to `vendors: [vendorId]` keeps the picker's candidate list scoped
+      // to just this vendor too (see fuzzyMatchCatalogs/resolveItemBarcodes).
+      const matchSingleVendor = (item, vendorId) => {
+        setResolvingNames(function(prev) { var next = new Set(prev); next.add(item.name); return next; });
+        fns.httpsCallable("resolveItemBarcodes")({ items: [item.name], force: true, vendors: [vendorId], groupId: (list && list.vendorGroupId) || null }).then(function(res) {
+          setResolvingNames(function(prev) { var next = new Set(prev); next.delete(item.name); return next; });
+          var r = (res.data.results || {})[item.name];
+          setCandidatesByName(function(prev) {
+            var next = Object.assign({}, prev);
+            next[item.name] = { vendors: (r && r.missingVendors) || [vendorId], allVendors: (r && r.searchedVendors) || [vendorId], list: (r && r.candidates) || [] };
+            return next;
+          });
+          setEditItem(null);
+          setPickerItem(item);
+        }, function() {
+          setResolvingNames(function(prev) { var next = new Set(prev); next.delete(item.name); return next; });
+          showToast("שגיאה בחיפוש");
+        });
+      };
+
       const refineSearch = () => {
         var q = pickerQuery.trim();
         if (!q || pickerSearching) return;
@@ -4551,7 +4575,8 @@
           )}
 
           {editItem && <EditItemModal item={editItem} categories={categories} onChange={setEditItem} onSave={saveEdit} onResetMatch={handleResetMatch} pricingEnabled={pricingEnabled}
-            priceCandidates={candidatesByName[editItem.name]} onPickPrice={() => setPickerItem(editItem)} isResolving={resolvingNames.has(editItem.name)} onClose={() => setEditItem(null)} />}
+            priceCandidates={candidatesByName[editItem.name]} onMatchVendor={matchSingleVendor} isResolving={resolvingNames.has(editItem.name)}
+            activeProfiles={activeProfiles} priceMap={priceMap} promoMap={promoMap} onClose={() => setEditItem(null)} />}
           {noteEdit && <NoteEditModal item={noteEdit} onSave={saveNoteEdit} onClose={function() { setNoteEdit(null); }} />}
           {taskEdit && <TaskEditModal item={taskEdit} onChange={setTaskEdit} onSave={saveTaskEdit} onDelete={deleteTask} onClose={() => setTaskEdit(null)} />}
           {confirmDialog && <ConfirmDialog message={confirmDialog.message} confirmLabel={confirmDialog.confirmLabel} onConfirm={confirmDialog.onConfirm} onClose={function() { setConfirmDialog(null); }} />}
@@ -5187,68 +5212,36 @@
       );
     }
 
-    function EditItemModal({ item, categories, onChange, onSave, onResetMatch, pricingEnabled, priceCandidates, onPickPrice, isResolving, onClose }) {
+    function EditItemModal({ item, categories, onChange, onSave, onResetMatch, pricingEnabled, priceCandidates, onMatchVendor, isResolving, activeProfiles, priceMap, promoMap, onClose }) {
+      const [editTab, setEditTab] = useState("details"); // "details" | "vendors"
+      const showVendorsTab = pricingEnabled && editTab === "vendors";
       return (
         <Modal onClose={onClose}>
-          <h3 className="text-lg font-bold text-center mb-4">עריכת פריט</h3>
+          <h3 className="text-lg font-bold text-center mb-1">עריכת פריט</h3>
+          {/* Per-vendor status (barcode, price, promo) moved to its own tab —
+              a full row per vendor next to the name/qty/category/note fields
+              was too much in one scroll, and this mirrors the same tab
+              pattern already used in Settings. */}
+          {pricingEnabled && (
+            <div className="flex bg-gray-100 rounded-xl p-1 mb-4">
+              {[["details", "פרטי פריט"], ["vendors", "רשתות"]].map(function(tab) {
+                var key = tab[0], label = tab[1];
+                return (
+                  <button key={key} onClick={function() { setEditTab(key); }}
+                    className={"flex-1 py-2 rounded-lg text-sm font-medium transition " + (editTab === key ? "bg-white shadow text-blue-600" : "text-gray-500")}>
+                    {label}
+                  </button>
+                );
+              })}
+            </div>
+          )}
+          {!showVendorsTab && (
           <div className="space-y-3">
             <div>
               <label className="text-xs text-gray-500 block mb-1">שם</label>
               <input value={item.name || ""} onChange={e => onChange({...item, name: e.target.value})}
                 className="w-full border border-gray-200 rounded-xl px-4 py-3 text-right focus:outline-none focus:border-blue-400" />
             </div>
-            {pricingEnabled && (itemHasAnyBarcode(item) || item.originalName) && (
-              <div className="bg-blue-50 border border-blue-100 rounded-xl p-3 space-y-1">
-                {item.originalName && (
-                  <div className="text-xs text-gray-500">השם שהזנת במקור: <span className="font-medium text-gray-700">{item.originalName}</span></div>
-                )}
-                {(function() {
-                  // Group vendors that share the exact same barcode into one
-                  // line instead of repeating it once per vendor — the common
-                  // case for packaged goods, since a real GTIN doesn't change
-                  // by chain. Only genuinely different barcodes (butcher/deli
-                  // items priced by weight) get their own line.
-                  var byBarcode = {};
-                  VENDOR_LIST.forEach(function(v) {
-                    var bc = itemVendorBarcode(item, v.id);
-                    if (!bc) return;
-                    if (!byBarcode[bc]) byBarcode[bc] = [];
-                    byBarcode[bc].push(v.label);
-                  });
-                  return Object.entries(byBarcode).map(function(entry) {
-                    var bc = entry[0], labels = entry[1];
-                    return (
-                      <div key={bc} className="text-xs text-gray-500" dir="ltr">{labels.join(", ")} — ברקוד: <span className="font-mono text-gray-700">{bc}</span></div>
-                    );
-                  });
-                })()}
-                <button onClick={() => onResetMatch(item)}
-                  className="text-xs text-blue-600 font-medium">🔄 חפש התאמת פריט מחדש</button>
-                {/* Item already matched for at least one vendor — the still-
-                    missing one(s) are surfaced here instead of on the main
-                    list, since "prices already showing" + "still needs
-                    matching" reads as contradictory in the list view. */}
-                {itemHasAnyBarcode(item) && priceCandidates && priceCandidates.list && (
-                  <button onClick={() => { onPickPrice(); onClose(); }}
-                    className="text-xs text-blue-600 font-medium inline-flex items-center gap-1">
-                    <BarcodeIcon /> השלם התאמה לרשת החסרה
-                  </button>
-                )}
-              </div>
-            )}
-            {pricingEnabled && !itemHasAnyBarcode(item) && (
-              isResolving && !priceCandidates ? (
-                <div className="bg-blue-50 border border-blue-100 rounded-xl p-3 flex items-center gap-2">
-                  <span className="inline-block w-3 h-3 border-2 border-blue-300 border-t-blue-600 rounded-full animate-spin"></span>
-                  <span className="text-xs text-gray-500">מחפש התאמה בסניפים...</span>
-                </div>
-              ) : priceCandidates && priceCandidates.list ? (
-                <button onClick={() => { onPickPrice(); onClose(); }}
-                  className="w-full text-xs font-medium rounded-xl border px-3 py-2.5 text-blue-600 border-blue-200 bg-blue-50 inline-flex items-center justify-center gap-1.5">
-                  <BarcodeIcon className="w-4 h-4" /> התאם פריט
-                </button>
-              ) : null
-            )}
             <div className="grid grid-cols-2 gap-2">
               <div>
                 <label className="text-xs text-gray-500 block mb-1">כמות</label>
@@ -5291,6 +5284,60 @@
                 className="w-full border border-gray-200 rounded-xl px-4 py-3 text-right focus:outline-none focus:border-blue-400" />
             </div>
           </div>
+          )}
+          {showVendorsTab && (
+            <div className="space-y-2">
+              {item.originalName && (
+                <div className="text-xs text-gray-500 bg-blue-50 border border-blue-100 rounded-xl p-3">
+                  השם שהזנת במקור: <span className="font-medium text-gray-700">{item.originalName}</span>
+                </div>
+              )}
+              <button onClick={() => onResetMatch(item)} className="text-xs text-blue-600 font-medium">
+                🔄 חפש התאמת פריט מחדש (כל הרשתות)
+              </button>
+              {!itemHasAnyBarcode(item) && isResolving && !priceCandidates && (
+                <div className="bg-blue-50 border border-blue-100 rounded-xl p-3 flex items-center gap-2">
+                  <span className="inline-block w-3 h-3 border-2 border-blue-300 border-t-blue-600 rounded-full animate-spin"></span>
+                  <span className="text-xs text-gray-500">מחפש התאמה בסניפים...</span>
+                </div>
+              )}
+              {/* One row per active vendor — status (price / promo / not sold
+                  / not yet matched) always shown explicitly, never blank, so
+                  "not carried here" and "never checked" can't look the same.
+                  Tapping any row (matched or not) re-searches just that one
+                  vendor — same action either way, scoped via
+                  matchSingleVendor's `vendors: [vendorId]` so the picker
+                  that opens only shows this vendor's candidates. */}
+              <div className="space-y-1.5">
+                {(activeProfiles || []).map(function(p) {
+                  var bc = itemVendorBarcode(item, p.vendor);
+                  var vendorPrices = priceMap ? priceMap[p.id] : null;
+                  var fetched = !!(bc && vendorPrices && (bc in vendorPrices));
+                  var price = fetched ? vendorPrices[bc] : null;
+                  var promo = (bc && promoMap && promoMap[p.id]) ? promoMap[p.id][bc] : null;
+                  var promoActive = !!(promo && (parseFloat(item.quantity) || 1) >= (promo.minQty || 1));
+                  var statusText, statusClass;
+                  if (!bc) { statusText = "לא הותאם — הקש להתאמה"; statusClass = "text-gray-400"; }
+                  else if (!fetched) { statusText = "בודק מחיר..."; statusClass = "text-gray-400"; }
+                  else if (price == null) { statusText = "לא נמכר כאן"; statusClass = "text-gray-400"; }
+                  else if (promoActive) { statusText = "₪" + promo.price.toFixed(2) + "* (₪" + price.toFixed(2) + ")"; statusClass = "text-orange-600 font-semibold"; }
+                  else { statusText = "₪" + price.toFixed(2); statusClass = "text-green-600 font-semibold"; }
+                  return (
+                    <button key={p.id} onClick={function() { onMatchVendor(item, p.vendor); }}
+                      className="w-full flex items-center justify-between gap-2 rounded-xl px-3 py-2.5 bg-gray-50 hover:bg-gray-100 text-right">
+                      <div className="min-w-0 flex-1">
+                        <div className="text-sm text-gray-700">{profileLabel(p, activeProfiles)}</div>
+                        {bc && <div className="text-[10px] text-gray-400 font-mono truncate" dir="ltr">{bc}</div>}
+                      </div>
+                      <span className={"text-xs flex-shrink-0 flex items-center gap-1 " + statusClass}>
+                        {statusText}<span className="text-gray-300">🔄</span>
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          )}
           <button onClick={() => onSave(item)} disabled={!item.name || !item.name.trim()}
             className="w-full bg-blue-600 text-white py-4 rounded-2xl font-semibold mt-5 disabled:opacity-40">
             שמור שינויים

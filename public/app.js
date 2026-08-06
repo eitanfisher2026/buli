@@ -1,6 +1,6 @@
     const { useState, useEffect, useRef } = React;
 
-    const VERSION = "v6.25";
+    const VERSION = "v6.26";
 
     // ── CONFIG ────────────────────────────────────────────────────────────────────
     const FIREBASE_CONFIG = {
@@ -5340,7 +5340,11 @@
       // the "all vendors" scope) — not always a shared generic name.
       const selectScope = function(vendorId) {
         setSearchScope(vendorId);
-        setSearchQuery((vendorId && itemVendorMatchedName(item, vendorId)) || item.name || "");
+        // A vendor that's already matched gets its own matched name; one
+        // that isn't yet should start from the originally typed name (more
+        // likely to find a fresh match) rather than whatever the item's
+        // shared name happens to be right now.
+        setSearchQuery((vendorId && itemVendorMatchedName(item, vendorId)) || item.originalName || item.name || "");
       };
       const runSearch = function() {
         var q = searchQuery.trim();
@@ -5458,6 +5462,13 @@
                   onChange={function(e) { setSearchQuery(e.target.value); }}
                   onKeyDown={function(e) { if (e.key === "Enter") runSearch(); }}
                   className="flex-1 min-w-0 border border-gray-200 rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:border-blue-400" />
+                {item.originalName && (
+                  <button type="button" onClick={function() { onChange({ ...item, originalName: searchQuery.trim() }); }}
+                    disabled={!searchQuery.trim()} title="העתק לשם המקורי"
+                    className="px-3 rounded-xl border border-gray-200 text-gray-500 disabled:opacity-40 flex-shrink-0">
+                    📋
+                  </button>
+                )}
                 <button onClick={runSearch} disabled={!searchQuery.trim() || isResolving}
                   className="px-4 rounded-xl bg-blue-600 text-white text-sm font-medium disabled:opacity-40 flex-shrink-0">
                   {isResolving ? <Spinner /> : "חפש"}

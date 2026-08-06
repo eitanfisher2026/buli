@@ -1,6 +1,6 @@
     const { useState, useEffect, useRef } = React;
 
-    const VERSION = "v6.27";
+    const VERSION = "v6.28";
 
     // ── CONFIG ────────────────────────────────────────────────────────────────────
     const FIREBASE_CONFIG = {
@@ -3844,6 +3844,11 @@
           updates.name = matchedName;
         }
         setItems(function(prev) { return prev.map(function(i) { return i.id === item.id ? Object.assign({}, i, updates) : i; }); });
+        // The edit dialog holds its own snapshot (editItem) separate from
+        // the items array — without this, a pick here wouldn't show up in
+        // it, and a later שמור שינויים would save that stale snapshot over
+        // this write, silently reverting the very match just confirmed.
+        setEditItem(function(prev) { return (prev && prev.id === item.id) ? Object.assign({}, prev, updates) : prev; });
         db.ref("items/" + listId + "/" + item.id).update(updates);
       };
       const fetchPrices = (barcodesByVendor, force) => {

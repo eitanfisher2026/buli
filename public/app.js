@@ -1,6 +1,6 @@
     const { useState, useEffect, useRef } = React;
 
-    const VERSION = "v6.36";
+    const VERSION = "v6.37";
 
     // ── CONFIG ────────────────────────────────────────────────────────────────────
     const FIREBASE_CONFIG = {
@@ -3807,7 +3807,6 @@
       // default group (today's behavior for every list that never picks
       // one). Only loaded/shown once pricing is enabled.
       const [vendorGroups, setVendorGroups] = useState({});
-      const [showGroupPicker, setShowGroupPicker] = useState(false);
       useEffect(function() {
         if (!pricingEnabled) return;
         var ref = db.ref("users/" + user.uid + "/vendorGroups");
@@ -3906,7 +3905,6 @@
         setActiveProfiles([]);
         setPriceMap({});
         setPromoMap({});
-        setShowGroupPicker(false);
       };
 
       const loadList = function() {
@@ -4705,34 +4703,50 @@
                   </button>
                 </div>
               ) : <div />}
-              <span className="text-white/50 text-xs flex items-center gap-2">
-                {isNotes ? (notesSorted.filter(i=>i.done).length + "/" + notesSorted.length) : (isFiltered ? filteredItems.length + "/" + items.length : doneCount + "/" + items.length)}
-                {doneCount > 0 && canEditAll && !isFiltered && (
-                  <button onClick={clearDone} className="bg-white/20 text-white text-xs px-2.5 py-1 rounded-full font-medium">
-                    🗑️ {isTasks ? "מחק הושלמו" : isNotes ? "מחק סיימו" : "מחק מסל"}
-                  </button>
-                )}
-              </span>
+              {/* Notes lists skip the filter-pills row entirely below, so
+                  the counter has nowhere else to live — kept here only for
+                  that case. Every other list type shows it merged into the
+                  filter-pills row instead, to not spend a whole line on it. */}
+              {isNotes && (
+                <span className="text-white/50 text-xs flex items-center gap-2">
+                  {notesSorted.filter(i=>i.done).length + "/" + notesSorted.length}
+                </span>
+              )}
             </div>
             {!isNotes && !(viewMode === "table" && pricingEnabled && !isTasks) && (
               <div className="mt-2" dir="ltr">
-                <div className="flex items-center gap-1.5">
-                  {pricingEnabled && !isTasks && (
-                    <button onClick={function() { setFilterVendorProfile(function(p) { return p === "noBarcode" ? "all" : "noBarcode"; }); }}
-                      className={"text-xs px-2 py-1 rounded-full transition whitespace-nowrap flex-shrink-0 " + (filterVendorProfile==="noBarcode" ? "bg-white text-orange-600 font-semibold" : "bg-white/15 text-white/70")}>
-                      ⚠ ללא ברקוד
+                <div className="flex items-center justify-between gap-1.5">
+                  <div className="flex items-center gap-1.5">
+                    {pricingEnabled && !isTasks && (
+                      <button onClick={function() { setFilterVendorProfile(function(p) { return p === "noBarcode" ? "all" : "noBarcode"; }); }}
+                        className={"text-xs px-2 py-1 rounded-full transition whitespace-nowrap flex-shrink-0 " + (filterVendorProfile==="noBarcode" ? "bg-white text-orange-600 font-semibold" : "bg-white/15 text-white/70")}>
+                        ⚠ ללא ברקוד
+                      </button>
+                    )}
+                    <button onClick={function() { setShowFilters(function(p) { return !p; }); }}
+                      className={"text-xs px-2.5 py-1 rounded-full transition whitespace-nowrap flex-shrink-0 flex items-center gap-1 " + (showFilters ? "bg-white text-blue-600 font-semibold" : "bg-white/15 text-white/70")}>
+                      מסננים {(filterStatus !== "all" || filterPerson !== "all" || singleShopId) && <span className="text-orange-300">●</span>}
                     </button>
-                  )}
-                  <button onClick={function() { setShowFilters(function(p) { return !p; }); }}
-                    className={"text-xs px-2.5 py-1 rounded-full transition whitespace-nowrap flex-shrink-0 flex items-center gap-1 " + (showFilters ? "bg-white text-blue-600 font-semibold" : "bg-white/15 text-white/70")}>
-                    מסננים {(filterStatus !== "all" || filterPerson !== "all" || singleShopId) && <span className="text-orange-300">●</span>}
-                  </button>
-                  {isFiltered && (
-                    <button onClick={clearAllFilters} className="text-white/60 hover:text-white text-xs flex-shrink-0" title="נקה פילטרים">✕</button>
-                  )}
+                    {isFiltered && (
+                      <button onClick={clearAllFilters} className="text-white/60 hover:text-white text-xs flex-shrink-0" title="נקה פילטרים">✕</button>
+                    )}
+                  </div>
+                  {/* Moved here (was its own line) to make better use of the
+                      vertical space — this row already had room for it. */}
+                  <span className="text-white/50 text-xs flex items-center gap-2 flex-shrink-0">
+                    {isFiltered ? filteredItems.length + "/" + items.length : doneCount + "/" + items.length}
+                    {doneCount > 0 && canEditAll && !isFiltered && (
+                      <button onClick={clearDone} className="bg-white/20 text-white text-xs px-2.5 py-1 rounded-full font-medium whitespace-nowrap">
+                        🗑️ {isTasks ? "מחק הושלמו" : "מחק מסל"}
+                      </button>
+                    )}
+                  </span>
                 </div>
                 {showFilters && (
                   <div className="mt-2 bg-white/10 rounded-2xl p-2.5 space-y-2.5">
+                    <div className="flex justify-end">
+                      <button onClick={function() { setShowFilters(false); }} className="text-white/50 hover:text-white text-sm w-6 h-6 flex items-center justify-center flex-shrink-0" title="סגור מסננים">✕</button>
+                    </div>
                     <div>
                       <div className="text-white/50 text-xs mb-1">סטטוס</div>
                       <div className="flex bg-white/15 rounded-full p-0.5 gap-0.5 w-fit">
@@ -4750,10 +4764,21 @@
                     {pricingEnabled && Object.keys(vendorGroups).length > 0 && (
                       <div>
                         <div className="text-white/50 text-xs mb-1">קבוצת רשתות</div>
-                        <button onClick={function() { setShowGroupPicker(true); }}
-                          className="text-xs bg-white/15 text-white/70 rounded-full px-2.5 py-1 flex items-center gap-1 w-fit">
-                          🏪 {list.vendorGroupId && vendorGroups[list.vendorGroupId] ? vendorGroups[list.vendorGroupId].name : "כללי"}
-                        </button>
+                        <div className="flex flex-wrap gap-1">
+                          <button onClick={function() { setListVendorGroup(null); }}
+                            className={"text-xs px-2.5 py-1 rounded-full transition whitespace-nowrap " + (!list.vendorGroupId ? "bg-white text-blue-600 font-semibold" : "bg-white/15 text-white/70")}>
+                            כללי
+                          </button>
+                          {Object.entries(vendorGroups).map(function(entry) {
+                            var gid = entry[0], g = entry[1];
+                            return (
+                              <button key={gid} onClick={function() { setListVendorGroup(gid); }}
+                                className={"text-xs px-2.5 py-1 rounded-full transition whitespace-nowrap " + (list.vendorGroupId === gid ? "bg-white text-blue-600 font-semibold" : "bg-white/15 text-white/70")}>
+                                {g.name}
+                              </button>
+                            );
+                          })}
+                        </div>
                       </div>
                     )}
                     <div>
@@ -4943,29 +4968,6 @@
             </Modal>
           )}
 
-          {showGroupPicker && (
-            <Modal onClose={function() { setShowGroupPicker(false); }}>
-              <h3 className="text-lg font-bold text-center mb-4">קבוצת רשתות להשוואה</h3>
-              <div className="space-y-2">
-                <button onClick={function() { setListVendorGroup(null); }}
-                  className={"w-full text-right px-4 py-3 rounded-xl border " + (!list.vendorGroupId ? "bg-blue-50 border-blue-200 text-blue-700 font-semibold" : "bg-gray-50 border-transparent text-gray-700")}>
-                  כללי
-                </button>
-                {Object.entries(vendorGroups).map(function(entry) {
-                  var gid = entry[0], g = entry[1];
-                  return (
-                    <button key={gid} onClick={function() { setListVendorGroup(gid); }}
-                      className={"w-full text-right px-4 py-3 rounded-xl border " + (list.vendorGroupId === gid ? "bg-blue-50 border-blue-200 text-blue-700 font-semibold" : "bg-gray-50 border-transparent text-gray-700")}>
-                      {g.name}
-                    </button>
-                  );
-                })}
-              </div>
-              <button onClick={function() { setShowGroupPicker(false); }} className="w-full mt-3 py-3 text-gray-400 text-sm font-medium">
-                ביטול
-              </button>
-            </Modal>
-          )}
 
           {showPromoBrowser && (
             <Modal onClose={function() { setShowPromoBrowser(false); }}>
@@ -5713,8 +5715,8 @@
               {priceCandidates && priceCandidates.list && (
                 // Search results, shown inline right under the search bar —
                 // picking or dismissing both stay in this same view.
-                <div>
-                  <div className="flex items-center justify-between mb-1 mt-1">
+                <div className="border-2 border-blue-100 bg-blue-50/40 rounded-2xl p-2">
+                  <div className="flex items-center justify-between mb-1">
                     <button onClick={() => onCancelMatch(item.name)} className="text-xs text-gray-400 font-medium">✕ סגור תוצאות</button>
                     <div className="text-xs font-semibold text-gray-500">תוצאות חיפוש</div>
                   </div>
@@ -5725,7 +5727,7 @@
                       var searchedVendors = priceCandidates.vendors || [];
                       return (
                         <button key={c.barcode} onClick={() => { onPickCandidate(item, c); onCancelMatch(item.name); }}
-                          className="w-full text-right rounded-xl px-3 py-2.5 bg-gray-50 hover:bg-gray-100">
+                          className="w-full text-right rounded-xl px-3 py-2.5 bg-white hover:bg-gray-50 border border-gray-100">
                           <div className="text-sm font-medium text-gray-800">{c.name}</div>
                           <div className="text-xs text-gray-500 mb-1">
                             {c.manufacturer ? ("יצרן/מותג: " + c.manufacturer + " · ") : ""}ברקוד: {c.barcode}
@@ -5912,8 +5914,8 @@
             כל הרשתות
           </button>
           {candidates && (
-            <div>
-              <div className="flex items-center justify-between mb-1 mt-1">
+            <div className="border-2 border-blue-100 bg-blue-50/40 rounded-2xl p-2">
+              <div className="flex items-center justify-between mb-1">
                 <button onClick={function() { setCandidates(null); }} className="text-xs text-gray-400 font-medium">✕ סגור תוצאות</button>
                 <div className="text-xs font-semibold text-gray-500">תוצאות חיפוש</div>
               </div>
@@ -5924,7 +5926,7 @@
                   var searchedVendors = candidates.vendors || [];
                   return (
                     <button key={c.barcode} onClick={function() { pickCandidate(c); }}
-                      className="w-full text-right rounded-xl px-3 py-2.5 bg-gray-50 hover:bg-gray-100">
+                      className="w-full text-right rounded-xl px-3 py-2.5 bg-white hover:bg-gray-50 border border-gray-100">
                       <div className="text-sm font-medium text-gray-800">{c.name}</div>
                       <div className="text-xs text-gray-500 mb-1">
                         {c.manufacturer ? ("יצרן/מותג: " + c.manufacturer + " · ") : ""}ברקוד: {c.barcode}

@@ -1,6 +1,6 @@
     const { useState, useEffect, useRef } = React;
 
-    const VERSION = "v6.34";
+    const VERSION = "v6.35";
 
     // ── CONFIG ────────────────────────────────────────────────────────────────────
     const FIREBASE_CONFIG = {
@@ -5898,7 +5898,7 @@
       return (
         <div className="space-y-2">
           <div className="flex gap-2">
-            <input value={searchQuery} dir="rtl" placeholder="שם המוצר לחיפוש"
+            <input value={searchQuery} dir="rtl" placeholder="שם המוצר לחיפוש" autoFocus
               onChange={function(e) { setSearchQuery(e.target.value); }}
               onKeyDown={function(e) { if (e.key === "Enter") runSearch(); }}
               className="flex-1 min-w-0 border border-gray-200 rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:border-blue-400" />
@@ -6163,6 +6163,15 @@
         db.ref("users/" + user.uid + "/checkPriceGroupId").set(gid || "default");
       };
 
+      // One product-name field, not two — VendorMatchPanel owns the search
+      // box's text, so draft.name (what actually gets saved if the user
+      // adds it to a list) is kept mirrored to it instead of being a
+      // separate input the user would have to fill in twice.
+      const setSearchQueryAndName = function(v) {
+        setSearchQuery(v);
+        setDraft(function(prev) { return Object.assign({}, prev, { name: v }); });
+      };
+
       const openListPicker = function() {
         if (!draft.name.trim()) return;
         setShowListPicker(true);
@@ -6217,16 +6226,13 @@
                   🏪 {groupId && vendorGroups[groupId] ? vendorGroups[groupId].name : "כללי"} · שנה
                 </button>
               )}
-              <input value={draft.name} autoFocus placeholder="שם המוצר"
-                onChange={function(e) { setDraft(Object.assign({}, draft, { name: e.target.value })); }}
-                className="w-full border border-gray-200 rounded-xl px-4 py-3 text-right focus:outline-none focus:border-blue-400 mb-3" />
               {profilesLoading ? (
                 <div className="flex justify-center py-6"><Spinner /></div>
               ) : activeProfiles.length === 0 ? (
                 <p className="text-xs text-gray-400 text-center py-4">אין רשתות פעילות בקבוצה זו</p>
               ) : (
                 <VendorMatchPanel draft={draft} setDraft={setDraft} activeProfiles={activeProfiles} groupId={groupId} showToast={showToast}
-                  searchScope={searchScope} setSearchScope={setSearchScope} searchQuery={searchQuery} setSearchQuery={setSearchQuery}
+                  searchScope={searchScope} setSearchScope={setSearchScope} searchQuery={searchQuery} setSearchQuery={setSearchQueryAndName}
                   candidates={candidates} setCandidates={setCandidates} isResolving={isResolving} setIsResolving={setIsResolving}
                   priceMap={priceMap} setPriceMap={setPriceMap} promoMap={promoMap} setPromoMap={setPromoMap} />
               )}

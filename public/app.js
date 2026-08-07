@@ -1,6 +1,6 @@
     const { useState, useEffect, useRef } = React;
 
-    const VERSION = "v6.45";
+    const VERSION = "v6.46";
 
     // ── CONFIG ────────────────────────────────────────────────────────────────────
     const FIREBASE_CONFIG = {
@@ -561,7 +561,7 @@
         </div>
       );
     }
-    function Modal({ onClose, children, disableClose }) {
+    function Modal({ onClose, children, disableClose, footer }) {
       const [dragY, setDragY] = React.useState(0);
       const startYRef = React.useRef(null);
       const handleRef = React.useRef(null);
@@ -594,9 +594,19 @@
                 <button onClick={onClose} className="absolute top-4 left-4 text-gray-400 hover:text-gray-600 text-2xl leading-none w-8 h-8 flex items-center justify-center">×</button>
               )}
             </div>
-            <div className="overflow-y-auto px-6 pb-8">
+            {/* flex-1 + min-h-0 lets this shrink so a sticky footer (below)
+                always stays on screen without needing to scroll past the
+                form to reach it — the sheet still auto-sizes to short
+                content since nothing here forces height when there's no
+                overflow. */}
+            <div className={"overflow-y-auto px-6 min-h-0 flex-1 " + (footer ? "pb-4" : "pb-8")}>
               {children}
             </div>
+            {footer && (
+              <div className="flex-shrink-0 px-6 pt-3 pb-6 border-t border-gray-100">
+                {footer}
+              </div>
+            )}
           </div>
         </div>
       );
@@ -821,8 +831,8 @@
               <span>👁️ תצוגת משתמש רגיל</span><span className="opacity-70">· חזרה למנהל</span>
             </button>
           )}
-          {screen === "home"       && <HomeScreen       user={user} isAdmin={role === "admin" && !simulateRegular} isRealAdmin={role === "admin"} simulating={simulateRegular} onToggleSimulate={toggleSimulate} onOpenList={goList} onCategories={() => go("categories")} showToast={setToast} onAddTask={() => goAdd("tasks_" + user.uid, "tasks")} onCreateShoppingList={(id, name) => goAdd(id, "shopping", name)} onCreateNotesList={(id, name) => goAdd(id, "notes", name)} autoOpenSettings={autoOpenSettings} onAutoOpenedSettings={() => setAutoOpenSettings(false)} fontScale={fontScale} onSetFontScale={setFontScale} />}
-          {screen === "list"       && <ListScreen       user={user} listId={listId} onBack={goBack} onHome={goHome} onMenu={goMenu} onAdd={(type, name) => goAdd(listId, type, name || listName)} showToast={setToast} />}
+          {screen === "home"       && <HomeScreen       user={user} isAdmin={role === "admin" && !simulateRegular} isRealAdmin={role === "admin"} simulating={simulateRegular} onToggleSimulate={toggleSimulate} onOpenList={goList} onCategories={() => go("categories")} showToast={setToast} onAddTask={() => goAdd("tasks_" + user.uid, "tasks")} onCreateShoppingList={(id, name, single) => single ? goList(id, name) : goAdd(id, "shopping", name)} onCreateNotesList={(id, name) => goAdd(id, "notes", name)} autoOpenSettings={autoOpenSettings} onAutoOpenedSettings={() => setAutoOpenSettings(false)} fontScale={fontScale} onSetFontScale={setFontScale} />}
+          {screen === "list"       && <ListScreen       user={user} listId={listId} onBack={goBack} onMenu={goMenu} onAdd={(type, name) => goAdd(listId, type, name || listName)} showToast={setToast} />}
           {screen === "add"        && <AddScreen        user={user} listId={listId} listType={listType} listName={listName} onBack={goBack} onMenu={goMenu} showToast={setToast} showStickyToast={setStickyToast} />}
           {screen === "categories" && <CategoriesScreen user={user} onBack={goBack} onMenu={goMenu} showToast={setToast} />}
           {toast && <Toast msg={toast} onClose={() => setToast("")} />}
@@ -882,6 +892,7 @@
     // ── HOME ──────────────────────────────────────────────────────────────────────
     function HomeScreen({ user, isAdmin, isRealAdmin, simulating, onToggleSimulate, onOpenList, onCategories, showToast, onAddTask, onCreateShoppingList, onCreateNotesList, autoOpenSettings, onAutoOpenedSettings, fontScale, onSetFontScale }) {
       const tasksListId = "tasks_" + user.uid;
+      const creatingListRef = useRef(false);
       const categories = useCategories(user.uid); // for grouping the "copy items" picker by category, same as a list's default view
       const [lists,      setLists]      = useState(function() { return homeDataCache ? homeDataCache.lists : null; });
       const [tasks,      setTasks]      = useState(function() { return homeDataCache ? homeDataCache.tasks : null; });
@@ -1612,6 +1623,13 @@
       useEffect(function() { loadHome(); }, []);
 
       const quickCreate = () => {
+        // Guards against double-tap/double-click creating two lists at
+        // once — quickCreate reads `lists` (React state) synchronously to
+        // pick the next free "#N", so a second tap before the first
+        // write's re-render lands would compute the same name and create
+        // a genuine duplicate, not just a visual glitch.
+        if (creatingListRef.current) return;
+        creatingListRef.current = true;
         var prefix = "רשימת קניות #";
         var maxNum = 0;
         (lists || []).forEach(function(l) {
@@ -1626,11 +1644,17 @@
         var newListId = db.ref("lists").push().key;
         db.ref().update({ ["lists/" + newListId]: newList, ["listsByUser/" + user.uid + "/" + newListId]: true }).then(function() {
           updateLists(function(prev) { return [Object.assign({ id: newListId }, newList)].concat(prev || []); });
-          onCreateShoppingList(newListId, autoName);
-        }, function() { showToast("שגיאה ביצירת הרשימה"); });
+          creatingListRef.current = false;
+          // In "one at a time" mode, the free-text/group AddScreen isn't
+          // the right destination at all — land straight on the (empty)
+          // list, where the quick-add "+" FAB already matches that mode.
+          onCreateShoppingList(newListId, autoName, myAddMode === "single");
+        }, function() { creatingListRef.current = false; showToast("שגיאה ביצירת הרשימה"); });
       };
 
       const quickCreateNote = () => {
+        if (creatingListRef.current) return;
+        creatingListRef.current = true;
         var prefix = "תפריט #";
         var maxNum = 0;
         (lists || []).filter(function(l) { return l.type === "notes"; }).forEach(function(l) {
@@ -1646,8 +1670,9 @@
         var newListId = db.ref("lists").push().key;
         db.ref().update({ ["lists/" + newListId]: newList, ["listsByUser/" + user.uid + "/" + newListId]: true }).then(function() {
           updateLists(function(prev) { return [Object.assign({ id: newListId }, newList)].concat(prev || []); });
+          creatingListRef.current = false;
           onCreateNotesList(newListId, autoName);
-        }, function() { showToast("שגיאה ביצירת התפריט"); });
+        }, function() { creatingListRef.current = false; showToast("שגיאה ביצירת התפריט"); });
       };
 
       const reassignMajorIfNeeded = (newLists) => {
@@ -1938,7 +1963,6 @@
               </div>
               <button onClick={() => auth.signOut()} className="text-xs bg-white/20 px-3 py-1.5 rounded-full flex-shrink-0">יציאה</button>
             </div>
-            <p className="text-white/60 text-sm mt-2 text-right">שלום, {user.displayName.split(" ")[0]}</p>
           </div>
           <div className="flex-1 flex flex-col items-center justify-center gap-3 px-6">
             {loadError ? (
@@ -3820,7 +3844,7 @@
     }
 
     // ── LIST SCREEN ───────────────────────────────────────────────────────────────
-    function ListScreen({ user, listId, onBack, onHome, onMenu, onAdd, showToast }) {
+    function ListScreen({ user, listId, onBack, onMenu, onAdd, showToast }) {
       const [categories, setCategories] = useState([]);
       const [list,       setList]       = useState(null);
       const [items,      setItems]      = useState([]);
@@ -4745,9 +4769,6 @@
                 className="flex items-center justify-center text-white bg-white/20 w-8 h-8 rounded-full flex-shrink-0">
                 <span className="text-lg leading-none">‹</span>
               </button>
-              <button onClick={onHome} title="למסך הבית" className="flex items-center justify-center text-white bg-white/20 w-8 h-8 rounded-full flex-shrink-0">
-                <span className="text-sm leading-none">🏠</span>
-              </button>
               <h1 className="flex-1 min-w-0 text-lg font-bold truncate text-right">{list.name}</h1>
               <button onClick={function() { setShowHeaderMenu(true); }} className="text-white text-lg w-8 h-8 flex items-center justify-center bg-white/20 rounded-full flex-shrink-0">☰</button>
             </div>
@@ -5041,8 +5062,8 @@
             <button onClick={() => {
               if (!isTasks && !isNotes && pricingEnabled && addMode === "single") setShowQuickAdd(true);
               else onAdd(list.type, list.name);
-            }} className="fixed bottom-6 left-1/2 -translate-x-1/2 bg-blue-600 text-white px-8 py-4 rounded-2xl shadow-xl font-semibold text-base flex items-center gap-2 no-print">
-              <span className="text-xl font-light">+</span> {isTasks ? "הוסף מטלה" : isNotes ? "הוסף מנות" : "הוסף פריטים"}
+            }} className="fixed bottom-5 left-1/2 -translate-x-1/2 bg-blue-600 text-white px-5 py-3 rounded-2xl shadow-xl font-semibold text-sm flex items-center gap-1.5 no-print">
+              <span className="text-base font-light">+</span> {isTasks ? "הוסף מטלה" : isNotes ? "הוסף מנות" : "הוסף פריטים"}
             </button>
           )}
 
@@ -5861,7 +5882,13 @@
       seedPriceMap, seedPromoMap, onSave, onInsert, onClose, showToast }) {
       const isEdit = mode === "edit";
       const blankDraft = function() {
-        return { name: "", category: "שונות", categoryEmoji: "🛍️", quantity: 1, unit: "יחידות", note: "", barcodes: {}, matchedNames: {}, originalName: null };
+        // Look up "other" by id, not a hardcoded label — an admin can
+        // rename the category's Hebrew text from Settings, and a new item
+        // should still default into whichever category is actually the
+        // catch-all, not a stale literal that no longer matches anything.
+        var activeCats = (categories && categories.length > 0) ? categories : DEFAULT_CATEGORIES;
+        var other = activeCats.find(function(c) { return c.id === "other"; }) || activeCats[activeCats.length - 1];
+        return { name: "", category: other.label, categoryEmoji: other.emoji, quantity: 1, unit: "יחידות", note: "", barcodes: {}, matchedNames: {}, originalName: null };
       };
       const [draft, setDraft] = useState(function() {
         if (!isEdit || !item) return blankDraft();
@@ -5917,7 +5944,22 @@
       };
 
       return (
-        <Modal onClose={onClose} disableClose={!isEdit}>
+        <Modal onClose={onClose} disableClose={!isEdit} footer={
+          isEdit ? (
+            <button onClick={handlePrimary} disabled={!draft.name.trim() || saving}
+              className="w-full bg-blue-600 text-white py-3 rounded-2xl font-semibold text-sm disabled:opacity-40">
+              {saving ? <Spinner /> : "שמור שינויים"}
+            </button>
+          ) : (
+            <div className="flex gap-2">
+              <button onClick={onClose} className="flex-1 py-3 rounded-2xl border border-gray-200 text-gray-600 font-medium text-sm">ביטול</button>
+              <button onClick={handlePrimary} disabled={!draft.name.trim() || saving}
+                className="flex-1 bg-blue-600 text-white py-3 rounded-2xl font-semibold text-sm disabled:opacity-40">
+                {saving ? <Spinner /> : "הוסף לרשימה"}
+              </button>
+            </div>
+          )
+        }>
           <h3 className="text-lg font-bold text-center mb-1">{isEdit ? "עריכת פריט" : "הוספת פריט"}</h3>
           {/* Per-vendor status (barcode, price, promo) lives in its own tab —
               a full row per vendor next to the name/qty/category/note fields
@@ -5983,9 +6025,12 @@
               <label className="text-xs text-gray-500 block mb-1">קטגוריה</label>
               <div className="flex flex-wrap gap-1.5 max-h-28 overflow-y-auto">
                 {(categories && categories.length > 0 ? categories : DEFAULT_CATEGORIES).map(function(cat) {
+                  var isSelected = draft.category === cat.label;
                   return (
-                    <button key={cat.id} onClick={function() { setDraft(Object.assign({}, draft, { category: cat.label, categoryEmoji: cat.emoji })); }}
-                      className={"text-xs px-2.5 py-1 rounded-full border transition " + (draft.category === cat.label ? "bg-blue-600 text-white border-blue-600" : "bg-white text-gray-600 border-gray-200")}>
+                    <button key={cat.id}
+                      ref={isSelected ? function(el) { if (el) el.scrollIntoView({ block: "nearest" }); } : null}
+                      onClick={function() { setDraft(Object.assign({}, draft, { category: cat.label, categoryEmoji: cat.emoji })); }}
+                      className={"text-xs px-2.5 py-1 rounded-full border transition " + (isSelected ? "bg-blue-600 text-white border-blue-600" : "bg-white text-gray-600 border-gray-200")}>
                       {cat.emoji} {cat.label}
                     </button>
                   );
@@ -6029,20 +6074,6 @@
             </div>
           )}
           </div>
-          {isEdit ? (
-            <button onClick={handlePrimary} disabled={!draft.name.trim() || saving}
-              className="w-full bg-blue-600 text-white py-4 rounded-2xl font-semibold mt-5 disabled:opacity-40">
-              {saving ? <Spinner /> : "שמור שינויים"}
-            </button>
-          ) : (
-            <div className="flex gap-2 mt-5">
-              <button onClick={onClose} className="flex-1 py-4 rounded-2xl border border-gray-200 text-gray-600 font-medium">ביטול</button>
-              <button onClick={handlePrimary} disabled={!draft.name.trim() || saving}
-                className="flex-1 bg-blue-600 text-white py-4 rounded-2xl font-semibold disabled:opacity-40">
-                {saving ? <Spinner /> : "הוסף לרשימה"}
-              </button>
-            </div>
-          )}
         </Modal>
       );
     }

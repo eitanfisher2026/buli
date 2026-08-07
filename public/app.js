@@ -1,6 +1,6 @@
     const { useState, useEffect, useRef } = React;
 
-    const VERSION = "v6.32";
+    const VERSION = "v6.33";
 
     // ── CONFIG ────────────────────────────────────────────────────────────────────
     const FIREBASE_CONFIG = {
@@ -612,7 +612,7 @@
         </Modal>
       );
     }
-    function Header({ onBack, title, right }) {
+    function Header({ onBack, title, right, onMenu }) {
       return (
         <div className="bg-blue-600 text-white px-4 pt-10 pb-4">
           <div className="flex items-center gap-3" dir="ltr">
@@ -620,6 +620,9 @@
               <button onClick={onBack} className="flex items-center gap-1 text-white font-semibold text-sm bg-white/20 px-3 py-1.5 rounded-full flex-shrink-0">
                 <span className="text-lg leading-none">‹</span><span>חזרה</span>
               </button>
+            )}
+            {onMenu && (
+              <button onClick={onMenu} className="text-white text-lg w-9 h-9 flex items-center justify-center bg-white/20 rounded-full flex-shrink-0">☰</button>
             )}
             <h1 className="flex-1 text-lg font-bold truncate text-right">{title}</h1>
             {right}
@@ -775,6 +778,13 @@
       const goAdd  = (id, type, name) => { pushNav({ screen: "add", listId: id, listType: type || "shopping", listName: name || "" }); setListId(id); setListType(type || "shopping"); setListName(name || ""); setScreen("add"); };
       const goHome = () => { navHistoryRef.current = [{ screen: "home" }]; pushNav({ screen: "home" }); setScreen("home"); setListId(null); };
       const goBack = () => window.history.back();
+      // The ☰ menu button lives on every screen now, not just Home — since
+      // Settings itself is a big chunk of HomeScreen-local state (vendor
+      // profiles, groups, users...), the other screens don't open it
+      // directly; they navigate home and set this flag, which HomeScreen
+      // picks up on arrival to open Settings itself.
+      const [autoOpenSettings, setAutoOpenSettings] = useState(false);
+      const goMenu = () => { setAutoOpenSettings(true); goHome(); };
 
       return (
         <div className="max-w-md mx-auto min-h-screen relative">
@@ -784,10 +794,10 @@
               <span>👁️ תצוגת משתמש רגיל</span><span className="opacity-70">· חזרה למנהל</span>
             </button>
           )}
-          {screen === "home"       && <HomeScreen       user={user} isAdmin={role === "admin" && !simulateRegular} isRealAdmin={role === "admin"} simulating={simulateRegular} onToggleSimulate={toggleSimulate} onOpenList={goList} onCategories={() => go("categories")} showToast={setToast} onAddTask={() => goAdd("tasks_" + user.uid, "tasks")} onCreateShoppingList={(id, name) => goAdd(id, "shopping", name)} onCreateNotesList={(id, name) => goAdd(id, "notes", name)} />}
-          {screen === "list"       && <ListScreen       user={user} listId={listId} onBack={goBack} onHome={goHome} onAdd={(type, name) => goAdd(listId, type, name || listName)} showToast={setToast} />}
-          {screen === "add"        && <AddScreen        user={user} listId={listId} listType={listType} listName={listName} onBack={goBack} showToast={setToast} showStickyToast={setStickyToast} />}
-          {screen === "categories" && <CategoriesScreen user={user} onBack={goBack} showToast={setToast} />}
+          {screen === "home"       && <HomeScreen       user={user} isAdmin={role === "admin" && !simulateRegular} isRealAdmin={role === "admin"} simulating={simulateRegular} onToggleSimulate={toggleSimulate} onOpenList={goList} onCategories={() => go("categories")} showToast={setToast} onAddTask={() => goAdd("tasks_" + user.uid, "tasks")} onCreateShoppingList={(id, name) => goAdd(id, "shopping", name)} onCreateNotesList={(id, name) => goAdd(id, "notes", name)} autoOpenSettings={autoOpenSettings} onAutoOpenedSettings={() => setAutoOpenSettings(false)} />}
+          {screen === "list"       && <ListScreen       user={user} listId={listId} onBack={goBack} onHome={goHome} onMenu={goMenu} onAdd={(type, name) => goAdd(listId, type, name || listName)} showToast={setToast} />}
+          {screen === "add"        && <AddScreen        user={user} listId={listId} listType={listType} listName={listName} onBack={goBack} onMenu={goMenu} showToast={setToast} showStickyToast={setStickyToast} />}
+          {screen === "categories" && <CategoriesScreen user={user} onBack={goBack} onMenu={goMenu} showToast={setToast} />}
           {toast && <Toast msg={toast} onClose={() => setToast("")} />}
           {stickyToast.length > 0 && (
             <div onClick={() => setStickyToast([])}
@@ -843,7 +853,7 @@
     }
 
     // ── HOME ──────────────────────────────────────────────────────────────────────
-    function HomeScreen({ user, isAdmin, isRealAdmin, simulating, onToggleSimulate, onOpenList, onCategories, showToast, onAddTask, onCreateShoppingList, onCreateNotesList }) {
+    function HomeScreen({ user, isAdmin, isRealAdmin, simulating, onToggleSimulate, onOpenList, onCategories, showToast, onAddTask, onCreateShoppingList, onCreateNotesList, autoOpenSettings, onAutoOpenedSettings }) {
       const tasksListId = "tasks_" + user.uid;
       const categories = useCategories(user.uid); // for grouping the "copy items" picker by category, same as a list's default view
       const [lists,      setLists]      = useState(function() { return homeDataCache ? homeDataCache.lists : null; });
@@ -949,6 +959,7 @@
       const [myTasksEnabled, setMyTasksEnabled] = useState(false);
       const [myAddMode, setMyAddMode] = useState("single"); // "group" | "single"
       const [myNickname, setMyNickname] = useState("");
+      const [showCheckPrice, setShowCheckPrice] = useState(false);
       const [showPricingSettings, setShowPricingSettings] = useState(false);
       const [pricingBranchesLoading, setPricingBranchesLoading] = useState(false);
       const [vendorBranchLists, setVendorBranchLists] = useState(function() {
@@ -1430,6 +1441,14 @@
         setShowVendorCatalogs(false);
         setShowFirebaseUsage(false);
       };
+      // ☰ tapped from another screen (see App()'s goMenu) — open Settings
+      // here on arrival, same as tapping ☰ directly on Home.
+      useEffect(function() {
+        if (!autoOpenSettings) return;
+        switchSettingsTab(settingsTab);
+        setShowSettings(true);
+        onAutoOpenedSettings();
+      }, [autoOpenSettings]);
 
       const [confirmDialog, setConfirmDialog] = useState(null);
       const [autoOpenMajor, setAutoOpenMajorState] = useState(localStorage.getItem("buli_auto_open_major") === "true");
@@ -1988,8 +2007,14 @@
             {/* ── Shopping tab ── */}
             {activeTab === "shopping" && (
               <div className="space-y-4">
-                <div className="flex items-center justify-between">
+                <div className="flex items-center justify-between gap-2">
                   <button onClick={e => { e.stopPropagation(); quickCreate(); }} className="bg-blue-600 text-white text-sm font-medium px-4 py-2 rounded-full shadow">+ רשימה חדשה</button>
+                  {myPricingEnabled && (
+                    <button onClick={e => { e.stopPropagation(); setShowCheckPrice(true); }}
+                      className="bg-white border border-gray-200 text-gray-700 text-sm font-medium px-4 py-2 rounded-full shadow-sm flex items-center gap-1">
+                      🔍 בדיקת מחיר
+                    </button>
+                  )}
                 </div>
                 {activeShopping.length === 0
                   ? <p className="text-center text-gray-300 text-sm py-8">אין רשימות קניות — לחץ "+ רשימה חדשה"</p>
@@ -3072,6 +3097,10 @@
             </Modal>
           )}
 
+          {showCheckPrice && (
+            <CheckPriceModal user={user} onClose={() => setShowCheckPrice(false)} showToast={showToast} />
+          )}
+
           {/* Install guide — iOS/Safari gets exact steps; every other browser
               that hasn't (yet) fired the native beforeinstallprompt gets a
               generic pointer, so the option is still useful instead of a dead end. */}
@@ -3445,7 +3474,7 @@
       return order;
     }
 
-    function CategoriesScreen({ user, onBack, showToast }) {
+    function CategoriesScreen({ user, onBack, onMenu, showToast }) {
       const [categories,    setCategories]    = useState(null);
       const [editingId,     setEditingId]     = useState(null);
       const [editLabel,     setEditLabel]     = useState("");
@@ -3579,7 +3608,7 @@
 
       if (categories === null) return (
         <div className="bg-gray-50 flex flex-col" style={{height:"100dvh"}}>
-          <Header onBack={onBack} title="הגדרות" />
+          <Header onBack={onBack} onMenu={onMenu} title="הגדרות" />
           <div className="flex-1 flex items-center justify-center">
             <Spinner large />
           </div>
@@ -3590,7 +3619,7 @@
 
       return (
         <div className="bg-gray-50 flex flex-col" style={{height:"100dvh"}}>
-          <Header onBack={onBack} title="הגדרות" />
+          <Header onBack={onBack} onMenu={onMenu} title="הגדרות" />
           <div className="flex-1 overflow-y-auto p-4 pb-8">
 
             {/* — Categories section — */}
@@ -4651,6 +4680,7 @@
               {isOwner && !list.isPrivate && !isNotes && (
                 <button onClick={openShare} className="text-sm bg-white/20 px-3 py-1 rounded-full flex-shrink-0">שתף</button>
               )}
+              <button onClick={onMenu} className="text-white text-lg w-8 h-8 flex items-center justify-center bg-white/20 rounded-full flex-shrink-0">☰</button>
             </div>
             <div className="flex items-center justify-between mt-2" dir="ltr">
               {!isNotes && pricingEnabled && singleShopProfile ? (
@@ -4684,50 +4714,37 @@
             {!isNotes && !(viewMode === "table" && pricingEnabled && !isTasks) && (
               <div className="mt-2" dir="ltr">
                 <div className="flex items-center gap-1.5">
-                  <div className="flex bg-white/15 rounded-full p-0.5 gap-0.5">
-                    {[["all","הכל"],["pending","○ פתוח"],["done","✓ " + (isTasks ? "הושלם" : "בסל")]].map(function(entry) {
-                      var v = entry[0], l = entry[1];
-                      return (
-                        <button key={v} onClick={function() { applyStatusFilter(v); }}
-                          className={"text-xs px-2 py-1 rounded-full transition whitespace-nowrap " + (filterStatus===v ? "bg-white text-blue-600 font-semibold" : "text-white/70")}>
-                          {l}
-                        </button>
-                      );
-                    })}
-                  </div>
-                  {pricingEnabled ? (
-                    <React.Fragment>
-                      {!isTasks && (
-                        <button onClick={function() { setFilterVendorProfile(function(p) { return p === "noBarcode" ? "all" : "noBarcode"; }); }}
-                          className={"text-xs px-2 py-1 rounded-full transition whitespace-nowrap flex-shrink-0 " + (filterVendorProfile==="noBarcode" ? "bg-white text-orange-600 font-semibold" : "bg-white/15 text-white/70")}>
-                          ⚠ ללא ברקוד
-                        </button>
-                      )}
-                      <button onClick={function() { setShowFilters(function(p) { return !p; }); }}
-                        className={"text-xs px-2.5 py-1 rounded-full transition whitespace-nowrap flex-shrink-0 flex items-center gap-1 " + (showFilters ? "bg-white text-blue-600 font-semibold" : "bg-white/15 text-white/70")}>
-                        מסננים {(filterPerson !== "all" || singleShopId) && <span className="text-orange-300">●</span>}
-                      </button>
-                    </React.Fragment>
-                  ) : (
-                    <div className="flex bg-white/15 rounded-full p-0.5 gap-0.5">
-                      {[["all","כולם"],["mine","שלי"],["others","אחרים"]].map(function(entry) {
-                        var v = entry[0], l = entry[1];
-                        return (
-                          <button key={v} onClick={function() { applyPersonFilter(v); }}
-                            className={"text-xs px-2.5 py-1 rounded-full transition " + (filterPerson===v ? "bg-white text-blue-600 font-semibold" : "text-white/70")}>
-                            {l}
-                          </button>
-                        );
-                      })}
-                    </div>
+                  {pricingEnabled && !isTasks && (
+                    <button onClick={function() { setFilterVendorProfile(function(p) { return p === "noBarcode" ? "all" : "noBarcode"; }); }}
+                      className={"text-xs px-2 py-1 rounded-full transition whitespace-nowrap flex-shrink-0 " + (filterVendorProfile==="noBarcode" ? "bg-white text-orange-600 font-semibold" : "bg-white/15 text-white/70")}>
+                      ⚠ ללא ברקוד
+                    </button>
                   )}
+                  <button onClick={function() { setShowFilters(function(p) { return !p; }); }}
+                    className={"text-xs px-2.5 py-1 rounded-full transition whitespace-nowrap flex-shrink-0 flex items-center gap-1 " + (showFilters ? "bg-white text-blue-600 font-semibold" : "bg-white/15 text-white/70")}>
+                    מסננים {(filterStatus !== "all" || filterPerson !== "all" || singleShopId) && <span className="text-orange-300">●</span>}
+                  </button>
                   {isFiltered && (
                     <button onClick={clearAllFilters} className="text-white/60 hover:text-white text-xs flex-shrink-0" title="נקה פילטרים">✕</button>
                   )}
                 </div>
-                {pricingEnabled && showFilters && (
+                {showFilters && (
                   <div className="mt-2 bg-white/10 rounded-2xl p-2.5 space-y-2.5">
-                    {Object.keys(vendorGroups).length > 0 && (
+                    <div>
+                      <div className="text-white/50 text-xs mb-1">סטטוס</div>
+                      <div className="flex bg-white/15 rounded-full p-0.5 gap-0.5 w-fit">
+                        {[["all","הכל"],["pending","○ פתוח"],["done","✓ " + (isTasks ? "הושלם" : "בסל")]].map(function(entry) {
+                          var v = entry[0], l = entry[1];
+                          return (
+                            <button key={v} onClick={function() { applyStatusFilter(v); }}
+                              className={"text-xs px-2 py-1 rounded-full transition whitespace-nowrap " + (filterStatus===v ? "bg-white text-blue-600 font-semibold" : "text-white/70")}>
+                              {l}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+                    {pricingEnabled && Object.keys(vendorGroups).length > 0 && (
                       <div>
                         <div className="text-white/50 text-xs mb-1">קבוצת רשתות</div>
                         <button onClick={function() { setShowGroupPicker(true); }}
@@ -4750,7 +4767,7 @@
                         })}
                       </div>
                     </div>
-                    {!isTasks && activeProfiles.length > 0 && (
+                    {pricingEnabled && !isTasks && activeProfiles.length > 0 && (
                       <div>
                         <div className="text-white/50 text-xs mb-1">הצג פריטים לחנות</div>
                         <div className="flex flex-wrap gap-1">
@@ -5794,19 +5811,15 @@
     // local draft — nothing is written to the list until "הוסף לרשימה".
     // No X/backdrop/swipe close (Modal disableClose) — only the two explicit
     // buttons at the bottom can leave, per how this was scoped.
-    function QuickAddItemModal({ listId, groupId, user, categories, activeProfiles, onInsert, onCancel, showToast }) {
-      const blankDraft = function() {
-        return { name: "", category: "שונות", categoryEmoji: "🛍️", quantity: 1, unit: "יחידות", note: "", barcodes: {}, matchedNames: {} };
-      };
-      const [draft, setDraft] = useState(blankDraft());
-      const [tab, setTab] = useState("details");
-      const [searchScope, setSearchScope] = useState(null); // null = כל הרשתות
-      const [searchQuery, setSearchQuery] = useState("");
-      const [candidates, setCandidates] = useState(null); // { vendors, list } | null
-      const [isResolving, setIsResolving] = useState(false);
-      const [priceMap, setPriceMap] = useState({});   // { profileId: { barcode: price } }
-      const [promoMap, setPromoMap] = useState({});   // { profileId: { barcode: promoInfo } }
-      const [saving, setSaving] = useState(false);
+    // Reusable "search a name across active vendors, pick a candidate, see
+    // per-vendor status rows" panel — the shared core of both the quick-add
+    // wizard (list-bound) and the standalone בדיקת מחיר check (no list at
+    // all yet). All state lives in the parent (it needs the draft after the
+    // panel unmounts), this just renders and mutates it via the setters.
+    function VendorMatchPanel({ draft, setDraft, activeProfiles, groupId, showToast,
+      searchScope, setSearchScope, searchQuery, setSearchQuery,
+      candidates, setCandidates, isResolving, setIsResolving,
+      priceMap, setPriceMap, promoMap, setPromoMap }) {
 
       const selectScope = function(vendorId) {
         setSearchScope(vendorId);
@@ -5869,6 +5882,123 @@
         }, function() { showToast("שגיאה באישור התאמה"); });
       };
 
+      var rows = (activeProfiles || []).map(function(p) {
+        var bc = draft.barcodes[p.vendor] || null;
+        var vendorPrices = priceMap[p.id];
+        var fetched = !!(bc && vendorPrices && (bc in vendorPrices));
+        var price = fetched ? vendorPrices[bc] : null;
+        var promo = (bc && promoMap[p.id]) ? promoMap[p.id][bc] : null;
+        var promoActive = !!(promo && (parseFloat(draft.quantity) || 1) >= (promo.minQty || 1));
+        return { p: p, bc: bc, fetched: fetched, price: price, promo: promo, promoActive: promoActive, effective: promoActive ? promo.price : price };
+      });
+
+      return (
+        <div className="space-y-2">
+          <div className="flex gap-2">
+            <input value={searchQuery} dir="rtl" placeholder="שם המוצר לחיפוש"
+              onChange={function(e) { setSearchQuery(e.target.value); }}
+              onKeyDown={function(e) { if (e.key === "Enter") runSearch(); }}
+              className="flex-1 min-w-0 border border-gray-200 rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:border-blue-400" />
+            <button onClick={runSearch} disabled={!searchQuery.trim() || isResolving}
+              className="px-4 rounded-xl bg-blue-600 text-white text-sm font-medium disabled:opacity-40 flex-shrink-0">
+              {isResolving ? <Spinner /> : "חפש"}
+            </button>
+          </div>
+          <button onClick={function() { selectScope(null); }}
+            className={"text-xs px-3 py-1.5 rounded-full border font-medium " + (searchScope === null ? "bg-blue-600 text-white border-blue-600" : "bg-white text-gray-600 border-gray-200")}>
+            כל הרשתות
+          </button>
+          {candidates && (
+            <div>
+              <div className="flex items-center justify-between mb-1 mt-1">
+                <button onClick={function() { setCandidates(null); }} className="text-xs text-gray-400 font-medium">✕ סגור תוצאות</button>
+                <div className="text-xs font-semibold text-gray-500">תוצאות חיפוש</div>
+              </div>
+              <div className="space-y-2 max-h-60 overflow-y-auto">
+                {candidates.list.length === 0 ? (
+                  <p className="text-center text-gray-400 text-xs py-4">לא נמצאו התאמות</p>
+                ) : candidates.list.map(function(c) {
+                  var searchedVendors = candidates.vendors || [];
+                  return (
+                    <button key={c.barcode} onClick={function() { pickCandidate(c); }}
+                      className="w-full text-right rounded-xl px-3 py-2.5 bg-gray-50 hover:bg-gray-100">
+                      <div className="text-sm font-medium text-gray-800">{c.name}</div>
+                      <div className="text-xs text-gray-500 mb-1">
+                        {c.manufacturer ? ("יצרן/מותג: " + c.manufacturer + " · ") : ""}ברקוד: {c.barcode}
+                      </div>
+                      <div className="flex items-center gap-1.5 flex-wrap">
+                        {searchedVendors.map(function(v) {
+                          var meta = VENDOR_LIST.find(function(x) { return x.id === v; });
+                          var price = c.prices ? c.prices[v] : null;
+                          var promo = c.promoPrices ? c.promoPrices[v] : null;
+                          var promoActive = !!(promo && price != null && promo.price < price);
+                          return (
+                            <span key={v} className="text-xs bg-white border border-gray-200 rounded-full px-2 py-0.5">
+                              {meta ? meta.label : v}: {promoActive ? ("₪" + promo.price.toFixed(2) + "*") : (price != null ? "₪" + Number(price).toFixed(2) : "לא נמכר כאן")}
+                            </span>
+                          );
+                        })}
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+          <div className="space-y-1.5">
+            {rows.map(function(row) {
+              var others = rows.filter(function(r) { return r.p.id !== row.p.id; }).map(function(r) { return r.effective; });
+              var textClass = (!row.bc || !row.fetched || row.price == null) ? "text-gray-400" : cheapestTextClass(row.effective, others);
+              // Both "never matched" and "matched, but this vendor doesn't
+              // actually sell that barcode" need the same fix — search
+              // again for this vendor — so both get the same one-tap action
+              // instead of a dead-end status label.
+              var needsAction = !row.bc || (row.fetched && row.price == null);
+              var statusText;
+              if (needsAction) statusText = null;
+              else if (!row.fetched) statusText = "בודק מחיר...";
+              else if (row.promoActive) statusText = "₪" + row.promo.price.toFixed(2) + "* (₪" + row.price.toFixed(2) + ")";
+              else statusText = "₪" + row.price.toFixed(2);
+              var matchedName = draft.matchedNames[row.p.vendor];
+              return (
+                <button key={row.p.id} onClick={function() { if (needsAction) findPriceForVendor(row.p.vendor); else selectScope(row.p.vendor); }}
+                  className={"w-full flex items-center justify-between gap-2 rounded-xl px-3 py-2.5 hover:bg-gray-100 text-right " + (searchScope === row.p.vendor ? "bg-blue-50 ring-1 ring-blue-200" : "bg-gray-50")}>
+                  <div className="min-w-0 flex-1">
+                    <div className="text-sm text-gray-700">{profileLabel(row.p, activeProfiles)}</div>
+                    {(matchedName || row.bc) && (
+                      <div className="text-[10px] text-gray-400 truncate flex items-center gap-1">
+                        {matchedName && <span className="text-gray-500">{matchedName}</span>}
+                        {row.bc && <span className="font-mono" dir="ltr">{row.bc}</span>}
+                      </div>
+                    )}
+                  </div>
+                  {needsAction ? (
+                    <span className="text-xs flex-shrink-0 font-semibold text-blue-600 bg-blue-50 px-2.5 py-1 rounded-full">🔍 מצא מחיר</span>
+                  ) : (
+                    <span className={"text-xs flex-shrink-0 font-semibold " + textClass}>{statusText}</span>
+                  )}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      );
+    }
+
+    function QuickAddItemModal({ listId, groupId, user, categories, activeProfiles, onInsert, onCancel, showToast }) {
+      const blankDraft = function() {
+        return { name: "", category: "שונות", categoryEmoji: "🛍️", quantity: 1, unit: "יחידות", note: "", barcodes: {}, matchedNames: {} };
+      };
+      const [draft, setDraft] = useState(blankDraft());
+      const [tab, setTab] = useState("details");
+      const [searchScope, setSearchScope] = useState(null); // null = כל הרשתות
+      const [searchQuery, setSearchQuery] = useState("");
+      const [candidates, setCandidates] = useState(null); // { vendors, list } | null
+      const [isResolving, setIsResolving] = useState(false);
+      const [priceMap, setPriceMap] = useState({});   // { profileId: { barcode: price } }
+      const [promoMap, setPromoMap] = useState({});   // { profileId: { barcode: promoInfo } }
+      const [saving, setSaving] = useState(false);
+
       const handleInsert = function() {
         if (!draft.name.trim() || saving) return;
         setSaving(true);
@@ -5883,16 +6013,6 @@
           setPromoMap({});
         });
       };
-
-      var rows = (activeProfiles || []).map(function(p) {
-        var bc = draft.barcodes[p.vendor] || null;
-        var vendorPrices = priceMap[p.id];
-        var fetched = !!(bc && vendorPrices && (bc in vendorPrices));
-        var price = fetched ? vendorPrices[bc] : null;
-        var promo = (bc && promoMap[p.id]) ? promoMap[p.id][bc] : null;
-        var promoActive = !!(promo && (parseFloat(draft.quantity) || 1) >= (promo.minQty || 1));
-        return { p: p, bc: bc, fetched: fetched, price: price, promo: promo, promoActive: promoActive, effective: promoActive ? promo.price : price };
-      });
 
       return (
         <Modal onClose={onCancel} disableClose>
@@ -5965,95 +6085,10 @@
             </div>
           )}
           {tab === "vendors" && (
-            <div className="space-y-2">
-              <div className="flex gap-2">
-                <input value={searchQuery} dir="rtl" placeholder="שם המוצר לחיפוש"
-                  onChange={function(e) { setSearchQuery(e.target.value); }}
-                  onKeyDown={function(e) { if (e.key === "Enter") runSearch(); }}
-                  className="flex-1 min-w-0 border border-gray-200 rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:border-blue-400" />
-                <button onClick={runSearch} disabled={!searchQuery.trim() || isResolving}
-                  className="px-4 rounded-xl bg-blue-600 text-white text-sm font-medium disabled:opacity-40 flex-shrink-0">
-                  {isResolving ? <Spinner /> : "חפש"}
-                </button>
-              </div>
-              <button onClick={function() { selectScope(null); }}
-                className={"text-xs px-3 py-1.5 rounded-full border font-medium " + (searchScope === null ? "bg-blue-600 text-white border-blue-600" : "bg-white text-gray-600 border-gray-200")}>
-                כל הרשתות
-              </button>
-              {candidates && (
-                <div>
-                  <div className="flex items-center justify-between mb-1 mt-1">
-                    <button onClick={function() { setCandidates(null); }} className="text-xs text-gray-400 font-medium">✕ סגור תוצאות</button>
-                    <div className="text-xs font-semibold text-gray-500">תוצאות חיפוש</div>
-                  </div>
-                  <div className="space-y-2 max-h-60 overflow-y-auto">
-                    {candidates.list.length === 0 ? (
-                      <p className="text-center text-gray-400 text-xs py-4">לא נמצאו התאמות</p>
-                    ) : candidates.list.map(function(c) {
-                      var searchedVendors = candidates.vendors || [];
-                      return (
-                        <button key={c.barcode} onClick={function() { pickCandidate(c); }}
-                          className="w-full text-right rounded-xl px-3 py-2.5 bg-gray-50 hover:bg-gray-100">
-                          <div className="text-sm font-medium text-gray-800">{c.name}</div>
-                          <div className="text-xs text-gray-500 mb-1">
-                            {c.manufacturer ? ("יצרן/מותג: " + c.manufacturer + " · ") : ""}ברקוד: {c.barcode}
-                          </div>
-                          <div className="flex items-center gap-1.5 flex-wrap">
-                            {searchedVendors.map(function(v) {
-                              var meta = VENDOR_LIST.find(function(x) { return x.id === v; });
-                              var price = c.prices ? c.prices[v] : null;
-                              var promo = c.promoPrices ? c.promoPrices[v] : null;
-                              var promoActive = !!(promo && price != null && promo.price < price);
-                              return (
-                                <span key={v} className="text-xs bg-white border border-gray-200 rounded-full px-2 py-0.5">
-                                  {meta ? meta.label : v}: {promoActive ? ("₪" + promo.price.toFixed(2) + "*") : (price != null ? "₪" + Number(price).toFixed(2) : "לא נמכר כאן")}
-                                </span>
-                              );
-                            })}
-                          </div>
-                        </button>
-                      );
-                    })}
-                  </div>
-                </div>
-              )}
-              <div className="space-y-1.5">
-                {rows.map(function(row) {
-                  var others = rows.filter(function(r) { return r.p.id !== row.p.id; }).map(function(r) { return r.effective; });
-                  var textClass = (!row.bc || !row.fetched || row.price == null) ? "text-gray-400" : cheapestTextClass(row.effective, others);
-                  // Both "never matched" and "matched, but this vendor
-                  // doesn't actually sell that barcode" need the same fix —
-                  // search again for this vendor — so both get the same
-                  // one-tap action instead of a dead-end status label.
-                  var needsAction = !row.bc || (row.fetched && row.price == null);
-                  var statusText;
-                  if (needsAction) statusText = null;
-                  else if (!row.fetched) statusText = "בודק מחיר...";
-                  else if (row.promoActive) statusText = "₪" + row.promo.price.toFixed(2) + "* (₪" + row.price.toFixed(2) + ")";
-                  else statusText = "₪" + row.price.toFixed(2);
-                  var matchedName = draft.matchedNames[row.p.vendor];
-                  return (
-                    <button key={row.p.id} onClick={function() { if (needsAction) findPriceForVendor(row.p.vendor); else selectScope(row.p.vendor); }}
-                      className={"w-full flex items-center justify-between gap-2 rounded-xl px-3 py-2.5 hover:bg-gray-100 text-right " + (searchScope === row.p.vendor ? "bg-blue-50 ring-1 ring-blue-200" : "bg-gray-50")}>
-                      <div className="min-w-0 flex-1">
-                        <div className="text-sm text-gray-700">{profileLabel(row.p, activeProfiles)}</div>
-                        {(matchedName || row.bc) && (
-                          <div className="text-[10px] text-gray-400 truncate flex items-center gap-1">
-                            {matchedName && <span className="text-gray-500">{matchedName}</span>}
-                            {row.bc && <span className="font-mono" dir="ltr">{row.bc}</span>}
-                          </div>
-                        )}
-                      </div>
-                      {needsAction ? (
-                        <span className="text-xs flex-shrink-0 font-semibold text-blue-600 bg-blue-50 px-2.5 py-1 rounded-full">🔍 מצא מחיר</span>
-                      ) : (
-                        <span className={"text-xs flex-shrink-0 font-semibold " + textClass}>{statusText}</span>
-                      )}
-                    </button>
-                  );
-                })}
-              </div>
-            </div>
+            <VendorMatchPanel draft={draft} setDraft={setDraft} activeProfiles={activeProfiles} groupId={groupId} showToast={showToast}
+              searchScope={searchScope} setSearchScope={setSearchScope} searchQuery={searchQuery} setSearchQuery={setSearchQuery}
+              candidates={candidates} setCandidates={setCandidates} isResolving={isResolving} setIsResolving={setIsResolving}
+              priceMap={priceMap} setPriceMap={setPriceMap} promoMap={promoMap} setPromoMap={setPromoMap} />
           )}
           <div className="flex gap-2 mt-5">
             <button onClick={onCancel} className="flex-1 py-4 rounded-2xl border border-gray-200 text-gray-600 font-medium">ביטול</button>
@@ -6066,8 +6101,168 @@
       );
     }
 
+    // ── CHECK PRICE (standalone — no list yet) ───────────────────────────────────
+    // Meir's scenario: saw something in the supermarket, wants to know its
+    // price across a few vendors before deciding whether it's worth buying —
+    // today that meant adding it to a list just to remove it again if not.
+    // Reuses VendorMatchPanel (same search/match core as the quick-add
+    // wizard) against a vendor GROUP instead of a list; only writes
+    // anything if the user explicitly picks a list to add it to at the end.
+    function CheckPriceModal({ user, onClose, showToast }) {
+      const [groupId, setGroupIdState] = useState(undefined); // undefined = still loading the default
+      const [vendorGroups, setVendorGroups] = useState(null);
+      const [showGroupPicker, setShowGroupPicker] = useState(false);
+      const [activeProfiles, setActiveProfiles] = useState([]);
+      const [profilesLoading, setProfilesLoading] = useState(true);
+
+      const [draft, setDraft] = useState({ name: "", barcodes: {}, matchedNames: {} });
+      const [searchScope, setSearchScope] = useState(null);
+      const [searchQuery, setSearchQuery] = useState("");
+      const [candidates, setCandidates] = useState(null);
+      const [isResolving, setIsResolving] = useState(false);
+      const [priceMap, setPriceMap] = useState({});
+      const [promoMap, setPromoMap] = useState({});
+
+      const [showListPicker, setShowListPicker] = useState(false);
+      const [myLists, setMyLists] = useState(null);
+      const [inserting, setInserting] = useState(false);
+
+      // First run (or no groups defined at all): ask which vendor group to
+      // use, then remember it — every check after that is one tap straight
+      // to search, no picker.
+      useEffect(function() {
+        Promise.all([
+          db.ref("users/" + user.uid + "/checkPriceGroupId").once("value"),
+          db.ref("users/" + user.uid + "/vendorGroups").once("value"),
+        ]).then(function(snaps) {
+          var groups = snaps[1].val() || {};
+          setVendorGroups(groups);
+          var saved = snaps[0].val();
+          var namedGroupCount = Object.keys(groups).filter(function(k) { return k !== "default"; }).length;
+          if (saved != null) setGroupIdState(saved === "default" ? null : saved);
+          else if (namedGroupCount === 0) setGroupIdState(null);
+          else setShowGroupPicker(true);
+        });
+      }, []);
+
+      useEffect(function() {
+        if (groupId === undefined) return;
+        setProfilesLoading(true);
+        fns.httpsCallable("getActiveCatalogTimestamps")({ groupId: groupId }).then(function(res) {
+          setActiveProfiles((res.data.timestamps || []).map(function(t) { return { id: t.id, vendor: t.vendor, branchId: t.branchId }; }));
+          setProfilesLoading(false);
+        }, function() { setProfilesLoading(false); showToast("שגיאה בטעינת רשתות"); });
+      }, [groupId]);
+
+      const chooseGroup = function(gid) {
+        setGroupIdState(gid);
+        setShowGroupPicker(false);
+        db.ref("users/" + user.uid + "/checkPriceGroupId").set(gid || "default");
+      };
+
+      const openListPicker = function() {
+        if (!draft.name.trim()) return;
+        setShowListPicker(true);
+        if (myLists === null) {
+          loadMyListsFor(user.uid).then(function(arr) {
+            setMyLists(arr.filter(function(l) { return l.type === "shopping"; }));
+          });
+        }
+      };
+
+      const insertIntoList = function(list) {
+        setInserting(true);
+        var key = db.ref("items/" + list.id).push().key;
+        var hasBarcodes = Object.keys(draft.barcodes).length > 0;
+        db.ref("items/" + list.id + "/" + key).set({
+          name: draft.name.trim(), category: "שונות", categoryEmoji: "🛍️",
+          quantity: 1, unit: "יחידות", note: "", done: false,
+          barcodes: hasBarcodes ? draft.barcodes : null,
+          matchedNames: hasBarcodes ? draft.matchedNames : null,
+          addedBy: user.uid, addedByName: user.displayName, addedByColor: getUserColor(user.uid),
+          createdAt: Date.now(),
+        }).then(function() {
+          showToast('נוסף ל"' + list.name + '"');
+          setInserting(false);
+          onClose();
+        }, function(err) { showToast("שגיאה: " + (err && err.message || "?")); setInserting(false); });
+      };
+
+      var namedGroups = Object.keys(vendorGroups || {}).filter(function(k) { return k !== "default"; });
+
+      return (
+        <Modal onClose={onClose}>
+          <h3 className="text-lg font-bold text-center mb-1">בדיקת מחיר</h3>
+          <p className="text-xs text-gray-400 text-center mb-4">בודקים מחיר לפני שמחליטים אם להוסיף לרשימה</p>
+          {showGroupPicker ? (
+            <div className="space-y-2">
+              <p className="text-sm text-gray-600 text-center mb-2">באיזו קבוצת רשתות לבדוק?</p>
+              <button onClick={function() { chooseGroup(null); }} className="w-full text-right rounded-xl px-3 py-2.5 bg-gray-50 hover:bg-gray-100 text-sm">כללי</button>
+              {namedGroups.map(function(gid) {
+                return (
+                  <button key={gid} onClick={function() { chooseGroup(gid); }} className="w-full text-right rounded-xl px-3 py-2.5 bg-gray-50 hover:bg-gray-100 text-sm">
+                    {vendorGroups[gid].name}
+                  </button>
+                );
+              })}
+            </div>
+          ) : (
+            <React.Fragment>
+              {namedGroups.length > 0 && (
+                <button onClick={function() { setShowGroupPicker(true); }}
+                  className="text-xs bg-gray-100 text-gray-600 rounded-full px-3 py-1.5 mb-3 flex items-center gap-1 mx-auto">
+                  🏪 {groupId && vendorGroups[groupId] ? vendorGroups[groupId].name : "כללי"} · שנה
+                </button>
+              )}
+              <input value={draft.name} autoFocus placeholder="שם המוצר"
+                onChange={function(e) { setDraft(Object.assign({}, draft, { name: e.target.value })); }}
+                className="w-full border border-gray-200 rounded-xl px-4 py-3 text-right focus:outline-none focus:border-blue-400 mb-3" />
+              {profilesLoading ? (
+                <div className="flex justify-center py-6"><Spinner /></div>
+              ) : activeProfiles.length === 0 ? (
+                <p className="text-xs text-gray-400 text-center py-4">אין רשתות פעילות בקבוצה זו</p>
+              ) : (
+                <VendorMatchPanel draft={draft} setDraft={setDraft} activeProfiles={activeProfiles} groupId={groupId} showToast={showToast}
+                  searchScope={searchScope} setSearchScope={setSearchScope} searchQuery={searchQuery} setSearchQuery={setSearchQuery}
+                  candidates={candidates} setCandidates={setCandidates} isResolving={isResolving} setIsResolving={setIsResolving}
+                  priceMap={priceMap} setPriceMap={setPriceMap} promoMap={promoMap} setPromoMap={setPromoMap} />
+              )}
+              <div className="flex gap-2 mt-5">
+                <button onClick={onClose} className="flex-1 py-4 rounded-2xl border border-gray-200 text-gray-600 font-medium">סגור</button>
+                <button onClick={openListPicker} disabled={!draft.name.trim()}
+                  className="flex-1 bg-blue-600 text-white py-4 rounded-2xl font-semibold disabled:opacity-40">
+                  הוסף לרשימה
+                </button>
+              </div>
+            </React.Fragment>
+          )}
+          {showListPicker && (
+            <Modal onClose={function() { setShowListPicker(false); }}>
+              <h3 className="text-lg font-bold text-center mb-4">הוסף ל...</h3>
+              {myLists === null ? (
+                <div className="flex justify-center py-6"><Spinner /></div>
+              ) : myLists.length === 0 ? (
+                <p className="text-sm text-gray-400 text-center py-4">אין לך רשימות קניות</p>
+              ) : (
+                <div className="space-y-1.5">
+                  {myLists.map(function(l) {
+                    return (
+                      <button key={l.id} onClick={function() { insertIntoList(l); }} disabled={inserting}
+                        className="w-full text-right rounded-xl px-3 py-2.5 bg-gray-50 hover:bg-gray-100 text-sm disabled:opacity-40">
+                        {l.name}
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+            </Modal>
+          )}
+        </Modal>
+      );
+    }
+
     // ── ADD SCREEN ────────────────────────────────────────────────────────────────
-    function AddScreen({ user, listId, listType, listName, onBack, showToast, showStickyToast }) {
+    function AddScreen({ user, listId, listType, listName, onBack, onMenu, showToast, showStickyToast }) {
       const isTasks = listType === "tasks";
       const isNotes = listType === "notes";
       const categories = useCategories(user.uid);
@@ -6328,7 +6523,7 @@
       if (isNotes) {
         return (
           <div className="bg-gray-50 flex flex-col" style={{height:"100dvh"}}>
-            <Header onBack={onBack} title={"הוסף מנות ל" + (listName || "")} />
+            <Header onBack={onBack} onMenu={onMenu} title={"הוסף מנות ל" + (listName || "")} />
             <div className="flex-shrink-0 px-4 pt-3 pb-2">
               <div className="grid grid-cols-2 gap-2">
                 {[["text","✍️ כתיבה"],["voice","🎤 קול"]].map(function(pair) {
@@ -6389,7 +6584,7 @@
 
       if (isTasks) return (
         <div className="bg-gray-50 flex flex-col" style={{height:"100dvh"}}>
-          <Header onBack={onBack} title="הוסף מטלה" />
+          <Header onBack={onBack} onMenu={onMenu} title="הוסף מטלה" />
           <div className="flex-1 overflow-y-auto p-4 pb-32">
             <div className="space-y-4">
               <div>
@@ -6421,7 +6616,7 @@
       // ── Input ──
       return (
         <div className="bg-gray-50 flex flex-col" style={{height:"100dvh"}}>
-          <Header onBack={onBack} title={isTasks ? "הוסף מטלה" : ("הוסף ל" + listDisplayName)} />
+          <Header onBack={onBack} onMenu={onMenu} title={isTasks ? "הוסף מטלה" : ("הוסף ל" + listDisplayName)} />
           <div className="flex-shrink-0 px-4 pt-3 pb-2">
             <div className="grid grid-cols-2 gap-2">
               {[["text","✍️ כתיבה"],["voice","🎤 קול"]].map(([v,l]) => (

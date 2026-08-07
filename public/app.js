@@ -1,6 +1,6 @@
     const { useState, useEffect, useRef } = React;
 
-    const VERSION = "v6.42";
+    const VERSION = "v6.43";
 
     // ── CONFIG ────────────────────────────────────────────────────────────────────
     const FIREBASE_CONFIG = {
@@ -934,6 +934,7 @@
         try { var m = JSON.parse(localStorage.getItem("buli_major_list")); return m ? m.id : null; } catch(e) { return null; }
       });
       const [showSettings, setShowSettings] = useState(false);
+      const [showProfileCard, setShowProfileCard] = useState(false);
       const [showAISettings, setShowAISettings] = useState(false);
       const [notesSeparator, setNotesSeparator] = useState(function() { return localStorage.getItem("buli_notes_separator") || "הבא"; });
       const [editingNoteInstance, setEditingNoteInstance] = useState(null);
@@ -2013,9 +2014,9 @@
         <div className="bg-gray-50 flex flex-col" style={{height:"100dvh"}} onClick={() => setMenuId(null)}>
           <div className="bg-blue-600 text-white px-4 pt-10 pb-4 flex-shrink-0">
             <div className="flex items-center justify-between gap-2">
-              <button onClick={e => { e.stopPropagation(); switchSettingsTab("users"); setShowSettings(true); }} title="הפרופיל שלי"
-                className="w-9 h-9 rounded-full bg-white/20 flex items-center justify-center flex-shrink-0">
-                <span className="text-base">👤</span>
+              <button onClick={e => { e.stopPropagation(); setShowProfileCard(true); }} title={user.displayName}
+                className="w-9 h-9 rounded-full bg-white/20 flex items-center justify-center flex-shrink-0 overflow-hidden">
+                {user.photoURL ? <img src={user.photoURL} alt="" className="w-full h-full object-cover" /> : <span className="text-base">👤</span>}
               </button>
               <div className="text-center flex-1 min-w-0">
                 <div className="flex items-center justify-center gap-1.5">
@@ -2028,7 +2029,6 @@
               <button onClick={e => { e.stopPropagation(); switchSettingsTab(settingsTab); setShowSettings(true); }} title="הגדרות"
                 className="text-white text-lg w-9 h-9 flex items-center justify-center bg-white/20 rounded-full flex-shrink-0">⚙️</button>
             </div>
-            <p className="text-white/60 text-sm mt-2 text-right">שלום, {user.displayName.split(" ")[0]}</p>
           </div>
           {(myMenusEnabled || myTasksEnabled) && (
           <div className="bg-white border-b border-gray-200 flex-shrink-0 flex" dir="rtl">
@@ -3158,6 +3158,27 @@
 
           {showCheckPrice && (
             <CheckPriceModal user={user} onClose={() => setShowCheckPrice(false)} showToast={showToast} />
+          )}
+
+          {/* A lightweight profile card — separate from ⚙️ Settings, which
+              was a duplicate way to reach the exact same place. This one
+              just identifies who's signed in and offers to sign out. */}
+          {showProfileCard && (
+            <Modal onClose={() => setShowProfileCard(false)}>
+              <div className="flex flex-col items-center gap-3 pb-2">
+                <div className="w-16 h-16 rounded-full overflow-hidden bg-gray-100 flex items-center justify-center flex-shrink-0">
+                  {user.photoURL ? <img src={user.photoURL} alt="" className="w-full h-full object-cover" /> : <span className="text-3xl">👤</span>}
+                </div>
+                <div className="text-center">
+                  <div className="font-bold text-gray-800">{user.displayName}</div>
+                  <div className="text-xs text-gray-400">{user.email}</div>
+                </div>
+                <button onClick={() => auth.signOut()}
+                  className="w-full mt-2 py-3 rounded-2xl border border-red-200 text-red-500 font-medium">
+                  🚪 התנתק
+                </button>
+              </div>
+            </Modal>
           )}
 
           {/* Install guide — iOS/Safari gets exact steps; every other browser
@@ -4708,7 +4729,7 @@
           {!isNotes && (
             <div className="bg-white border-b border-gray-100 px-4 py-2 flex-shrink-0 no-print">
               <div className="flex items-center justify-between gap-2">
-                <div className="flex items-center gap-1.5">
+                <div className="flex items-center gap-1.5 min-w-0">
                   {!pricingEnabled && (
                     <div className="flex bg-gray-100 rounded-full p-0.5 flex-shrink-0">
                       <button onClick={function() { setSortBy("name"); }}
@@ -4736,12 +4757,27 @@
                       <span className="text-sm">🏷️</span>
                     </button>
                   )}
+                  {/* The most-used control here — bigger, labeled, and both
+                      states always shown side by side (a real segmented
+                      toggle) instead of one button that morphs and resizes
+                      depending on which state it's in. */}
                   {pricingEnabled && !isTasks && (
-                    <button onClick={function() { setViewMode(viewMode === "table" ? "list" : "table"); }} title={viewMode === "table" ? "תצוגת רשימה" : "תצוגת טבלה"}
-                      className="w-8 h-8 rounded-full bg-gray-50 border border-gray-200 flex items-center justify-center text-gray-500 flex-shrink-0">
-                      <span className="text-sm">{viewMode === "table" ? "📋" : "🔢"}</span>
-                    </button>
+                    <div className="flex bg-gray-100 rounded-full p-0.5 flex-shrink-0">
+                      <button onClick={function() { setViewMode("list"); }}
+                        className={"text-xs px-3 py-1.5 rounded-full transition font-medium whitespace-nowrap " + (viewMode !== "table" ? "bg-white text-blue-600 shadow-sm" : "text-gray-500")}>
+                        📋 רשימה
+                      </button>
+                      <button onClick={function() { setViewMode("table"); }}
+                        className={"text-xs px-3 py-1.5 rounded-full transition font-medium whitespace-nowrap " + (viewMode === "table" ? "bg-white text-blue-600 shadow-sm" : "text-gray-500")}>
+                        🔢 טבלה
+                      </button>
+                    </div>
                   )}
+                </div>
+                <div className="flex items-center gap-1.5 flex-shrink-0">
+                  <span className="text-xs text-gray-400 whitespace-nowrap">
+                    {isFiltered ? filteredItems.length + "/" + items.length : doneCount + "/" + items.length}
+                  </span>
                   {!(viewMode === "table" && pricingEnabled && !isTasks) && (
                     <button onClick={function() { setShowFilters(function(p) { return !p; }); }} title="מסננים"
                       className={"relative w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0 border " + (showFilters ? "bg-blue-50 border-blue-200 text-blue-600" : "bg-gray-50 border-gray-200 text-gray-500")}>
@@ -4755,9 +4791,6 @@
                     <button onClick={clearAllFilters} className="text-gray-400 hover:text-gray-600 text-xs flex-shrink-0" title="נקה פילטרים">✕</button>
                   )}
                 </div>
-                <span className="text-xs text-gray-400 flex-shrink-0">
-                  {isFiltered ? filteredItems.length + "/" + items.length : doneCount + "/" + items.length}
-                </span>
               </div>
               {showFilters && !(viewMode === "table" && pricingEnabled && !isTasks) && (
                 <div className="mt-2 bg-gray-50 rounded-2xl p-2.5 space-y-2.5">

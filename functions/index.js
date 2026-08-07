@@ -466,18 +466,21 @@ exports.deleteVendorCatalog = onCall(
 
 // Unset (never chosen) fields resolve to each preference's default rather
 // than a blanket false/off — pricingEnabled defaults ON, menusEnabled and
-// tasksEnabled default OFF, addMode defaults to 'single' — matching what a
-// brand-new user gets the first time these are ever read on the client.
+// tasksEnabled default OFF, addMode defaults to 'single', keyboardWarning
+// (the beep when an item name is typed starting in the wrong keyboard
+// language) defaults ON — matching what a brand-new user gets the first
+// time these are ever read on the client.
 async function resolveUserExtra(email) {
   const uid = await resolveUidByEmail(email);
-  let nickname = null, pricingEnabled = true, menusEnabled = false, tasksEnabled = false, addMode = 'single', lastLogin = null;
+  let nickname = null, pricingEnabled = true, menusEnabled = false, tasksEnabled = false, addMode = 'single', keyboardWarning = true, lastLogin = null;
   if (uid) {
-    const [nickSnap, pricingSnap, menusSnap, tasksSnap, addModeSnap, lastLoginSnap] = await Promise.all([
+    const [nickSnap, pricingSnap, menusSnap, tasksSnap, addModeSnap, keyboardWarningSnap, lastLoginSnap] = await Promise.all([
       db.ref(`users/${uid}/nickname`).once('value'),
       db.ref(`users/${uid}/pricingEnabled`).once('value'),
       db.ref(`users/${uid}/menusEnabled`).once('value'),
       db.ref(`users/${uid}/tasksEnabled`).once('value'),
       db.ref(`users/${uid}/addMode`).once('value'),
+      db.ref(`users/${uid}/keyboardWarning`).once('value'),
       db.ref(`users/${uid}/lastLogin`).once('value'),
     ]);
     nickname = nickSnap.val() || null;
@@ -485,9 +488,10 @@ async function resolveUserExtra(email) {
     menusEnabled = menusSnap.val() === true;
     tasksEnabled = tasksSnap.val() === true;
     addMode = addModeSnap.val() === 'group' ? 'group' : 'single';
+    keyboardWarning = keyboardWarningSnap.val() !== false;
     lastLogin = lastLoginSnap.val() || null;
   }
-  return { nickname, pricingEnabled, menusEnabled, tasksEnabled, addMode, lastLogin };
+  return { nickname, pricingEnabled, menusEnabled, tasksEnabled, addMode, keyboardWarning, lastLogin };
 }
 
 exports.listAuthorizedUsers = onCall(
@@ -511,6 +515,7 @@ exports.listAuthorizedUsers = onCall(
       owner: OWNER_EMAIL, ownerNickname: ownerExtra.nickname,
       ownerPricingEnabled: ownerExtra.pricingEnabled, ownerMenusEnabled: ownerExtra.menusEnabled,
       ownerTasksEnabled: ownerExtra.tasksEnabled, ownerAddMode: ownerExtra.addMode,
+      ownerKeyboardWarning: ownerExtra.keyboardWarning,
       ownerLastLogin: ownerExtra.lastLogin, users,
     };
   }
@@ -1726,15 +1731,15 @@ exports.setUserPricingEnabled = onCall(
   }
 );
 
-// menusEnabled/tasksEnabled/addMode aren't security-rule-restricted like
-// pricingEnabled/nickname (a user can already write their own directly) —
-// this callable exists purely so an admin can set them for someone ELSE,
-// same self-or-admin gate as setUserPricingEnabled/setUserNickname.
+// menusEnabled/tasksEnabled/addMode/keyboardWarning aren't security-rule-
+// restricted like pricingEnabled/nickname (a user can already write their
+// own directly) — this callable exists purely so an admin can set them for
+// someone ELSE, same self-or-admin gate as setUserPricingEnabled/setUserNickname.
 exports.setUserPreferences = onCall(
   { timeoutSeconds: 30, memory: '128MiB', region: 'europe-west1' },
   async (request) => {
     const role = await requireAuthorized(request);
-    const { email: rawEmail, menusEnabled, tasksEnabled, addMode } = request.data || {};
+    const { email: rawEmail, menusEnabled, tasksEnabled, addMode, keyboardWarning } = request.data || {};
     if (!rawEmail || typeof rawEmail !== 'string') throw new HttpsError('invalid-argument', 'email required');
     const isSelf = rawEmail.trim().toLowerCase() === (request.auth.token.email || '').toLowerCase();
     if (!isSelf) requireAdmin(role);
@@ -1744,6 +1749,7 @@ exports.setUserPreferences = onCall(
     if (typeof menusEnabled === 'boolean') updates.menusEnabled = menusEnabled;
     if (typeof tasksEnabled === 'boolean') updates.tasksEnabled = tasksEnabled;
     if (addMode === 'single' || addMode === 'group') updates.addMode = addMode;
+    if (typeof keyboardWarning === 'boolean') updates.keyboardWarning = keyboardWarning;
     if (Object.keys(updates).length === 0) throw new HttpsError('invalid-argument', 'nothing to update');
     await db.ref(`users/${uid}`).update(updates);
     return { ok: true };

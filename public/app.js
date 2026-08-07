@@ -1,6 +1,6 @@
     const { useState, useEffect, useRef } = React;
 
-    const VERSION = "v6.47";
+    const VERSION = "v6.48";
 
     // ── CONFIG ────────────────────────────────────────────────────────────────────
     const FIREBASE_CONFIG = {
@@ -997,6 +997,7 @@
       const [myMenusEnabled, setMyMenusEnabled] = useState(false);
       const [myTasksEnabled, setMyTasksEnabled] = useState(false);
       const [myAddMode, setMyAddMode] = useState("single"); // "group" | "single"
+      const [myKeyboardWarning, setMyKeyboardWarning] = useState(true);
       const [myNickname, setMyNickname] = useState("");
       const [showCheckPrice, setShowCheckPrice] = useState(false);
       const [showPricingSettings, setShowPricingSettings] = useState(false);
@@ -1044,16 +1045,19 @@
           db.ref("users/" + user.uid + "/menusEnabled").once("value"),
           db.ref("users/" + user.uid + "/tasksEnabled").once("value"),
           db.ref("users/" + user.uid + "/addMode").once("value"),
+          db.ref("users/" + user.uid + "/keyboardWarning").once("value"),
           db.ref("users/" + user.uid + "/nickname").once("value"),
         ]).then(function(snaps) {
           // Defaults for a brand-new user who's never touched these:
-          // pricing on, menus off, tasks off, add items one at a time.
+          // pricing on, menus off, tasks off, add items one at a time,
+          // wrong-keyboard-language beep on.
           var enabled = snaps[0].val() !== false;
           setMyPricingEnabled(enabled);
           setMyMenusEnabled(snaps[1].val() === true);
           setMyTasksEnabled(snaps[2].val() === true);
           setMyAddMode(snaps[3].val() === "group" ? "group" : "single");
-          setMyNickname(snaps[4].val() || "");
+          setMyKeyboardWarning(snaps[4].val() !== false);
+          setMyNickname(snaps[5].val() || "");
           if (!enabled) return; // no pricing for this user — skip the vendor-profile listener and settings call entirely
           profilesRef = db.ref("users/" + user.uid + "/vendorProfiles");
           onProfiles = function(snap2) { setVendorProfiles(snap2.val() || {}); };
@@ -1293,6 +1297,7 @@
       const [ownerMenusEnabled, setOwnerMenusEnabled] = useState(false);
       const [ownerTasksEnabled, setOwnerTasksEnabled] = useState(false);
       const [ownerAddMode, setOwnerAddMode] = useState("single");
+      const [ownerKeyboardWarning, setOwnerKeyboardWarning] = useState(true);
       const [ownerNickname, setOwnerNickname] = useState("");
       const [ownerLastLogin, setOwnerLastLogin] = useState(null);
       const [newUserEmail, setNewUserEmail] = useState("");
@@ -1339,6 +1344,7 @@
             setOwnerMenusEnabled(!!res.data.ownerMenusEnabled);
             setOwnerTasksEnabled(!!res.data.ownerTasksEnabled);
             setOwnerAddMode(res.data.ownerAddMode === "group" ? "group" : "single");
+            setOwnerKeyboardWarning(res.data.ownerKeyboardWarning !== false);
             setOwnerNickname(res.data.ownerNickname || "");
             setOwnerLastLogin(res.data.ownerLastLogin || null);
             setAuthUsers(res.data.users || []);
@@ -1395,6 +1401,7 @@
             if ("menusEnabled" in patch) setMyMenusEnabled(patch.menusEnabled);
             if ("tasksEnabled" in patch) setMyTasksEnabled(patch.tasksEnabled);
             if ("addMode" in patch) setMyAddMode(patch.addMode);
+            if ("keyboardWarning" in patch) setMyKeyboardWarning(patch.keyboardWarning);
           }
           loadAuthUsers();
         }, function(e) { setUserMsg("⚠ " + e.message); setUserBusy(false); });
@@ -1412,6 +1419,7 @@
       const setMyMenusEnabledPref = function(v) { setMyMenusEnabled(v); db.ref("users/" + user.uid + "/menusEnabled").set(v); };
       const setMyTasksEnabledPref = function(v) { setMyTasksEnabled(v); db.ref("users/" + user.uid + "/tasksEnabled").set(v); };
       const setMyAddModePref = function(v) { setMyAddMode(v); db.ref("users/" + user.uid + "/addMode").set(v); };
+      const setMyKeyboardWarningPref = function(v) { setMyKeyboardWarning(v); db.ref("users/" + user.uid + "/keyboardWarning").set(v); };
 
       // ── Usage & Costs ────────────────────────────────────────────────────────
       const [showCosts,    setShowCosts]    = useState(false);
@@ -2495,6 +2503,13 @@
                       <span className={"inline-block h-4 w-4 rounded-full bg-white shadow transition-transform " + (myTasksEnabled ? "translate-x-6" : "translate-x-1")} />
                     </button>
                   </div>
+                  <div className="flex items-center justify-between">
+                    <span className="text-sm text-gray-700">⌨️ ביפ על שם פריט באנגלית</span>
+                    <button onClick={function() { setMyKeyboardWarningPref(!myKeyboardWarning); }}
+                      className={"relative inline-flex h-6 w-11 items-center rounded-full transition-colors " + (myKeyboardWarning ? "bg-blue-600" : "bg-gray-200")}>
+                      <span className={"inline-block h-4 w-4 rounded-full bg-white shadow transition-transform " + (myKeyboardWarning ? "translate-x-6" : "translate-x-1")} />
+                    </button>
+                  </div>
                   {myPricingEnabled && (
                     <div>
                       <div className="text-sm text-gray-700 mb-1">🛒 הוספת פריטים לרשימה</div>
@@ -2650,6 +2665,10 @@
                               className="text-xs border border-gray-200 rounded-full px-2 py-1 disabled:opacity-40 flex-shrink-0 text-gray-500 bg-white">
                               {ownerAddMode === "single" ? "1️⃣ אחד בכל פעם" : "📦 קבוצה"}
                             </button>
+                            <button onClick={function() { handleSetUserPref(ownerEmail, { keyboardWarning: !ownerKeyboardWarning }); }} disabled={userBusy} title="ביפ על שם פריט באנגלית"
+                              className={"text-xs border rounded-full px-2 py-1 disabled:opacity-40 flex-shrink-0 " + (ownerKeyboardWarning ? "text-green-600 border-green-200 bg-green-50" : "text-gray-400 border-gray-200 bg-white")}>
+                              ⌨️{ownerKeyboardWarning ? "" : "🚫"}
+                            </button>
                           </div>
                         </div>
                         {authUsers.length === 0 ? (
@@ -2693,6 +2712,10 @@
                                 <button onClick={function() { handleSetUserPref(u.email, { addMode: u.addMode === "single" ? "group" : "single" }); }} disabled={userBusy} title="הוספת פריטים לרשימה"
                                   className="text-xs border border-gray-200 rounded-full px-2 py-1 disabled:opacity-40 flex-shrink-0 text-gray-500 bg-white">
                                   {u.addMode === "single" ? "1️⃣ אחד בכל פעם" : "📦 קבוצה"}
+                                </button>
+                                <button onClick={function() { handleSetUserPref(u.email, { keyboardWarning: !u.keyboardWarning }); }} disabled={userBusy} title="ביפ על שם פריט באנגלית"
+                                  className={"text-xs border rounded-full px-2 py-1 disabled:opacity-40 flex-shrink-0 " + (u.keyboardWarning ? "text-green-600 border-green-200 bg-green-50" : "text-gray-400 border-gray-200 bg-white")}>
+                                  ⌨️{u.keyboardWarning ? "" : "🚫"}
                                 </button>
                               </div>
                             </div>
@@ -3878,6 +3901,7 @@
       const [showCategorizeChoice, setShowCategorizeChoice] = useState(false);
       const [categorizing, setCategorizing] = useState(false);
       const [pricingEnabled, setPricingEnabled] = useState(true);
+      const [keyboardWarningEnabled, setKeyboardWarningEnabled] = useState(true);
       const [addMode, setAddMode] = useState("single"); // "group" | "single"
       const [showQuickAdd, setShowQuickAdd] = useState(false);
       // Survives ListScreen unmounting (leaving the list, adding items, etc.) —
@@ -4087,6 +4111,9 @@
         });
         db.ref("users/" + user.uid + "/addMode").once("value").then(function(snap) {
           setAddMode(snap.val() === "group" ? "group" : "single");
+        });
+        db.ref("users/" + user.uid + "/keyboardWarning").once("value").then(function(snap) {
+          setKeyboardWarningEnabled(snap.val() !== false);
         });
       };
       useEffect(function() {
@@ -5069,9 +5096,11 @@
 
           {editItem && <ItemDialog mode="edit" item={editItem} categories={categories} pricingEnabled={pricingEnabled}
             activeProfiles={activeProfiles} groupId={(list && list.vendorGroupId) || null} seedPriceMap={priceMap} seedPromoMap={promoMap}
+            keyboardWarningEnabled={keyboardWarningEnabled}
             onSave={saveEdit} onClose={() => setEditItem(null)} showToast={showToast} />}
           {showQuickAdd && <ItemDialog mode="add" categories={categories} pricingEnabled={pricingEnabled}
             activeProfiles={activeProfiles} groupId={(list && list.vendorGroupId) || null}
+            keyboardWarningEnabled={keyboardWarningEnabled}
             onInsert={insertQuickAddItem} onClose={() => setShowQuickAdd(false)} showToast={showToast} />}
           {noteEdit && <NoteEditModal item={noteEdit} onSave={saveNoteEdit} onClose={function() { setNoteEdit(null); }} />}
           {taskEdit && <TaskEditModal item={taskEdit} onChange={setTaskEdit} onSave={saveTaskEdit} onDelete={deleteTask} onClose={() => setTaskEdit(null)} />}
@@ -5704,6 +5733,7 @@
       searchScope, setSearchScope, searchQuery, setSearchQuery,
       candidates, setCandidates, isResolving, setIsResolving,
       priceMap, setPriceMap, promoMap, setPromoMap }) {
+      const [confirmingBarcode, setConfirmingBarcode] = useState(null);
 
       const selectScope = function(vendorId) {
         setSearchScope(vendorId);
@@ -5736,6 +5766,12 @@
         var searchedVendors = (candidates && candidates.vendors) || Object.keys(c.prices || {});
         var vendorsToConfirm = searchedVendors.filter(function(v) { return c.prices && c.prices[v] != null; });
         if (vendorsToConfirm.length === 0) return;
+        // The confirm round-trip (server write + the caller's own re-render
+        // of the now-matched row) takes a beat — reuse isResolving so the
+        // dialog's "add to list" stays dimmed and this row shows a spinner
+        // instead of looking clickable/done for those 1-3 seconds.
+        setConfirmingBarcode(c.barcode);
+        setIsResolving(true);
         fns.httpsCallable("confirmItemBarcode")({ name: draft.name, barcode: c.barcode, matchedName: c.name, vendors: vendorsToConfirm }).then(function() {
           setDraft(function(prev) {
             var nb = Object.assign({}, prev.barcodes), nn = Object.assign({}, prev.matchedNames);
@@ -5763,7 +5799,9 @@
             return next;
           });
           setCandidates(null);
-        }, function() { showToast("שגיאה באישור התאמה"); });
+          setConfirmingBarcode(null);
+          setIsResolving(false);
+        }, function() { showToast("שגיאה באישור התאמה"); setConfirmingBarcode(null); setIsResolving(false); });
       };
 
       var rows = (activeProfiles || []).map(function(p) {
@@ -5803,9 +5841,15 @@
                   <p className="text-center text-gray-400 text-xs py-4">לא נמצאו התאמות</p>
                 ) : candidates.list.map(function(c) {
                   var searchedVendors = candidates.vendors || [];
+                  var isConfirming = confirmingBarcode === c.barcode;
                   return (
-                    <button key={c.barcode} onClick={function() { pickCandidate(c); }}
-                      className="w-full text-right rounded-xl px-3 py-2.5 bg-white hover:bg-gray-50 border border-gray-100">
+                    <button key={c.barcode} onClick={function() { pickCandidate(c); }} disabled={!!confirmingBarcode}
+                      className="w-full text-right rounded-xl px-3 py-2.5 bg-white hover:bg-gray-50 border border-gray-100 disabled:opacity-50 relative">
+                      {isConfirming && (
+                        <div className="absolute inset-0 bg-white/70 rounded-xl flex items-center justify-center">
+                          <Spinner />
+                        </div>
+                      )}
                       <div className="text-sm font-medium text-gray-800">{c.name}</div>
                       <div className="text-xs text-gray-500 mb-1">
                         {c.manufacturer ? ("יצרן/מותג: " + c.manufacturer + " · ") : ""}ברקוד: {c.barcode}
@@ -5878,8 +5922,28 @@
     // (via onSave/onInsert) when the user actually saves — cancelling now
     // genuinely discards everything, in both modes, including mid-session
     // picks (previously edit mode wrote each pick straight to the DB).
+    // Short two-tone beep — no audio file needed, just a Web Audio
+    // oscillator — used to flag a name that was probably typed on the
+    // wrong keyboard layout (Hebrew intended, English letters landed).
+    function playKeyboardWarningBeep() {
+      try {
+        var Ctx = window.AudioContext || window.webkitAudioContext;
+        if (!Ctx) return;
+        var ctx = new Ctx();
+        var osc = ctx.createOscillator();
+        var gain = ctx.createGain();
+        osc.type = "sine";
+        osc.frequency.value = 740;
+        gain.gain.setValueAtTime(0.001, ctx.currentTime);
+        gain.gain.exponentialRampToValueAtTime(0.18, ctx.currentTime + 0.02);
+        gain.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + 0.18);
+        osc.connect(gain); gain.connect(ctx.destination);
+        osc.start(); osc.stop(ctx.currentTime + 0.2);
+      } catch (e) {}
+    }
+
     function ItemDialog({ mode, item, categories, pricingEnabled, activeProfiles, groupId,
-      seedPriceMap, seedPromoMap, onSave, onInsert, onClose, showToast }) {
+      seedPriceMap, seedPromoMap, keyboardWarningEnabled, onSave, onInsert, onClose, showToast }) {
       const isEdit = mode === "edit";
       const blankDraft = function() {
         // Look up "other" by id, not a hardcoded label — an admin can
@@ -5912,6 +5976,20 @@
       const [promoMap, setPromoMap] = useState(function() { return (isEdit && seedPromoMap) ? seedPromoMap : {}; });
       const [saving, setSaving] = useState(false);
       const [pendingNoMatchConfirm, setPendingNoMatchConfirm] = useState(false);
+      // Beeps once per continuous run of "starts with a Latin letter" typing
+      // (a classic sign of typing Hebrew on an English keyboard layout) —
+      // resets as soon as the name no longer starts that way, so fixing it
+      // or genuinely typing an English-first name (rare) doesn't keep beeping.
+      const [nameWarned, setNameWarned] = useState(false);
+      const checkNameLanguage = function(v) {
+        if (!keyboardWarningEnabled) return;
+        var startsLatin = /^[A-Za-z]/.test(v.trim());
+        if (startsLatin && v.trim().length >= 2) {
+          if (!nameWarned) { playKeyboardWarningBeep(); setNameWarned(true); }
+        } else if (nameWarned) {
+          setNameWarned(false);
+        }
+      };
 
       const showVendorsTab = pricingEnabled && tab === "vendors";
 
@@ -6006,7 +6084,7 @@
           <div className="space-y-3">
             <div>
               <label className="text-xs text-gray-500 block mb-1">שם</label>
-              <input value={draft.name} autoFocus={!isEdit} onChange={function(e) { setDraft(Object.assign({}, draft, { name: e.target.value })); }}
+              <input value={draft.name} autoFocus={!isEdit} onChange={function(e) { setDraft(Object.assign({}, draft, { name: e.target.value })); checkNameLanguage(e.target.value); }}
                 className="w-full border border-gray-200 rounded-xl px-4 py-3 text-right focus:outline-none focus:border-blue-400" />
             </div>
             <div className="grid grid-cols-2 gap-2">

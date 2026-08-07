@@ -1,6 +1,6 @@
     const { useState, useEffect, useRef } = React;
 
-    const VERSION = "v6.37";
+    const VERSION = "v6.38";
 
     // ── CONFIG ────────────────────────────────────────────────────────────────────
     const FIREBASE_CONFIG = {
@@ -583,7 +583,7 @@
 
       return (
         <div className="fixed inset-0 bg-black/40 z-40 flex items-end" onClick={disableClose ? undefined : onClose}>
-          <div className="relative bg-white w-full max-w-md mx-auto rounded-t-3xl flex flex-col"
+          <div className="relative bg-white w-full max-w-md sm:max-w-lg md:max-w-xl mx-auto rounded-t-3xl flex flex-col"
             style={{ transform: "translateY(" + dragY + "px)", transition: dragY === 0 ? "transform 0.2s ease" : "none", maxHeight: "88dvh" }}
             onClick={e => e.stopPropagation()}>
             <div className="relative flex-shrink-0 px-6 pt-6">
@@ -673,6 +673,23 @@
       // directly; they navigate home and set this flag, which HomeScreen
       // picks up on arrival to open Settings itself.
       const [autoOpenSettings, setAutoOpenSettings] = useState(false);
+      // Text size is a personal accessibility preference, applied globally
+      // by scaling the root element's font-size — every Tailwind text-*
+      // class here is defined in rem, so this one line scales the whole
+      // app (any screen, any device) instead of hunting down every
+      // className. Cached in localStorage for an instant-correct size on
+      // the very next load, before the DB read (below) even resolves.
+      const [fontScale, setFontScaleState] = useState(function() {
+        return parseInt(localStorage.getItem("buli_font_scale"), 10) || 100;
+      });
+      const setFontScale = function(v) {
+        setFontScaleState(v);
+        localStorage.setItem("buli_font_scale", v);
+        if (user) db.ref("users/" + user.uid + "/fontScale").set(v);
+      };
+      useEffect(function() {
+        document.documentElement.style.fontSize = fontScale + "%";
+      }, [fontScale]);
       const [roleLoading, setRoleLoading] = useState(true);
       const [simulateRegular, setSimulateRegular] = useState(function() {
         return sessionStorage.getItem("buli_simulate_regular") === "true";
@@ -746,6 +763,13 @@
             db.ref("users/" + u.uid + "/color").once("value").then(function(snap) {
               if (snap.exists()) localStorage.setItem("buli_user_color_" + u.uid, snap.val());
             });
+            db.ref("users/" + u.uid + "/fontScale").once("value").then(function(snap) {
+              var v = snap.val();
+              if (v && v !== parseInt(localStorage.getItem("buli_font_scale"), 10)) {
+                setFontScaleState(v);
+                localStorage.setItem("buli_font_scale", v);
+              }
+            });
             if (openMajor) {
               var major = null;
               try { major = JSON.parse(localStorage.getItem("buli_major_list")); } catch(e) {}
@@ -790,14 +814,14 @@
       const goMenu = () => { setAutoOpenSettings(true); goHome(); };
 
       return (
-        <div className="max-w-md mx-auto min-h-screen relative">
+        <div className="max-w-md sm:max-w-xl md:max-w-2xl lg:max-w-3xl xl:max-w-4xl mx-auto min-h-screen relative">
           {simulateRegular && (
             <button onClick={() => toggleSimulate(false)}
               className="fixed top-2 left-1/2 -translate-x-1/2 z-50 bg-black/70 text-white text-xs font-medium px-3 py-1.5 rounded-full shadow-lg flex items-center gap-1.5">
               <span>👁️ תצוגת משתמש רגיל</span><span className="opacity-70">· חזרה למנהל</span>
             </button>
           )}
-          {screen === "home"       && <HomeScreen       user={user} isAdmin={role === "admin" && !simulateRegular} isRealAdmin={role === "admin"} simulating={simulateRegular} onToggleSimulate={toggleSimulate} onOpenList={goList} onCategories={() => go("categories")} showToast={setToast} onAddTask={() => goAdd("tasks_" + user.uid, "tasks")} onCreateShoppingList={(id, name) => goAdd(id, "shopping", name)} onCreateNotesList={(id, name) => goAdd(id, "notes", name)} autoOpenSettings={autoOpenSettings} onAutoOpenedSettings={() => setAutoOpenSettings(false)} />}
+          {screen === "home"       && <HomeScreen       user={user} isAdmin={role === "admin" && !simulateRegular} isRealAdmin={role === "admin"} simulating={simulateRegular} onToggleSimulate={toggleSimulate} onOpenList={goList} onCategories={() => go("categories")} showToast={setToast} onAddTask={() => goAdd("tasks_" + user.uid, "tasks")} onCreateShoppingList={(id, name) => goAdd(id, "shopping", name)} onCreateNotesList={(id, name) => goAdd(id, "notes", name)} autoOpenSettings={autoOpenSettings} onAutoOpenedSettings={() => setAutoOpenSettings(false)} fontScale={fontScale} onSetFontScale={setFontScale} />}
           {screen === "list"       && <ListScreen       user={user} listId={listId} onBack={goBack} onHome={goHome} onMenu={goMenu} onAdd={(type, name) => goAdd(listId, type, name || listName)} showToast={setToast} />}
           {screen === "add"        && <AddScreen        user={user} listId={listId} listType={listType} listName={listName} onBack={goBack} onMenu={goMenu} showToast={setToast} showStickyToast={setStickyToast} />}
           {screen === "categories" && <CategoriesScreen user={user} onBack={goBack} onMenu={goMenu} showToast={setToast} />}
@@ -856,7 +880,7 @@
     }
 
     // ── HOME ──────────────────────────────────────────────────────────────────────
-    function HomeScreen({ user, isAdmin, isRealAdmin, simulating, onToggleSimulate, onOpenList, onCategories, showToast, onAddTask, onCreateShoppingList, onCreateNotesList, autoOpenSettings, onAutoOpenedSettings }) {
+    function HomeScreen({ user, isAdmin, isRealAdmin, simulating, onToggleSimulate, onOpenList, onCategories, showToast, onAddTask, onCreateShoppingList, onCreateNotesList, autoOpenSettings, onAutoOpenedSettings, fontScale, onSetFontScale }) {
       const tasksListId = "tasks_" + user.uid;
       const categories = useCategories(user.uid); // for grouping the "copy items" picker by category, same as a list's default view
       const [lists,      setLists]      = useState(function() { return homeDataCache ? homeDataCache.lists : null; });
@@ -2444,6 +2468,20 @@
                       </div>
                     </div>
                   )}
+                  <div>
+                    <div className="text-sm text-gray-700 mb-1">🔤 גודל טקסט</div>
+                    <div className="flex bg-white rounded-xl border border-gray-200 p-1">
+                      {[[100, "רגיל"], [115, "גדול"], [130, "גדול מאוד"]].map(function(opt) {
+                        var val = opt[0], label = opt[1];
+                        return (
+                          <button key={val} onClick={function() { onSetFontScale(val); }}
+                            className={"flex-1 py-1.5 rounded-lg text-xs font-medium transition " + (fontScale === val ? "bg-blue-600 text-white" : "text-gray-500")}>
+                            {label}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
                 </div>
               </div>
 

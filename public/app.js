@@ -1,6 +1,6 @@
     const { useState, useEffect, useRef } = React;
 
-    const VERSION = "v6.39";
+    const VERSION = "v6.40";
 
     // ── CONFIG ────────────────────────────────────────────────────────────────────
     const FIREBASE_CONFIG = {
@@ -4639,22 +4639,29 @@
       return (
         <div className="bg-gray-50 flex flex-col print-list-root" style={{height:"100dvh"}}>
           <div className="bg-blue-600 text-white px-4 pt-10 pb-3 flex-shrink-0 no-print">
-            <div className="flex items-center gap-3" dir="ltr">
-              <button onClick={function() { if (viewMode === "table") { setViewMode("list"); } else { onBack(); } }} className="flex items-center gap-1 text-white font-semibold text-sm bg-white/20 px-3 py-1.5 rounded-full flex-shrink-0">
-                <span className="text-lg leading-none">‹</span><span>חזרה</span>
-              </button>
-              <button onClick={onHome} title="למסך הבית" className="flex items-center justify-center text-white bg-white/20 w-8 h-8 rounded-full flex-shrink-0">
-                <span className="text-sm leading-none">🏠</span>
-              </button>
-              <h1 className="flex-1 text-lg font-bold truncate text-right">{list.name}</h1>
-              {!isNotes && !isTasks && (
-                <button onClick={() => window.print()} className="text-sm bg-white/20 px-3 py-1 rounded-full flex-shrink-0" title="הדפס / ייצוא ל-PDF">🖨️</button>
-              )}
-              {isOwner && !list.isPrivate && !isNotes && (
-                <button onClick={openShare} className="text-sm bg-white/20 px-3 py-1 rounded-full flex-shrink-0">שתף</button>
-              )}
-              <button onClick={onMenu} className="text-white text-lg w-8 h-8 flex items-center justify-center bg-white/20 rounded-full flex-shrink-0">☰</button>
+            {/* Title gets its own full-width line — six controls plus the
+                name squeezed onto one row was truncating list names badly
+                on narrow (mobile) screens. */}
+            <div className="flex items-center justify-between gap-2" dir="ltr">
+              <div className="flex items-center gap-2">
+                <button onClick={function() { if (viewMode === "table") { setViewMode("list"); } else { onBack(); } }} className="flex items-center gap-1 text-white font-semibold text-sm bg-white/20 px-3 py-1.5 rounded-full flex-shrink-0">
+                  <span className="text-lg leading-none">‹</span><span>חזרה</span>
+                </button>
+                <button onClick={onHome} title="למסך הבית" className="flex items-center justify-center text-white bg-white/20 w-8 h-8 rounded-full flex-shrink-0">
+                  <span className="text-sm leading-none">🏠</span>
+                </button>
+              </div>
+              <div className="flex items-center gap-2">
+                {!isNotes && !isTasks && (
+                  <button onClick={() => window.print()} className="text-sm bg-white/20 px-3 py-1 rounded-full flex-shrink-0" title="הדפס / ייצוא ל-PDF">🖨️</button>
+                )}
+                {isOwner && !list.isPrivate && !isNotes && (
+                  <button onClick={openShare} className="text-sm bg-white/20 px-3 py-1 rounded-full flex-shrink-0">שתף</button>
+                )}
+                <button onClick={onMenu} className="text-white text-lg w-8 h-8 flex items-center justify-center bg-white/20 rounded-full flex-shrink-0">☰</button>
+              </div>
             </div>
+            <h1 className="text-lg font-bold truncate text-right mt-2">{list.name}</h1>
             <div className="flex items-center justify-between mt-2" dir="ltr">
               {!isNotes && pricingEnabled && singleShopProfile ? (
                 <span className="text-xs font-semibold bg-white/20 px-3 py-1 rounded-full whitespace-nowrap">

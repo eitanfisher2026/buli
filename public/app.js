@@ -1,6 +1,6 @@
     const { useState, useEffect, useRef } = React;
 
-    const VERSION = "v6.46";
+    const VERSION = "v6.47";
 
     // ── CONFIG ────────────────────────────────────────────────────────────────────
     const FIREBASE_CONFIG = {
@@ -5911,6 +5911,7 @@
       const [priceMap, setPriceMap] = useState(function() { return (isEdit && seedPriceMap) ? seedPriceMap : {}; });
       const [promoMap, setPromoMap] = useState(function() { return (isEdit && seedPromoMap) ? seedPromoMap : {}; });
       const [saving, setSaving] = useState(false);
+      const [pendingNoMatchConfirm, setPendingNoMatchConfirm] = useState(false);
 
       const showVendorsTab = pricingEnabled && tab === "vendors";
 
@@ -5924,8 +5925,7 @@
         setPromoMap({});
       };
 
-      const handlePrimary = function() {
-        if (!draft.name.trim() || saving) return;
+      const doSave = function() {
         setSaving(true);
         if (isEdit) {
           onSave(draft);
@@ -5943,17 +5943,30 @@
         }
       };
 
+      const handlePrimary = function() {
+        if (!draft.name.trim() || saving || isResolving) return;
+        // Results are still sitting on screen unpicked — a tap on the
+        // primary button here is more likely a mis-tap than an intentional
+        // "skip the price check", so confirm before going ahead.
+        if (candidates && candidates.list && candidates.list.length > 0) {
+          setPendingNoMatchConfirm(true);
+          return;
+        }
+        doSave();
+      };
+
       return (
+        <React.Fragment>
         <Modal onClose={onClose} disableClose={!isEdit} footer={
           isEdit ? (
-            <button onClick={handlePrimary} disabled={!draft.name.trim() || saving}
+            <button onClick={handlePrimary} disabled={!draft.name.trim() || saving || isResolving}
               className="w-full bg-blue-600 text-white py-3 rounded-2xl font-semibold text-sm disabled:opacity-40">
               {saving ? <Spinner /> : "שמור שינויים"}
             </button>
           ) : (
             <div className="flex gap-2">
               <button onClick={onClose} className="flex-1 py-3 rounded-2xl border border-gray-200 text-gray-600 font-medium text-sm">ביטול</button>
-              <button onClick={handlePrimary} disabled={!draft.name.trim() || saving}
+              <button onClick={handlePrimary} disabled={!draft.name.trim() || saving || isResolving}
                 className="flex-1 bg-blue-600 text-white py-3 rounded-2xl font-semibold text-sm disabled:opacity-40">
                 {saving ? <Spinner /> : "הוסף לרשימה"}
               </button>
@@ -6075,6 +6088,12 @@
           )}
           </div>
         </Modal>
+        {pendingNoMatchConfirm && (
+          <ConfirmDialog message="לא נבחרה התאמת מחיר מתוצאות החיפוש — להוסיף את הפריט בכל זאת?" confirmLabel="הוסף בכל זאת"
+            onConfirm={function() { setPendingNoMatchConfirm(false); doSave(); }}
+            onClose={function() { setPendingNoMatchConfirm(false); }} />
+        )}
+        </React.Fragment>
       );
     }
 
@@ -6103,6 +6122,7 @@
       const [showListPicker, setShowListPicker] = useState(false);
       const [myLists, setMyLists] = useState(null);
       const [inserting, setInserting] = useState(false);
+      const [pendingNoMatchConfirm, setPendingNoMatchConfirm] = useState(false);
 
       // First run (or no groups defined at all): ask which vendor group to
       // use, then remember it — every check after that is one tap straight
@@ -6154,6 +6174,18 @@
             setMyLists(arr.filter(function(l) { return l.type === "shopping"; }));
           });
         }
+      };
+
+      // Results are still sitting on screen unpicked — a tap on "הוסף
+      // לרשימה" here is more likely a mis-tap than an intentional "skip
+      // the price check", so confirm before going ahead.
+      const requestAddToList = function() {
+        if (!draft.name.trim()) return;
+        if (candidates && candidates.list && candidates.list.length > 0) {
+          setPendingNoMatchConfirm(true);
+          return;
+        }
+        openListPicker();
       };
 
       const insertIntoList = function(list) {
@@ -6212,12 +6244,17 @@
               )}
               <div className="flex gap-2 mt-5">
                 <button onClick={onClose} className="flex-1 py-4 rounded-2xl border border-gray-200 text-gray-600 font-medium">סגור</button>
-                <button onClick={openListPicker} disabled={!draft.name.trim()}
+                <button onClick={requestAddToList} disabled={!draft.name.trim() || isResolving}
                   className="flex-1 bg-blue-600 text-white py-4 rounded-2xl font-semibold disabled:opacity-40">
                   הוסף לרשימה
                 </button>
               </div>
             </React.Fragment>
+          )}
+          {pendingNoMatchConfirm && (
+            <ConfirmDialog message="לא נבחרה התאמת מחיר מתוצאות החיפוש — להוסיף את הפריט בכל זאת?" confirmLabel="הוסף בכל זאת"
+              onConfirm={function() { setPendingNoMatchConfirm(false); openListPicker(); }}
+              onClose={function() { setPendingNoMatchConfirm(false); }} />
           )}
           {showListPicker && (
             <Modal onClose={function() { setShowListPicker(false); }}>

@@ -1,6 +1,6 @@
     const { useState, useEffect, useRef } = React;
 
-    const VERSION = "v6.33";
+    const VERSION = "v6.34";
 
     // ── CONFIG ────────────────────────────────────────────────────────────────────
     const FIREBASE_CONFIG = {
@@ -667,6 +667,12 @@
       const [user,        setUser]        = useState(null);
       const [loading,     setLoading]     = useState(true);
       const [role,        setRole]        = useState(null);
+      // The ☰ menu button lives on every screen now, not just Home — since
+      // Settings itself is a big chunk of HomeScreen-local state (vendor
+      // profiles, groups, users...), the other screens don't open it
+      // directly; they navigate home and set this flag, which HomeScreen
+      // picks up on arrival to open Settings itself.
+      const [autoOpenSettings, setAutoOpenSettings] = useState(false);
       const [roleLoading, setRoleLoading] = useState(true);
       const [simulateRegular, setSimulateRegular] = useState(function() {
         return sessionStorage.getItem("buli_simulate_regular") === "true";
@@ -778,12 +784,9 @@
       const goAdd  = (id, type, name) => { pushNav({ screen: "add", listId: id, listType: type || "shopping", listName: name || "" }); setListId(id); setListType(type || "shopping"); setListName(name || ""); setScreen("add"); };
       const goHome = () => { navHistoryRef.current = [{ screen: "home" }]; pushNav({ screen: "home" }); setScreen("home"); setListId(null); };
       const goBack = () => window.history.back();
-      // The ☰ menu button lives on every screen now, not just Home — since
-      // Settings itself is a big chunk of HomeScreen-local state (vendor
-      // profiles, groups, users...), the other screens don't open it
-      // directly; they navigate home and set this flag, which HomeScreen
-      // picks up on arrival to open Settings itself.
-      const [autoOpenSettings, setAutoOpenSettings] = useState(false);
+      // ☰ tapped from another screen navigates home and sets autoOpenSettings
+      // (declared up top with the other useState calls — see below), which
+      // HomeScreen picks up on arrival to open Settings itself.
       const goMenu = () => { setAutoOpenSettings(true); goHome(); };
 
       return (

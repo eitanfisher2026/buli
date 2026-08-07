@@ -1,6 +1,6 @@
     const { useState, useEffect, useRef } = React;
 
-    const VERSION = "v6.40";
+    const VERSION = "v6.41";
 
     // ── CONFIG ────────────────────────────────────────────────────────────────────
     const FIREBASE_CONFIG = {
@@ -2014,7 +2014,7 @@
                 <span className="text-xl font-bold">בולי</span>
                 <span className="text-xs text-white/40">{VERSION}</span>
               </div>
-              <button onClick={e => { e.stopPropagation(); switchSettingsTab(settingsTab); setShowSettings(true); }} className="text-white text-xl w-9 h-9 flex items-center justify-center bg-white/20 rounded-full">☰</button>
+              <button onClick={e => { e.stopPropagation(); switchSettingsTab(settingsTab); setShowSettings(true); }} title="הגדרות" className="text-white text-xl w-9 h-9 flex items-center justify-center bg-white/20 rounded-full">⚙️</button>
             </div>
             <p className="text-white/60 text-sm mt-1 text-right">שלום, {user.displayName.split(" ")[0]}</p>
           </div>
@@ -3817,6 +3817,7 @@
       const [filterVendorProfile, setFilterVendorProfile] = useState(function() { return localStorage.getItem("buli_filter_vendor") || "all"; });
       useEffect(function() { localStorage.setItem("buli_filter_vendor", filterVendorProfile); }, [filterVendorProfile]);
       const [showFilters, setShowFilters] = useState(false);
+      const [showHeaderMenu, setShowHeaderMenu] = useState(false);
       const [pricingEnabled, setPricingEnabled] = useState(true);
       const [addMode, setAddMode] = useState("single"); // "group" | "single"
       const [showQuickAdd, setShowQuickAdd] = useState(false);
@@ -4639,9 +4640,10 @@
       return (
         <div className="bg-gray-50 flex flex-col print-list-root" style={{height:"100dvh"}}>
           <div className="bg-blue-600 text-white px-4 pt-10 pb-3 flex-shrink-0 no-print">
-            {/* Title gets its own full-width line — six controls plus the
-                name squeezed onto one row was truncating list names badly
-                on narrow (mobile) screens. */}
+            {/* Two lines only: nav+overflow, then the title — everything
+                else (print/share/settings, sort/filter controls) moved out
+                into a single ⋮ menu and the white toolbar below instead of
+                stacking as extra lines here. */}
             <div className="flex items-center justify-between gap-2" dir="ltr">
               <div className="flex items-center gap-2">
                 <button onClick={function() { if (viewMode === "table") { setViewMode("list"); } else { onBack(); } }} className="flex items-center gap-1 text-white font-semibold text-sm bg-white/20 px-3 py-1.5 rounded-full flex-shrink-0">
@@ -4651,153 +4653,169 @@
                   <span className="text-sm leading-none">🏠</span>
                 </button>
               </div>
-              <div className="flex items-center gap-2">
-                {!isNotes && !isTasks && (
-                  <button onClick={() => window.print()} className="text-sm bg-white/20 px-3 py-1 rounded-full flex-shrink-0" title="הדפס / ייצוא ל-PDF">🖨️</button>
-                )}
-                {isOwner && !list.isPrivate && !isNotes && (
-                  <button onClick={openShare} className="text-sm bg-white/20 px-3 py-1 rounded-full flex-shrink-0">שתף</button>
-                )}
-                <button onClick={onMenu} className="text-white text-lg w-8 h-8 flex items-center justify-center bg-white/20 rounded-full flex-shrink-0">☰</button>
-              </div>
+              <button onClick={function() { setShowHeaderMenu(true); }} className="text-white text-lg w-8 h-8 flex items-center justify-center bg-white/20 rounded-full flex-shrink-0">☰</button>
             </div>
             <h1 className="text-lg font-bold truncate text-right mt-2">{list.name}</h1>
-            <div className="flex items-center justify-between mt-2" dir="ltr">
-              {!isNotes && pricingEnabled && singleShopProfile ? (
-                <span className="text-xs font-semibold bg-white/20 px-3 py-1 rounded-full whitespace-nowrap">
-                  🏪 {profileLabel(singleShopProfile, activeProfiles)}
-                </span>
-              ) : !isNotes && !pricingEnabled ? (
-                <div className="flex bg-white/15 rounded-full p-0.5">
-                  <button onClick={function() { setSortBy("name"); }}
-                    className={"text-xs px-3 py-1 rounded-full transition " + (sortBy==="name" ? "bg-white text-blue-600 font-semibold" : "text-white/70")}>שם</button>
-                  <button onClick={function() {
-                    setSortBy("category");
-                    if (profiles.length > 0) setShowProfilePicker(true);
-                  }} className={"text-xs px-3 py-1 rounded-full transition flex items-center gap-1 " + (sortBy==="category" ? "bg-white text-blue-600 font-semibold" : "text-white/70")}>
-                    {sortBy === "category" && activeProfile !== "default"
-                      ? ((profiles.find(function(p) { return p.id === activeProfile; }) || {}).name || "קטגוריה")
-                      : "קטגוריה"}
-                    {profiles.length > 0 && <span style={{fontSize:"9px"}}>▾</span>}
-                  </button>
-                </div>
-              ) : <div />}
-              {/* Notes lists skip the filter-pills row entirely below, so
-                  the counter has nowhere else to live — kept here only for
-                  that case. Every other list type shows it merged into the
-                  filter-pills row instead, to not spend a whole line on it. */}
-              {isNotes && (
-                <span className="text-white/50 text-xs flex items-center gap-2">
-                  {notesSorted.filter(i=>i.done).length + "/" + notesSorted.length}
-                </span>
-              )}
-            </div>
-            {!isNotes && !(viewMode === "table" && pricingEnabled && !isTasks) && (
-              <div className="mt-2" dir="ltr">
-                <div className="flex items-center justify-between gap-1.5">
-                  <div className="flex items-center gap-1.5">
-                    {pricingEnabled && !isTasks && (
-                      <button onClick={function() { setFilterVendorProfile(function(p) { return p === "noBarcode" ? "all" : "noBarcode"; }); }}
-                        className={"text-xs px-2 py-1 rounded-full transition whitespace-nowrap flex-shrink-0 " + (filterVendorProfile==="noBarcode" ? "bg-white text-orange-600 font-semibold" : "bg-white/15 text-white/70")}>
-                        ⚠ ללא ברקוד
-                      </button>
-                    )}
-                    <button onClick={function() { setShowFilters(function(p) { return !p; }); }}
-                      className={"text-xs px-2.5 py-1 rounded-full transition whitespace-nowrap flex-shrink-0 flex items-center gap-1 " + (showFilters ? "bg-white text-blue-600 font-semibold" : "bg-white/15 text-white/70")}>
-                      מסננים {(filterStatus !== "all" || filterPerson !== "all" || singleShopId) && <span className="text-orange-300">●</span>}
-                    </button>
-                    {isFiltered && (
-                      <button onClick={clearAllFilters} className="text-white/60 hover:text-white text-xs flex-shrink-0" title="נקה פילטרים">✕</button>
-                    )}
-                  </div>
-                  {/* Moved here (was its own line) to make better use of the
-                      vertical space — this row already had room for it. */}
-                  <span className="text-white/50 text-xs flex items-center gap-2 flex-shrink-0">
-                    {isFiltered ? filteredItems.length + "/" + items.length : doneCount + "/" + items.length}
-                    {doneCount > 0 && canEditAll && !isFiltered && (
-                      <button onClick={clearDone} className="bg-white/20 text-white text-xs px-2.5 py-1 rounded-full font-medium whitespace-nowrap">
-                        🗑️ {isTasks ? "מחק הושלמו" : "מחק מסל"}
-                      </button>
-                    )}
-                  </span>
-                </div>
-                {showFilters && (
-                  <div className="mt-2 bg-white/10 rounded-2xl p-2.5 space-y-2.5" dir="rtl">
-                    <div className="flex justify-end">
-                      <button onClick={function() { setShowFilters(false); }} className="text-white/50 hover:text-white text-sm w-6 h-6 flex items-center justify-center flex-shrink-0" title="סגור מסננים">✕</button>
-                    </div>
-                    <div>
-                      <div className="text-white/50 text-xs mb-1">סטטוס</div>
-                      <div className="flex bg-white/15 rounded-full p-0.5 gap-0.5 w-fit">
-                        {[["all","הכל"],["pending","○ פתוח"],["done","✓ " + (isTasks ? "הושלם" : "בסל")]].map(function(entry) {
-                          var v = entry[0], l = entry[1];
-                          return (
-                            <button key={v} onClick={function() { applyStatusFilter(v); }}
-                              className={"text-xs px-2 py-1 rounded-full transition whitespace-nowrap " + (filterStatus===v ? "bg-white text-blue-600 font-semibold" : "text-white/70")}>
-                              {l}
-                            </button>
-                          );
-                        })}
-                      </div>
-                    </div>
-                    {pricingEnabled && Object.keys(vendorGroups).length > 0 && (
-                      <div>
-                        <div className="text-white/50 text-xs mb-1">קבוצת רשתות</div>
-                        <div className="flex flex-wrap gap-1">
-                          <button onClick={function() { setListVendorGroup(null); }}
-                            className={"text-xs px-2.5 py-1 rounded-full transition whitespace-nowrap " + (!list.vendorGroupId ? "bg-white text-blue-600 font-semibold" : "bg-white/15 text-white/70")}>
-                            כללי
-                          </button>
-                          {Object.entries(vendorGroups).map(function(entry) {
-                            var gid = entry[0], g = entry[1];
-                            return (
-                              <button key={gid} onClick={function() { setListVendorGroup(gid); }}
-                                className={"text-xs px-2.5 py-1 rounded-full transition whitespace-nowrap " + (list.vendorGroupId === gid ? "bg-white text-blue-600 font-semibold" : "bg-white/15 text-white/70")}>
-                                {g.name}
-                              </button>
-                            );
-                          })}
-                        </div>
-                      </div>
-                    )}
-                    <div>
-                      <div className="text-white/50 text-xs mb-1">מי הוסיף</div>
-                      <div className="flex bg-white/15 rounded-full p-0.5 gap-0.5 w-fit">
-                        {[["all","כולם"],["mine","שלי"],["others","אחרים"]].map(function(entry) {
-                          var v = entry[0], l = entry[1];
-                          return (
-                            <button key={v} onClick={function() { applyPersonFilter(v); }}
-                              className={"text-xs px-2.5 py-1 rounded-full transition " + (filterPerson===v ? "bg-white text-blue-600 font-semibold" : "text-white/70")}>
-                              {l}
-                            </button>
-                          );
-                        })}
-                      </div>
-                    </div>
-                    {pricingEnabled && !isTasks && activeProfiles.length > 0 && (
-                      <div>
-                        <div className="text-white/50 text-xs mb-1">הצג פריטים לחנות</div>
-                        <div className="flex flex-wrap gap-1">
-                          {[{ id: "all", label: "הכל" }]
-                            .concat(activeProfiles.map(function(p) { return { id: p.id, label: profileLabel(p, activeProfiles) }; }))
-                            .map(function(opt) {
-                              return (
-                                <button key={opt.id} onClick={function() {
-                                  setFilterVendorProfile(opt.id);
-                                  if (opt.id !== "all") setShowFilters(false);
-                                }} className={"text-xs px-2.5 py-1 rounded-full transition whitespace-nowrap " + (filterVendorProfile===opt.id ? "bg-white text-blue-600 font-semibold" : "bg-white/15 text-white/70")}>
-                                  {opt.label}
-                                </button>
-                              );
-                            })}
-                        </div>
-                      </div>
-                    )}
-                  </div>
-                )}
+            {/* Notes lists skip the sort/filter toolbar entirely below, so
+                the counter has nowhere else to live — kept here only for
+                that case. */}
+            {isNotes && (
+              <div className="flex items-center justify-end mt-2" dir="ltr">
+                <span className="text-white/50 text-xs">{notesSorted.filter(i=>i.done).length + "/" + notesSorted.length}</span>
               </div>
             )}
           </div>
+
+          {showHeaderMenu && (
+            <Modal onClose={function() { setShowHeaderMenu(false); }}>
+              <h3 className="text-lg font-bold text-center mb-4">פעולות</h3>
+              <div className="space-y-2">
+                {!isNotes && !isTasks && (
+                  <button onClick={function() { setShowHeaderMenu(false); window.print(); }}
+                    className="w-full text-right flex items-center gap-3 px-4 py-3 rounded-xl bg-gray-50 hover:bg-gray-100">
+                    <span className="text-lg">🖨️</span><span className="text-sm font-medium text-gray-700">הדפס / ייצוא ל-PDF</span>
+                  </button>
+                )}
+                {isOwner && !list.isPrivate && !isNotes && (
+                  <button onClick={function() { setShowHeaderMenu(false); openShare(); }}
+                    className="w-full text-right flex items-center gap-3 px-4 py-3 rounded-xl bg-gray-50 hover:bg-gray-100">
+                    <span className="text-lg">🔗</span><span className="text-sm font-medium text-gray-700">שתף רשימה</span>
+                  </button>
+                )}
+                <button onClick={function() { setShowHeaderMenu(false); onMenu(); }}
+                  className="w-full text-right flex items-center gap-3 px-4 py-3 rounded-xl bg-gray-50 hover:bg-gray-100">
+                  <span className="text-lg">⚙️</span><span className="text-sm font-medium text-gray-700">הגדרות</span>
+                </button>
+              </div>
+            </Modal>
+          )}
+
+          {!isNotes && (
+            <div className="bg-white border-b border-gray-100 px-4 py-2 flex-shrink-0 no-print">
+              <div className="flex items-center justify-between gap-2 flex-wrap">
+                <div className="flex items-center gap-1.5 flex-wrap">
+                  {pricingEnabled && singleShopProfile ? (
+                    <span className="text-xs font-semibold bg-blue-50 text-blue-700 px-3 py-1 rounded-full whitespace-nowrap">
+                      🏪 {profileLabel(singleShopProfile, activeProfiles)}
+                    </span>
+                  ) : !pricingEnabled ? (
+                    <div className="flex bg-gray-100 rounded-full p-0.5">
+                      <button onClick={function() { setSortBy("name"); }}
+                        className={"text-xs px-3 py-1 rounded-full transition " + (sortBy==="name" ? "bg-white text-blue-600 font-semibold shadow-sm" : "text-gray-500")}>שם</button>
+                      <button onClick={function() {
+                        setSortBy("category");
+                        if (profiles.length > 0) setShowProfilePicker(true);
+                      }} className={"text-xs px-3 py-1 rounded-full transition flex items-center gap-1 " + (sortBy==="category" ? "bg-white text-blue-600 font-semibold shadow-sm" : "text-gray-500")}>
+                        {sortBy === "category" && activeProfile !== "default"
+                          ? ((profiles.find(function(p) { return p.id === activeProfile; }) || {}).name || "קטגוריה")
+                          : "קטגוריה"}
+                        {profiles.length > 0 && <span style={{fontSize:"9px"}}>▾</span>}
+                      </button>
+                    </div>
+                  ) : null}
+                  {!(viewMode === "table" && pricingEnabled && !isTasks) && (
+                    <React.Fragment>
+                      {pricingEnabled && !isTasks && (
+                        <button onClick={function() { setFilterVendorProfile(function(p) { return p === "noBarcode" ? "all" : "noBarcode"; }); }}
+                          className={"text-xs px-2 py-1 rounded-full transition whitespace-nowrap flex-shrink-0 border " + (filterVendorProfile==="noBarcode" ? "bg-orange-50 text-orange-600 border-orange-200 font-semibold" : "bg-gray-50 text-gray-500 border-gray-200")}>
+                          ⚠ ללא ברקוד
+                        </button>
+                      )}
+                      <button onClick={function() { setShowFilters(function(p) { return !p; }); }}
+                        className={"text-xs px-2.5 py-1 rounded-full transition whitespace-nowrap flex-shrink-0 flex items-center gap-1 border " + (showFilters ? "bg-blue-50 text-blue-600 border-blue-200 font-semibold" : "bg-gray-50 text-gray-500 border-gray-200")}>
+                        מסננים {(filterStatus !== "all" || filterPerson !== "all" || singleShopId) && <span className="text-orange-500">●</span>}
+                      </button>
+                      {isFiltered && (
+                        <button onClick={clearAllFilters} className="text-gray-400 hover:text-gray-600 text-xs flex-shrink-0" title="נקה פילטרים">✕</button>
+                      )}
+                    </React.Fragment>
+                  )}
+                </div>
+                <span className="text-xs text-gray-400 flex items-center gap-2 flex-shrink-0">
+                  {isFiltered ? filteredItems.length + "/" + items.length : doneCount + "/" + items.length}
+                  {doneCount > 0 && canEditAll && !isFiltered && (
+                    <button onClick={clearDone} className="bg-gray-100 text-gray-600 text-xs px-2.5 py-1 rounded-full font-medium whitespace-nowrap">
+                      🗑️ {isTasks ? "מחק הושלמו" : "מחק מסל"}
+                    </button>
+                  )}
+                </span>
+              </div>
+              {showFilters && !(viewMode === "table" && pricingEnabled && !isTasks) && (
+                <div className="mt-2 bg-gray-50 rounded-2xl p-2.5 space-y-2.5">
+                  <div className="flex justify-end">
+                    <button onClick={function() { setShowFilters(false); }} className="text-gray-400 hover:text-gray-600 text-sm w-6 h-6 flex items-center justify-center flex-shrink-0" title="סגור מסננים">✕</button>
+                  </div>
+                  <div>
+                    <div className="text-gray-400 text-xs mb-1">סטטוס</div>
+                    <div className="flex bg-white rounded-full p-0.5 gap-0.5 w-fit border border-gray-200">
+                      {[["all","הכל"],["pending","○ פתוח"],["done","✓ " + (isTasks ? "הושלם" : "בסל")]].map(function(entry) {
+                        var v = entry[0], l = entry[1];
+                        return (
+                          <button key={v} onClick={function() { applyStatusFilter(v); }}
+                            className={"text-xs px-2 py-1 rounded-full transition whitespace-nowrap " + (filterStatus===v ? "bg-blue-600 text-white font-semibold" : "text-gray-500")}>
+                            {l}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                  {pricingEnabled && Object.keys(vendorGroups).length > 0 && (
+                    <div>
+                      <div className="text-gray-400 text-xs mb-1">קבוצת רשתות</div>
+                      <div className="flex flex-wrap gap-1">
+                        <button onClick={function() { setListVendorGroup(null); }}
+                          className={"text-xs px-2.5 py-1 rounded-full transition whitespace-nowrap border " + (!list.vendorGroupId ? "bg-blue-600 text-white border-blue-600 font-semibold" : "bg-white text-gray-500 border-gray-200")}>
+                          כללי
+                        </button>
+                        {Object.entries(vendorGroups).map(function(entry) {
+                          var gid = entry[0], g = entry[1];
+                          return (
+                            <button key={gid} onClick={function() { setListVendorGroup(gid); }}
+                              className={"text-xs px-2.5 py-1 rounded-full transition whitespace-nowrap border " + (list.vendorGroupId === gid ? "bg-blue-600 text-white border-blue-600 font-semibold" : "bg-white text-gray-500 border-gray-200")}>
+                              {g.name}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  )}
+                  <div>
+                    <div className="text-gray-400 text-xs mb-1">מי הוסיף</div>
+                    <div className="flex bg-white rounded-full p-0.5 gap-0.5 w-fit border border-gray-200">
+                      {[["all","כולם"],["mine","שלי"],["others","אחרים"]].map(function(entry) {
+                        var v = entry[0], l = entry[1];
+                        return (
+                          <button key={v} onClick={function() { applyPersonFilter(v); }}
+                            className={"text-xs px-2.5 py-1 rounded-full transition " + (filterPerson===v ? "bg-blue-600 text-white font-semibold" : "text-gray-500")}>
+                            {l}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                  {pricingEnabled && !isTasks && activeProfiles.length > 0 && (
+                    <div>
+                      <div className="text-gray-400 text-xs mb-1">הצג פריטים לחנות</div>
+                      <div className="flex flex-wrap gap-1">
+                        {[{ id: "all", label: "הכל" }]
+                          .concat(activeProfiles.map(function(p) { return { id: p.id, label: profileLabel(p, activeProfiles) }; }))
+                          .map(function(opt) {
+                            return (
+                              <button key={opt.id} onClick={function() {
+                                setFilterVendorProfile(opt.id);
+                                if (opt.id !== "all") setShowFilters(false);
+                              }} className={"text-xs px-2.5 py-1 rounded-full transition whitespace-nowrap border " + (filterVendorProfile===opt.id ? "bg-blue-600 text-white border-blue-600 font-semibold" : "bg-white text-gray-500 border-gray-200")}>
+                                {opt.label}
+                              </button>
+                            );
+                          })}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
 
           {pricingEnabled && !isTasks && !isNotes && (
             <div className="flex items-center justify-between bg-white border-b border-gray-100 px-4 py-1.5 flex-shrink-0 no-print">

@@ -1,6 +1,6 @@
     const { useState, useEffect, useRef } = React;
 
-    const VERSION = "v6.44";
+    const VERSION = "v6.45";
 
     // ── CONFIG ────────────────────────────────────────────────────────────────────
     const FIREBASE_CONFIG = {
@@ -3851,6 +3851,8 @@
       useEffect(function() { localStorage.setItem("buli_filter_vendor", filterVendorProfile); }, [filterVendorProfile]);
       const [showFilters, setShowFilters] = useState(false);
       const [showHeaderMenu, setShowHeaderMenu] = useState(false);
+      const [showCategorizeChoice, setShowCategorizeChoice] = useState(false);
+      const [categorizing, setCategorizing] = useState(false);
       const [pricingEnabled, setPricingEnabled] = useState(true);
       const [addMode, setAddMode] = useState("single"); // "group" | "single"
       const [showQuickAdd, setShowQuickAdd] = useState(false);
@@ -4400,6 +4402,68 @@
         });
       };
 
+      // Reuses the same parseItems AI call the free-text add flow uses,
+      // just fed the existing item names instead of freshly typed text.
+      // Matches results back onto items by name (not by index/order —
+      // the AI isn't guaranteed to preserve order or count) so a
+      // partial/garbled response only skips items instead of
+      // mis-assigning a category to the wrong item.
+      const runAutoCategorize = (scopeAll) => {
+        const targets = items.filter(function(i) { return scopeAll || (i.category || "שונות") === "שונות"; });
+        if (!targets.length) {
+          showToast(scopeAll ? "אין פריטים ברשימה" : "כל הפריטים כבר מסווגים");
+          return;
+        }
+        setCategorizing(true);
+        db.ref("users/" + user.uid + "/ai").once("value").then(function(snap) {
+          const ai = snap.val();
+          if (!ai || !ai.provider) {
+            showToast("יש להגדיר ספק AI תחילה — הגדרות ← הגדרות AI");
+            setCategorizing(false);
+            return;
+          }
+          const cats = categories.length > 0 ? categories : DEFAULT_CATEGORIES;
+          const text = targets.map(function(i) { return i.name; }).join("\n");
+          parseWithAI(text, cats, ai).then(function(aiItems) {
+            const catEmojis = {}, validCats = new Set();
+            cats.forEach(function(c) { catEmojis[c.label] = c.emoji; validCats.add(c.label); });
+            const byName = {};
+            targets.forEach(function(item) {
+              const key = (item.name || "").trim().toLowerCase();
+              (byName[key] = byName[key] || []).push(item);
+            });
+            const updates = {};
+            let count = 0;
+            (aiItems || []).forEach(function(res) {
+              const key = ((res.name || res.item || "").trim()).toLowerCase();
+              const bucket = byName[key];
+              if (!bucket || !bucket.length) return;
+              const item = bucket.shift();
+              const aiCat = (res.category || "").trim();
+              if (!validCats.has(aiCat) || aiCat === "שונות") return;
+              updates["items/" + listId + "/" + item.id + "/category"] = aiCat;
+              updates["items/" + listId + "/" + item.id + "/categoryEmoji"] = catEmojis[aiCat] || "🛍️";
+              count++;
+            });
+            if (!count) {
+              showToast("לא נמצאו קטגוריות מתאימות");
+              setCategorizing(false);
+              return;
+            }
+            db.ref().update(updates).then(function() {
+              showToast(count + " פריטים סווגו בהצלחה");
+              setCategorizing(false);
+            }, function(err) {
+              showToast("שגיאה בשמירה: " + (err && err.message));
+              setCategorizing(false);
+            });
+          }).catch(function(e) {
+            showToast(e.message || "שגיאה בחיבור ל-AI");
+            setCategorizing(false);
+          });
+        });
+      };
+
       const saveEdit = (updated) => {
         setItems(function(prev) { return prev.map(function(i) { return i.id === updated.id ? Object.assign({}, i, updated) : i; }); });
         setEditItem(null);
@@ -4718,10 +4782,45 @@
                     <span className="text-lg">🗑️</span><span className="text-sm font-medium text-gray-700">{isTasks ? "מחק מטלות שהושלמו" : "מחק פריטים מהסל"}</span>
                   </button>
                 )}
+                {!isNotes && !isTasks && canEditAll && (
+                  <button onClick={function() { setShowHeaderMenu(false); setShowCategorizeChoice(true); }}
+                    className="w-full text-right flex items-center gap-3 px-4 py-3 rounded-xl bg-gray-50 hover:bg-gray-100">
+                    <span className="text-lg">✨</span><span className="text-sm font-medium text-gray-700">השלם קטגוריות</span>
+                  </button>
+                )}
                 <button onClick={function() { setShowHeaderMenu(false); onMenu(); }}
                   className="w-full text-right flex items-center gap-3 px-4 py-3 rounded-xl bg-gray-50 hover:bg-gray-100">
                   <span className="text-lg">⚙️</span><span className="text-sm font-medium text-gray-700">הגדרות</span>
                 </button>
+              </div>
+            </Modal>
+          )}
+
+          {showCategorizeChoice && (
+            <Modal onClose={function() { setShowCategorizeChoice(false); }}>
+              <h3 className="text-lg font-bold text-center mb-2">השלם קטגוריות</h3>
+              <p className="text-center text-gray-500 text-sm mb-5">אילו פריטים לסווג באמצעות AI?</p>
+              <div className="space-y-2">
+                <button onClick={function() { setShowCategorizeChoice(false); runAutoCategorize(false); }}
+                  className="w-full text-right flex items-center gap-3 px-4 py-3 rounded-xl bg-blue-50 hover:bg-blue-100 border border-blue-200">
+                  <span className="text-lg">🛍️</span>
+                  <span className="text-sm font-medium text-gray-700">רק פריטים ב"שונות"</span>
+                </button>
+                <button onClick={function() { setShowCategorizeChoice(false); runAutoCategorize(true); }}
+                  className="w-full text-right flex items-center gap-3 px-4 py-3 rounded-xl bg-gray-50 hover:bg-gray-100">
+                  <span className="text-lg">📋</span>
+                  <span className="text-sm font-medium text-gray-700">כל הפריטים ברשימה</span>
+                </button>
+              </div>
+              <button onClick={function() { setShowCategorizeChoice(false); }} className="w-full mt-3 py-2.5 text-gray-500 text-sm">ביטול</button>
+            </Modal>
+          )}
+
+          {categorizing && (
+            <Modal disableClose={true}>
+              <div className="flex flex-col items-center gap-3 py-4">
+                <Spinner />
+                <p className="text-gray-600 text-sm">מסווג פריטים באמצעות AI...</p>
               </div>
             </Modal>
           )}

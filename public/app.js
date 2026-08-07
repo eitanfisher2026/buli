@@ -1,6 +1,6 @@
     const { useState, useEffect, useRef } = React;
 
-    const VERSION = "v6.41";
+    const VERSION = "v6.42";
 
     // ── CONFIG ────────────────────────────────────────────────────────────────────
     const FIREBASE_CONFIG = {
@@ -1925,13 +1925,17 @@
       if (lists === null || tasks === null) return (
         <div className="bg-gray-50 flex flex-col" style={{height:"100dvh"}}>
           <div className="bg-blue-600 text-white px-4 pt-10 pb-5 flex-shrink-0">
-            <div className="flex items-center justify-between" dir="ltr">
-              <div className="flex items-center gap-2">
-                <span className="text-2xl">🛒</span>
-                <span className="text-xl font-bold">בולי</span>
-                <span className="text-xs text-white/40">{VERSION}</span>
+            <div className="flex items-center justify-between gap-2">
+              <div className="w-9 h-9 flex-shrink-0" />
+              <div className="text-center flex-1 min-w-0">
+                <div className="flex items-center justify-center gap-1.5">
+                  <span className="text-xl">🛒</span>
+                  <span className="text-xl font-bold">בולי</span>
+                  <span className="text-[10px] text-white/40">{VERSION}</span>
+                </div>
+                <p className="text-white/50 text-[11px] mt-0.5">אפליקציה לקניות משפחתית</p>
               </div>
-              <button onClick={() => auth.signOut()} className="text-xs bg-white/20 px-3 py-1.5 rounded-full">יציאה</button>
+              <button onClick={() => auth.signOut()} className="text-xs bg-white/20 px-3 py-1.5 rounded-full flex-shrink-0">יציאה</button>
             </div>
             <p className="text-white/60 text-sm mt-2 text-right">שלום, {user.displayName.split(" ")[0]}</p>
           </div>
@@ -2007,16 +2011,24 @@
 
       return (
         <div className="bg-gray-50 flex flex-col" style={{height:"100dvh"}} onClick={() => setMenuId(null)}>
-          <div className="bg-blue-600 text-white px-4 pt-10 pb-3 flex-shrink-0">
-            <div className="flex items-center justify-between" dir="ltr">
-              <div className="flex items-center gap-2">
-                <span className="text-2xl">🛒</span>
-                <span className="text-xl font-bold">בולי</span>
-                <span className="text-xs text-white/40">{VERSION}</span>
+          <div className="bg-blue-600 text-white px-4 pt-10 pb-4 flex-shrink-0">
+            <div className="flex items-center justify-between gap-2">
+              <button onClick={e => { e.stopPropagation(); switchSettingsTab("users"); setShowSettings(true); }} title="הפרופיל שלי"
+                className="w-9 h-9 rounded-full bg-white/20 flex items-center justify-center flex-shrink-0">
+                <span className="text-base">👤</span>
+              </button>
+              <div className="text-center flex-1 min-w-0">
+                <div className="flex items-center justify-center gap-1.5">
+                  <span className="text-xl">🛒</span>
+                  <span className="text-xl font-bold">בולי</span>
+                  <span className="text-[10px] text-white/40">{VERSION}</span>
+                </div>
+                <p className="text-white/50 text-[11px] mt-0.5">אפליקציה לקניות משפחתית</p>
               </div>
-              <button onClick={e => { e.stopPropagation(); switchSettingsTab(settingsTab); setShowSettings(true); }} title="הגדרות" className="text-white text-xl w-9 h-9 flex items-center justify-center bg-white/20 rounded-full">⚙️</button>
+              <button onClick={e => { e.stopPropagation(); switchSettingsTab(settingsTab); setShowSettings(true); }} title="הגדרות"
+                className="text-white text-lg w-9 h-9 flex items-center justify-center bg-white/20 rounded-full flex-shrink-0">⚙️</button>
             </div>
-            <p className="text-white/60 text-sm mt-1 text-right">שלום, {user.displayName.split(" ")[0]}</p>
+            <p className="text-white/60 text-sm mt-2 text-right">שלום, {user.displayName.split(" ")[0]}</p>
           </div>
           {(myMenusEnabled || myTasksEnabled) && (
           <div className="bg-white border-b border-gray-200 flex-shrink-0 flex" dir="rtl">
@@ -4640,25 +4652,22 @@
       return (
         <div className="bg-gray-50 flex flex-col print-list-root" style={{height:"100dvh"}}>
           <div className="bg-blue-600 text-white px-4 pt-10 pb-3 flex-shrink-0 no-print">
-            {/* Two lines only: nav+overflow, then the title — everything
-                else (print/share/settings, sort/filter controls) moved out
-                into a single ⋮ menu and the white toolbar below instead of
-                stacking as extra lines here. */}
-            <div className="flex items-center justify-between gap-2" dir="ltr">
-              <div className="flex items-center gap-2">
-                <button onClick={function() { if (viewMode === "table") { setViewMode("list"); } else { onBack(); } }} className="flex items-center gap-1 text-white font-semibold text-sm bg-white/20 px-3 py-1.5 rounded-full flex-shrink-0">
-                  <span className="text-lg leading-none">‹</span><span>חזרה</span>
-                </button>
-                <button onClick={onHome} title="למסך הבית" className="flex items-center justify-center text-white bg-white/20 w-8 h-8 rounded-full flex-shrink-0">
-                  <span className="text-sm leading-none">🏠</span>
-                </button>
-              </div>
+            {/* One line for nav+title+overflow (icon-only back button now
+                that print/share/settings all live in ☰, so there's room),
+                a single icon toolbar below for everything list-related. */}
+            <div className="flex items-center gap-2" dir="ltr">
+              <button onClick={function() { if (viewMode === "table") { setViewMode("list"); } else { onBack(); } }} title="חזרה"
+                className="flex items-center justify-center text-white bg-white/20 w-8 h-8 rounded-full flex-shrink-0">
+                <span className="text-lg leading-none">‹</span>
+              </button>
+              <button onClick={onHome} title="למסך הבית" className="flex items-center justify-center text-white bg-white/20 w-8 h-8 rounded-full flex-shrink-0">
+                <span className="text-sm leading-none">🏠</span>
+              </button>
+              <h1 className="flex-1 min-w-0 text-lg font-bold truncate text-right">{list.name}</h1>
               <button onClick={function() { setShowHeaderMenu(true); }} className="text-white text-lg w-8 h-8 flex items-center justify-center bg-white/20 rounded-full flex-shrink-0">☰</button>
             </div>
-            <h1 className="text-lg font-bold truncate text-right mt-2">{list.name}</h1>
-            {/* Notes lists skip the sort/filter toolbar entirely below, so
-                the counter has nowhere else to live — kept here only for
-                that case. */}
+            {/* Notes lists skip the toolbar entirely below, so the counter
+                has nowhere else to live — kept here only for that case. */}
             {isNotes && (
               <div className="flex items-center justify-end mt-2" dir="ltr">
                 <span className="text-white/50 text-xs">{notesSorted.filter(i=>i.done).length + "/" + notesSorted.length}</span>
@@ -4682,6 +4691,12 @@
                     <span className="text-lg">🔗</span><span className="text-sm font-medium text-gray-700">שתף רשימה</span>
                   </button>
                 )}
+                {!isNotes && doneCount > 0 && canEditAll && !isFiltered && (
+                  <button onClick={function() { setShowHeaderMenu(false); clearDone(); }}
+                    className="w-full text-right flex items-center gap-3 px-4 py-3 rounded-xl bg-gray-50 hover:bg-gray-100">
+                    <span className="text-lg">🗑️</span><span className="text-sm font-medium text-gray-700">{isTasks ? "מחק מטלות שהושלמו" : "מחק פריטים מהסל"}</span>
+                  </button>
+                )}
                 <button onClick={function() { setShowHeaderMenu(false); onMenu(); }}
                   className="w-full text-right flex items-center gap-3 px-4 py-3 rounded-xl bg-gray-50 hover:bg-gray-100">
                   <span className="text-lg">⚙️</span><span className="text-sm font-medium text-gray-700">הגדרות</span>
@@ -4692,14 +4707,10 @@
 
           {!isNotes && (
             <div className="bg-white border-b border-gray-100 px-4 py-2 flex-shrink-0 no-print">
-              <div className="flex items-center justify-between gap-2 flex-wrap">
-                <div className="flex items-center gap-1.5 flex-wrap">
-                  {pricingEnabled && singleShopProfile ? (
-                    <span className="text-xs font-semibold bg-blue-50 text-blue-700 px-3 py-1 rounded-full whitespace-nowrap">
-                      🏪 {profileLabel(singleShopProfile, activeProfiles)}
-                    </span>
-                  ) : !pricingEnabled ? (
-                    <div className="flex bg-gray-100 rounded-full p-0.5">
+              <div className="flex items-center justify-between gap-2">
+                <div className="flex items-center gap-1.5">
+                  {!pricingEnabled && (
+                    <div className="flex bg-gray-100 rounded-full p-0.5 flex-shrink-0">
                       <button onClick={function() { setSortBy("name"); }}
                         className={"text-xs px-3 py-1 rounded-full transition " + (sortBy==="name" ? "bg-white text-blue-600 font-semibold shadow-sm" : "text-gray-500")}>שם</button>
                       <button onClick={function() {
@@ -4712,32 +4723,40 @@
                         {profiles.length > 0 && <span style={{fontSize:"9px"}}>▾</span>}
                       </button>
                     </div>
-                  ) : null}
-                  {!(viewMode === "table" && pricingEnabled && !isTasks) && (
-                    <React.Fragment>
-                      {pricingEnabled && !isTasks && (
-                        <button onClick={function() { setFilterVendorProfile(function(p) { return p === "noBarcode" ? "all" : "noBarcode"; }); }}
-                          className={"text-xs px-2 py-1 rounded-full transition whitespace-nowrap flex-shrink-0 border " + (filterVendorProfile==="noBarcode" ? "bg-orange-50 text-orange-600 border-orange-200 font-semibold" : "bg-gray-50 text-gray-500 border-gray-200")}>
-                          ⚠ ללא ברקוד
-                        </button>
-                      )}
-                      <button onClick={function() { setShowFilters(function(p) { return !p; }); }}
-                        className={"text-xs px-2.5 py-1 rounded-full transition whitespace-nowrap flex-shrink-0 flex items-center gap-1 border " + (showFilters ? "bg-blue-50 text-blue-600 border-blue-200 font-semibold" : "bg-gray-50 text-gray-500 border-gray-200")}>
-                        מסננים {(filterStatus !== "all" || filterPerson !== "all" || singleShopId) && <span className="text-orange-500">●</span>}
-                      </button>
-                      {isFiltered && (
-                        <button onClick={clearAllFilters} className="text-gray-400 hover:text-gray-600 text-xs flex-shrink-0" title="נקה פילטרים">✕</button>
-                      )}
-                    </React.Fragment>
                   )}
-                </div>
-                <span className="text-xs text-gray-400 flex items-center gap-2 flex-shrink-0">
-                  {isFiltered ? filteredItems.length + "/" + items.length : doneCount + "/" + items.length}
-                  {doneCount > 0 && canEditAll && !isFiltered && (
-                    <button onClick={clearDone} className="bg-gray-100 text-gray-600 text-xs px-2.5 py-1 rounded-full font-medium whitespace-nowrap">
-                      🗑️ {isTasks ? "מחק הושלמו" : "מחק מסל"}
+                  {pricingEnabled && !isTasks && (
+                    <button onClick={openRefreshDialog} disabled={pricesRefreshing} title={pricesLoading ? "טוען מחירים..." : list.pricesRefreshedAt ? ("עודכן: " + formatRefreshTime(list.pricesRefreshedAt)) : "רענן מחירים"}
+                      className="w-8 h-8 rounded-full bg-gray-50 border border-gray-200 flex items-center justify-center text-blue-600 flex-shrink-0 disabled:opacity-50">
+                      {pricesRefreshing || pricesLoading ? <Spinner /> : <span className="text-sm">🔄</span>}
                     </button>
                   )}
+                  {pricingEnabled && !isTasks && (
+                    <button onClick={openPromoBrowser} title="מבצעים"
+                      className="w-8 h-8 rounded-full bg-gray-50 border border-gray-200 flex items-center justify-center text-gray-500 flex-shrink-0">
+                      <span className="text-sm">🏷️</span>
+                    </button>
+                  )}
+                  {pricingEnabled && !isTasks && (
+                    <button onClick={function() { setViewMode(viewMode === "table" ? "list" : "table"); }} title={viewMode === "table" ? "תצוגת רשימה" : "תצוגת טבלה"}
+                      className="w-8 h-8 rounded-full bg-gray-50 border border-gray-200 flex items-center justify-center text-gray-500 flex-shrink-0">
+                      <span className="text-sm">{viewMode === "table" ? "📋" : "🔢"}</span>
+                    </button>
+                  )}
+                  {!(viewMode === "table" && pricingEnabled && !isTasks) && (
+                    <button onClick={function() { setShowFilters(function(p) { return !p; }); }} title="מסננים"
+                      className={"relative w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0 border " + (showFilters ? "bg-blue-50 border-blue-200 text-blue-600" : "bg-gray-50 border-gray-200 text-gray-500")}>
+                      <span className="text-sm">🔍</span>
+                      {(filterStatus !== "all" || filterPerson !== "all" || singleShopId || filterVendorProfile === "noBarcode") && (
+                        <span className="absolute -top-0.5 -left-0.5 w-2 h-2 bg-orange-500 rounded-full" />
+                      )}
+                    </button>
+                  )}
+                  {isFiltered && !(viewMode === "table" && pricingEnabled && !isTasks) && (
+                    <button onClick={clearAllFilters} className="text-gray-400 hover:text-gray-600 text-xs flex-shrink-0" title="נקה פילטרים">✕</button>
+                  )}
+                </div>
+                <span className="text-xs text-gray-400 flex-shrink-0">
+                  {isFiltered ? filteredItems.length + "/" + items.length : doneCount + "/" + items.length}
                 </span>
               </div>
               {showFilters && !(viewMode === "table" && pricingEnabled && !isTasks) && (
@@ -4759,6 +4778,15 @@
                       })}
                     </div>
                   </div>
+                  {pricingEnabled && !isTasks && (
+                    <div>
+                      <div className="text-gray-400 text-xs mb-1">התאמת ברקוד</div>
+                      <button onClick={function() { setFilterVendorProfile(function(p) { return p === "noBarcode" ? "all" : "noBarcode"; }); }}
+                        className={"text-xs px-2.5 py-1 rounded-full transition whitespace-nowrap border " + (filterVendorProfile==="noBarcode" ? "bg-orange-50 text-orange-600 border-orange-200 font-semibold" : "bg-white text-gray-500 border-gray-200")}>
+                        ⚠ הצג רק ללא ברקוד
+                      </button>
+                    </div>
+                  )}
                   {pricingEnabled && Object.keys(vendorGroups).length > 0 && (
                     <div>
                       <div className="text-gray-400 text-xs mb-1">קבוצת רשתות</div>
@@ -4814,35 +4842,6 @@
                   )}
                 </div>
               )}
-            </div>
-          )}
-
-          {pricingEnabled && !isTasks && !isNotes && (
-            <div className="flex items-center justify-between bg-white border-b border-gray-100 px-4 py-1.5 flex-shrink-0 no-print">
-              <div className="flex items-center gap-2">
-                <button onClick={openRefreshDialog} disabled={pricesRefreshing}
-                  className="text-xs text-blue-600 font-medium flex items-center gap-1 disabled:opacity-50">
-                  {pricesRefreshing ? <Spinner /> : "🔄"} רענן מחירים
-                </button>
-                <button onClick={openPromoBrowser}
-                  className="text-xs text-gray-500 font-medium border border-gray-200 rounded-full px-2 py-0.5 flex items-center gap-1">
-                  🏷️ מבצעים
-                </button>
-              </div>
-              <div className="flex items-center gap-2">
-                {pricesLoading ? (
-                  <span className="text-xs text-blue-500 flex items-center gap-1">
-                    <span className="spinner w-3 h-3 border-2 border-blue-500 border-t-transparent rounded-full inline-block" />
-                    טוען מחירים...
-                  </span>
-                ) : list.pricesRefreshedAt && (
-                  <span className="text-xs text-gray-400">עודכן: {formatRefreshTime(list.pricesRefreshedAt)}</span>
-                )}
-                <button onClick={function() { setViewMode(viewMode === "table" ? "list" : "table"); }}
-                  className="text-xs text-gray-500 font-medium border border-gray-200 rounded-full px-2 py-0.5">
-                  {viewMode === "table" ? "📋 רשימה" : "🔢 טבלה"}
-                </button>
-              </div>
             </div>
           )}
 

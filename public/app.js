@@ -1,6 +1,6 @@
     const { useState, useEffect, useRef } = React;
 
-    const VERSION = "v6.38";
+    const VERSION = "v6.39";
 
     // ── CONFIG ────────────────────────────────────────────────────────────────────
     const FIREBASE_CONFIG = {
@@ -1013,7 +1013,12 @@
       // group, not summed across a user's groups.
       const [vendorGroups, setVendorGroups] = useState({});
       const [selectedGroupId, setSelectedGroupId] = useState(null);
-      const [settingsTab, setSettingsTab] = useState("general"); // "general" | "users" | "vendors"
+      // Remembers the last tab per user (not just per session) so reopening
+      // Settings later — even after a full reload — lands back where they
+      // left off instead of always resetting to כללי.
+      const [settingsTab, setSettingsTab] = useState(function() {
+        return localStorage.getItem("buli_settings_tab_" + user.uid) || "general";
+      }); // "general" | "users" | "vendors"
       const [newGroupName, setNewGroupName] = useState("");
       const [renamingGroupId, setRenamingGroupId] = useState(undefined); // undefined = not renaming; null is a valid target (the default group)
       const [renameGroupInput, setRenameGroupInput] = useState("");
@@ -1459,6 +1464,7 @@
       // panels reads as cluttered/confusing.
       const switchSettingsTab = function(tab) {
         setSettingsTab(tab);
+        localStorage.setItem("buli_settings_tab_" + user.uid, tab);
         setShowAISettings(false);
         setShowPricingSettings(false);
         setShowVendorRequests(false);
@@ -4220,7 +4226,7 @@
       // never-added) chain must never make an item look permanently unmatched.
       var activeVendorIds = activeProfiles.reduce(function(acc, p) { if (acc.indexOf(p.vendor) === -1) acc.push(p.vendor); return acc; }, []);
 
-      // Renaming an item (e.g. via EditItemModal) doesn't change items.length,
+      // Renaming an item (e.g. via ItemDialog) doesn't change items.length,
       // so it wouldn't otherwise re-trigger a re-resolve for a still-unmatched
       // item — this signature changes whenever any unresolved item's name does.
       var unresolvedSignature = items.filter(function(i) { return itemMissingVendors(i, activeVendorIds).length > 0; })
@@ -4366,7 +4372,12 @@
         db.ref("items/" + listId + "/" + updated.id).update({
           name: updated.name, quantity: updated.quantity !== "" && updated.quantity != null ? Number(updated.quantity) || 1 : null,
           unit: updated.unit, category: updated.category, note: updated.note || "",
-          barcode: updated.barcode || null, barcodes: updated.barcodes || null, originalName: updated.originalName || null
+          barcode: updated.barcode || null, barcodes: updated.barcodes || null, originalName: updated.originalName || null,
+          // The vendor tab now stages barcode/name matches locally (see
+          // ItemDialog) instead of writing each pick straight to the DB —
+          // matchedNames has to be saved here too now, or a pick made
+          // during this session would vanish the moment the dialog closes.
+          matchedNames: (updated.matchedNames && Object.keys(updated.matchedNames).length > 0) ? updated.matchedNames : null
         }).then(function() { showToast("פריט עודכן"); }, function(err) { showToast("שגיאה: " + (err && err.message || "?")); });
       };
 
@@ -4453,83 +4464,6 @@
           setPickerItem(null);
           setResolveBusy(false);
         }, function() { setResolveBusy(false); });
-      };
-
-      // Neither of these closes the edit dialog or opens a separate picker
-      // modal — they only populate candidatesByName, and EditItemModal
-      // renders the search bar, per-vendor scope, and results all inline in
-      // its own רשתות tab, so searching/picking/cancelling stay in one
-      // persistent view instead of swapping between different-looking
-      // screens.
-
-      // Non-destructive: searches every active vendor for the given query
-      // without touching any vendor's existing barcode match. The default
-      // scope in EditItemModal's search bar — much more convenient than
-      // matching one vendor at a time when most vendors carry the same
-      // product; per-vendor scope stays available for when they don't.
-      const matchAllVendors = (item, queryText) => {
-        var q = (queryText || item.name || "").trim();
-        if (!q) return;
-        setResolvingNames(function(prev) { var next = new Set(prev); next.add(item.name); return next; });
-        fns.httpsCallable("resolveItemBarcodes")({ items: [q], force: true, groupId: (list && list.vendorGroupId) || null }).then(function(res) {
-          setResolvingNames(function(prev) { var next = new Set(prev); next.delete(item.name); return next; });
-          var r = (res.data.results || {})[q];
-          setCandidatesByName(function(prev) {
-            var next = Object.assign({}, prev);
-            next[item.name] = { vendors: (r && r.missingVendors) || [], allVendors: (r && r.searchedVendors) || [], list: (r && r.candidates) || [] };
-            return next;
-          });
-        }, function() {
-          setResolvingNames(function(prev) { var next = new Set(prev); next.delete(item.name); return next; });
-          showToast("שגיאה בחיפוש");
-        });
-      };
-
-      // Searches (and lets the user confirm) a match for exactly one vendor,
-      // regardless of whether that vendor already has a match — reused for
-      // both "still missing" rows and "re-check this one" on an already-
-      // matched row, same action either way. Scoping the server call itself
-      // to `vendors: [vendorId]` keeps the candidate list scoped to just
-      // this vendor too (see fuzzyMatchCatalogs/resolveItemBarcodes).
-      const matchSingleVendor = (item, vendorId, queryText) => {
-        var q = (queryText || item.name || "").trim();
-        if (!q) return;
-        setResolvingNames(function(prev) { var next = new Set(prev); next.add(item.name); return next; });
-        fns.httpsCallable("resolveItemBarcodes")({ items: [q], force: true, vendors: [vendorId], groupId: (list && list.vendorGroupId) || null }).then(function(res) {
-          setResolvingNames(function(prev) { var next = new Set(prev); next.delete(item.name); return next; });
-          var r = (res.data.results || {})[q];
-          setCandidatesByName(function(prev) {
-            var next = Object.assign({}, prev);
-            next[item.name] = { vendors: (r && r.missingVendors) || [vendorId], allVendors: (r && r.searchedVendors) || [vendorId], list: (r && r.candidates) || [] };
-            return next;
-          });
-        }, function() {
-          setResolvingNames(function(prev) { var next = new Set(prev); next.delete(item.name); return next; });
-          showToast("שגיאה בחיפוש");
-        });
-      };
-
-      const cancelVendorMatch = function(itemName) {
-        setCandidatesByName(function(prev) {
-          var next = Object.assign({}, prev);
-          delete next[itemName];
-          return next;
-        });
-      };
-
-      // Explicit, separate from searching: wipes every vendor's existing
-      // barcode match and reverts the item's name to the given (editable in
-      // EditItemModal, defaults to what the user originally typed) name —
-      // does NOT search on its own, so it never fires a request the user
-      // didn't ask for; EditItemModal reloads its search box with the
-      // reverted name afterward so the user can edit and press חפש themselves.
-      const clearItemMatch = (item, revertToName) => {
-        var revertedName = (revertToName && revertToName.trim()) || item.originalName || item.name;
-        var cleared = { barcodes: null, barcode: null, originalName: null, name: revertedName, matchedNames: null };
-        setItems(function(prev) { return prev.map(function(i) { return i.id === item.id ? Object.assign({}, i, cleared) : i; }); });
-        db.ref("items/" + listId + "/" + item.id).update(cleared);
-        setEditItem(function(prev) { return prev ? Object.assign({}, prev, cleared) : prev; });
-        setCandidatesByName(function(prev) { var next = Object.assign({}, prev); delete next[item.name]; return next; });
       };
 
       const refineSearch = () => {
@@ -4781,7 +4715,7 @@
                   </span>
                 </div>
                 {showFilters && (
-                  <div className="mt-2 bg-white/10 rounded-2xl p-2.5 space-y-2.5">
+                  <div className="mt-2 bg-white/10 rounded-2xl p-2.5 space-y-2.5" dir="rtl">
                     <div className="flex justify-end">
                       <button onClick={function() { setShowFilters(false); }} className="text-white/50 hover:text-white text-sm w-6 h-6 flex items-center justify-center flex-shrink-0" title="סגור מסננים">✕</button>
                     </div>
@@ -4956,11 +4890,12 @@
             </button>
           )}
 
-          {editItem && <EditItemModal item={editItem} categories={categories} onChange={setEditItem} onSave={saveEdit} onClearMatch={clearItemMatch} pricingEnabled={pricingEnabled}
-            priceCandidates={candidatesByName[editItem.name]} onMatchVendor={matchSingleVendor} onMatchAllVendors={matchAllVendors} onCancelMatch={cancelVendorMatch} onPickCandidate={pickPriceCandidate} isResolving={resolvingNames.has(editItem.name)}
-            activeProfiles={activeProfiles} priceMap={priceMap} promoMap={promoMap} onClose={() => setEditItem(null)} />}
-          {showQuickAdd && <QuickAddItemModal listId={listId} groupId={(list && list.vendorGroupId) || null} user={user} categories={categories}
-            activeProfiles={activeProfiles} showToast={showToast} onInsert={insertQuickAddItem} onCancel={() => setShowQuickAdd(false)} />}
+          {editItem && <ItemDialog mode="edit" item={editItem} categories={categories} pricingEnabled={pricingEnabled}
+            activeProfiles={activeProfiles} groupId={(list && list.vendorGroupId) || null} seedPriceMap={priceMap} seedPromoMap={promoMap}
+            onSave={saveEdit} onClose={() => setEditItem(null)} showToast={showToast} />}
+          {showQuickAdd && <ItemDialog mode="add" categories={categories} pricingEnabled={pricingEnabled}
+            activeProfiles={activeProfiles} groupId={(list && list.vendorGroupId) || null}
+            onInsert={insertQuickAddItem} onClose={() => setShowQuickAdd(false)} showToast={showToast} />}
           {noteEdit && <NoteEditModal item={noteEdit} onSave={saveNoteEdit} onClose={function() { setNoteEdit(null); }} />}
           {taskEdit && <TaskEditModal item={taskEdit} onChange={setTaskEdit} onSave={saveTaskEdit} onDelete={deleteTask} onClose={() => setTaskEdit(null)} />}
           {confirmDialog && <ConfirmDialog message={confirmDialog.message} confirmLabel={confirmDialog.confirmLabel} onConfirm={confirmDialog.onConfirm} onClose={function() { setConfirmDialog(null); }} />}
@@ -5583,282 +5518,11 @@
       );
     }
 
-    function EditItemModal({ item, categories, onChange, onSave, onClearMatch, onCancelMatch, onPickCandidate, pricingEnabled, priceCandidates, onMatchVendor, onMatchAllVendors, isResolving, activeProfiles, priceMap, promoMap, onClose }) {
-      const [editTab, setEditTab] = useState(pricingEnabled ? "vendors" : "details");
-      const showVendorsTab = pricingEnabled && editTab === "vendors";
-      // Scope null = search every active vendor at once (the default — much
-      // more convenient than one-by-one when most vendors carry the exact
-      // same product); a vendor id scopes to just that one, for when the
-      // same item has a different product/barcode per vendor. Nothing
-      // searches until חפש is pressed.
-      const [searchScope, setSearchScope] = useState(null);
-      const [searchQuery, setSearchQuery] = useState(item.originalName || item.name || "");
-      // Switching which vendor is being searched also refreshes the query
-      // box to that vendor's own matched name (or the generic item name for
-      // the "all vendors" scope) — not always a shared generic name.
-      const selectScope = function(vendorId) {
-        setSearchScope(vendorId);
-        // A vendor that's already matched gets its own matched name; one
-        // that isn't yet should start from the originally typed name (more
-        // likely to find a fresh match) rather than whatever the item's
-        // shared name happens to be right now.
-        setSearchQuery((vendorId && itemVendorMatchedName(item, vendorId)) || item.originalName || item.name || "");
-      };
-      const runSearch = function() {
-        var q = searchQuery.trim();
-        if (!q) return;
-        if (searchScope) onMatchVendor(item, searchScope, q);
-        else onMatchAllVendors(item, q);
-      };
-      // "מצא מחיר" on an unmatched vendor row — same as picking that vendor
-      // then pressing חפש, just in one tap instead of two.
-      const findPriceForVendor = function(vendorId) {
-        var q = (item.originalName || item.name || "").trim();
-        setSearchScope(vendorId);
-        setSearchQuery(q);
-        if (!q) return;
-        onMatchVendor(item, vendorId, q);
-      };
-      return (
-        <Modal onClose={onClose}>
-          <h3 className="text-lg font-bold text-center mb-1">עריכת פריט</h3>
-          {/* Per-vendor status (barcode, price, promo) moved to its own tab —
-              a full row per vendor next to the name/qty/category/note fields
-              was too much in one scroll, and this mirrors the same tab
-              pattern already used in Settings. */}
-          {pricingEnabled && (
-            <div className="flex bg-gray-100 rounded-xl p-1 mb-4">
-              {[["details", "פרטי פריט"], ["vendors", "רשתות"]].map(function(tab) {
-                var key = tab[0], label = tab[1];
-                return (
-                  <button key={key} onClick={function() { setEditTab(key); }}
-                    className={"flex-1 py-2 rounded-lg text-sm font-medium transition " + (editTab === key ? "bg-white shadow text-blue-600" : "text-gray-500")}>
-                    {label}
-                  </button>
-                );
-              })}
-            </div>
-          )}
-          {!showVendorsTab && (
-          <div className="space-y-3">
-            <div>
-              <label className="text-xs text-gray-500 block mb-1">שם</label>
-              <input value={item.name || ""} onChange={e => onChange({...item, name: e.target.value})}
-                className="w-full border border-gray-200 rounded-xl px-4 py-3 text-right focus:outline-none focus:border-blue-400" />
-            </div>
-            <div className="grid grid-cols-2 gap-2">
-              <div>
-                <label className="text-xs text-gray-500 block mb-1">כמות</label>
-                {/* +/- buttons instead of relying on the native number input's
-                    tiny spinner arrows (or opening the keyboard) just to bump
-                    a quantity by 1 — the single most common edit here. */}
-                <div className="flex items-center gap-1">
-                  <button type="button"
-                    onClick={() => onChange({...item, quantity: Math.max(0.1, Math.round(((parseFloat(item.quantity) || 1) - 1) * 10) / 10)})}
-                    className="w-10 h-11 rounded-xl bg-gray-100 text-gray-600 text-xl font-bold flex items-center justify-center active:bg-gray-200 flex-shrink-0">−</button>
-                  <input type="number" min="0.1" step="0.1" value={item.quantity || ""} onChange={e => onChange({...item, quantity: e.target.value})}
-                    className="w-full min-w-0 border border-gray-200 rounded-xl px-1 py-3 text-center focus:outline-none focus:border-blue-400" />
-                  <button type="button"
-                    onClick={() => onChange({...item, quantity: Math.round(((parseFloat(item.quantity) || 0) + 1) * 10) / 10})}
-                    className="w-10 h-11 rounded-xl bg-blue-50 text-blue-600 text-xl font-bold flex items-center justify-center active:bg-blue-100 flex-shrink-0">+</button>
-                </div>
-              </div>
-              <div>
-                <label className="text-xs text-gray-500 block mb-1">יחידה</label>
-                <select value={item.unit || "יחידות"} onChange={e => onChange({...item, unit: e.target.value})}
-                  className="w-full border border-gray-200 rounded-xl px-3 py-3 text-right focus:outline-none focus:border-blue-400 bg-white">
-                  {UNITS.map(u => <option key={u} value={u}>{u}</option>)}
-                </select>
-              </div>
-            </div>
-            <div>
-              <label className="text-xs text-gray-500 block mb-1">קטגוריה</label>
-              <div className="flex flex-wrap gap-1.5 max-h-28 overflow-y-auto">
-                {categories.map(cat => (
-                  <button key={cat.id} onClick={() => onChange({...item, category: cat.label})}
-                    className={`text-xs px-2.5 py-1 rounded-full border transition ${item.category===cat.label?"bg-blue-600 text-white border-blue-600":"bg-white text-gray-600 border-gray-200"}`}>
-                    {cat.emoji} {cat.label}
-                  </button>
-                ))}
-              </div>
-            </div>
-            <div>
-              <label className="text-xs text-gray-500 block mb-1">הערה</label>
-              <input value={item.note || ""} onChange={e => onChange({...item, note: e.target.value})} placeholder="אופציונלי"
-                className="w-full border border-gray-200 rounded-xl px-4 py-3 text-right focus:outline-none focus:border-blue-400" />
-            </div>
-          </div>
-          )}
-          {showVendorsTab && (function() {
-            var rows = (activeProfiles || []).map(function(p) {
-              var bc = itemVendorBarcode(item, p.vendor);
-              var vendorPrices = priceMap ? priceMap[p.id] : null;
-              var fetched = !!(bc && vendorPrices && (bc in vendorPrices));
-              var price = fetched ? vendorPrices[bc] : null;
-              var promo = (bc && promoMap && promoMap[p.id]) ? promoMap[p.id][bc] : null;
-              var promoActive = !!(promo && (parseFloat(item.quantity) || 1) >= (promo.minQty || 1));
-              return { p: p, bc: bc, fetched: fetched, price: price, promo: promo, promoActive: promoActive, effective: promoActive ? promo.price : price };
-            });
-            return (
-            <div className="space-y-2">
-              {item.originalName && (
-                <div className="text-xs text-gray-500 bg-blue-50 border border-blue-100 rounded-xl p-3 space-y-2">
-                  <div className="flex items-center gap-2">
-                    <span className="flex-shrink-0">שם מקורי:</span>
-                    {/* Bound directly to the item, like every other field
-                        here — שמור שינויים persists it, it isn't local-only
-                        state that only takes effect via נקה והתחל מחדש. */}
-                    <input value={item.originalName || ""} dir="rtl"
-                      onChange={function(e) { onChange({ ...item, originalName: e.target.value }); }}
-                      className="flex-1 min-w-0 border border-blue-200 rounded-lg px-2 py-1 text-xs bg-white focus:outline-none focus:border-blue-400" />
-                    <button type="button" onClick={function() { setSearchQuery(item.originalName || ""); }}
-                      disabled={!item.originalName} title="העתק לתיבת החיפוש"
-                      className="px-2 py-1 rounded-lg border border-blue-200 text-gray-500 bg-white disabled:opacity-40 flex-shrink-0">
-                      📋
-                    </button>
-                  </div>
-                  <button onClick={function() {
-                    var revertTo = (item.originalName && item.originalName.trim()) || item.name || "";
-                    onClearMatch(item, revertTo);
-                    setSearchQuery(revertTo);
-                    setSearchScope(null);
-                  }} className="text-blue-600 font-medium">נקה והתחל מחדש</button>
-                </div>
-              )}
-              {/* One persistent search bar — searching every vendor at once
-                  or just one is a scope choice (כל הרשתות, or tapping a
-                  vendor's status row below), not a different screen. Nothing
-                  runs until חפש is pressed. */}
-              <div className="flex gap-2">
-                <input value={searchQuery} dir="rtl" placeholder="שם המוצר לחיפוש"
-                  onChange={function(e) { setSearchQuery(e.target.value); }}
-                  onKeyDown={function(e) { if (e.key === "Enter") runSearch(); }}
-                  className="flex-1 min-w-0 border border-gray-200 rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:border-blue-400" />
-                {item.originalName && (
-                  <button type="button" onClick={function() { onChange({ ...item, originalName: searchQuery.trim() }); }}
-                    disabled={!searchQuery.trim()} title="העתק לשם המקורי"
-                    className="px-3 rounded-xl border border-gray-200 text-gray-500 disabled:opacity-40 flex-shrink-0">
-                    📋
-                  </button>
-                )}
-                <button onClick={runSearch} disabled={!searchQuery.trim() || isResolving}
-                  className="px-4 rounded-xl bg-blue-600 text-white text-sm font-medium disabled:opacity-40 flex-shrink-0">
-                  {isResolving ? <Spinner /> : "חפש"}
-                </button>
-              </div>
-              <button onClick={function() { selectScope(null); }}
-                className={"text-xs px-3 py-1.5 rounded-full border font-medium " + (searchScope === null ? "bg-blue-600 text-white border-blue-600" : "bg-white text-gray-600 border-gray-200")}>
-                כל הרשתות
-              </button>
-              {priceCandidates && priceCandidates.list && (
-                // Search results, shown inline right under the search bar —
-                // picking or dismissing both stay in this same view.
-                <div className="border-2 border-blue-100 bg-blue-50/40 rounded-2xl p-2">
-                  <div className="flex items-center justify-between mb-1">
-                    <button onClick={() => onCancelMatch(item.name)} className="text-xs text-gray-400 font-medium">✕ סגור תוצאות</button>
-                    <div className="text-xs font-semibold text-gray-500">תוצאות חיפוש</div>
-                  </div>
-                  <div className="space-y-2 max-h-60 overflow-y-auto">
-                    {priceCandidates.list.length === 0 ? (
-                      <p className="text-center text-gray-400 text-xs py-4">לא נמצאו התאמות</p>
-                    ) : priceCandidates.list.map(function(c) {
-                      var searchedVendors = priceCandidates.vendors || [];
-                      return (
-                        <button key={c.barcode} onClick={() => { onPickCandidate(item, c); onCancelMatch(item.name); }}
-                          className="w-full text-right rounded-xl px-3 py-2.5 bg-white hover:bg-gray-50 border border-gray-100">
-                          <div className="text-sm font-medium text-gray-800">{c.name}</div>
-                          <div className="text-xs text-gray-500 mb-1">
-                            {c.manufacturer ? ("יצרן/מותג: " + c.manufacturer + " · ") : ""}ברקוד: {c.barcode}
-                          </div>
-                          <div className="flex items-center gap-1.5 flex-wrap">
-                            {searchedVendors.map(function(v) {
-                              var meta = VENDOR_LIST.find(function(x) { return x.id === v; });
-                              var price = c.prices ? c.prices[v] : null;
-                              var promo = c.promoPrices ? c.promoPrices[v] : null;
-                              var promoActive = !!(promo && price != null && promo.price < price);
-                              return (
-                                <span key={v} className="text-xs bg-white border border-gray-200 rounded-full px-2 py-0.5">
-                                  {meta ? meta.label : v}: {promoActive ? ("₪" + promo.price.toFixed(2) + "*") : (price != null ? "₪" + Number(price).toFixed(2) : "לא נמכר כאן")}
-                                </span>
-                              );
-                            })}
-                          </div>
-                        </button>
-                      );
-                    })}
-                  </div>
-                </div>
-              )}
-              {/* Current match status, always visible — never hidden behind
-                  the search flow. Color reflects which vendor is actually
-                  cheapest (using the promo price where one applies) — the
-                  "*" is the only thing that marks a promo, color is never
-                  hijacked by it. Tapping a row just selects it as the
-                  search scope above, it doesn't search by itself. */}
-              <div className="space-y-1.5">
-                {rows.map(function(row) {
-                  var others = rows.filter(function(r) { return r.p.id !== row.p.id; }).map(function(r) { return r.effective; });
-                  var textClass = (!row.bc || !row.fetched || row.price == null) ? "text-gray-400" : cheapestTextClass(row.effective, others);
-                  // Both "never matched" and "matched, but this vendor
-                  // doesn't actually sell that barcode" need the same fix —
-                  // search again for this vendor — so both get the same
-                  // one-tap action instead of a dead-end status label.
-                  var needsAction = !row.bc || (row.fetched && row.price == null);
-                  var statusText;
-                  if (needsAction) statusText = null;
-                  else if (!row.fetched) statusText = "בודק מחיר...";
-                  else if (row.promoActive) statusText = "₪" + row.promo.price.toFixed(2) + "* (₪" + row.price.toFixed(2) + ")";
-                  else statusText = "₪" + row.price.toFixed(2);
-                  var matchedName = itemVendorMatchedName(item, row.p.vendor);
-                  return (
-                    <button key={row.p.id} onClick={function() { if (needsAction) findPriceForVendor(row.p.vendor); else selectScope(row.p.vendor); }}
-                      className={"w-full flex items-center justify-between gap-2 rounded-xl px-3 py-2.5 hover:bg-gray-100 text-right " + (searchScope === row.p.vendor ? "bg-blue-50 ring-1 ring-blue-200" : "bg-gray-50")}>
-                      <div className="min-w-0 flex-1">
-                        <div className="text-sm text-gray-700">{profileLabel(row.p, activeProfiles)}</div>
-                        {(matchedName || row.bc) && (
-                          <div className="text-[10px] text-gray-400 truncate flex items-center gap-1">
-                            {matchedName && <span className="text-gray-500">{matchedName}</span>}
-                            {row.bc && <span className="font-mono" dir="ltr">{row.bc}</span>}
-                          </div>
-                        )}
-                      </div>
-                      {needsAction ? (
-                        <span className="text-xs flex-shrink-0 font-semibold text-blue-600 bg-blue-50 px-2.5 py-1 rounded-full">🔍 מצא מחיר</span>
-                      ) : (
-                        <span className={"text-xs flex-shrink-0 font-semibold " + textClass}>{statusText}</span>
-                      )}
-                    </button>
-                  );
-                })}
-              </div>
-              {itemHasMixedVendorMatches(item, rows.map(function(r) { return r.p.vendor; })) && (
-                <div className="text-[11px] text-amber-600 bg-amber-50 border border-amber-100 rounded-xl px-3 py-2">
-                  ⚠️ הרשתות מותאמות לברקודים שונים — ייתכן שאלו מוצרים שונים (למשל גודל אריזה שונה), לא בהכרח אותו פריט
-                </div>
-              )}
-            </div>
-            );
-          })()}
-          <button onClick={() => onSave(item)} disabled={!item.name || !item.name.trim()}
-            className="w-full bg-blue-600 text-white py-4 rounded-2xl font-semibold mt-5 disabled:opacity-40">
-            שמור שינויים
-          </button>
-        </Modal>
-      );
-    }
-
-    // ── QUICK ADD (one-at-a-time, with price check) ─────────────────────────────
-    // A self-contained wizard for the "add items one at a time" preference:
-    // details tab (name/qty/category/note) then a רשתות tab that reuses the
-    // same search/scope/candidate pattern as EditItemModal, but against a
-    // local draft — nothing is written to the list until "הוסף לרשימה".
-    // No X/backdrop/swipe close (Modal disableClose) — only the two explicit
-    // buttons at the bottom can leave, per how this was scoped.
     // Reusable "search a name across active vendors, pick a candidate, see
-    // per-vendor status rows" panel — the shared core of both the quick-add
-    // wizard (list-bound) and the standalone בדיקת מחיר check (no list at
-    // all yet). All state lives in the parent (it needs the draft after the
-    // panel unmounts), this just renders and mutates it via the setters.
+    // per-vendor status rows" panel — the shared core of both dialog modes
+    // below (and the standalone בדיקת מחיר check further down, which has no
+    // list at all). All state lives in the parent (it needs the draft after
+    // the panel unmounts), this just renders and mutates it via the setters.
     function VendorMatchPanel({ draft, setDraft, activeProfiles, groupId, showToast,
       searchScope, setSearchScope, searchQuery, setSearchQuery,
       candidates, setCandidates, isResolving, setIsResolving,
@@ -5954,8 +5618,8 @@
           {candidates && (
             <div className="border-2 border-blue-100 bg-blue-50/40 rounded-2xl p-2">
               <div className="flex items-center justify-between mb-1">
-                <button onClick={function() { setCandidates(null); }} className="text-xs text-gray-400 font-medium">✕ סגור תוצאות</button>
                 <div className="text-xs font-semibold text-gray-500">תוצאות חיפוש</div>
+                <button onClick={function() { setCandidates(null); }} className="text-gray-400 hover:text-gray-600 text-lg leading-none w-6 h-6 flex items-center justify-center flex-shrink-0" title="סגור תוצאות">✕</button>
               </div>
               <div className="space-y-2 max-h-60 overflow-y-auto">
                 {candidates.list.length === 0 ? (
@@ -6028,118 +5692,201 @@
       );
     }
 
-    function QuickAddItemModal({ listId, groupId, user, categories, activeProfiles, onInsert, onCancel, showToast }) {
+    // ── ITEM DIALOG (add + edit, one component) ──────────────────────────────────
+    // Both flows are "type a name, optionally search/pick a price match per
+    // vendor, save" — the only real differences are where the starting data
+    // comes from and what the primary button does, so they share one
+    // implementation instead of two parallel dialogs that drift apart.
+    // Vendor matches are staged in local `draft` state and only committed
+    // (via onSave/onInsert) when the user actually saves — cancelling now
+    // genuinely discards everything, in both modes, including mid-session
+    // picks (previously edit mode wrote each pick straight to the DB).
+    function ItemDialog({ mode, item, categories, pricingEnabled, activeProfiles, groupId,
+      seedPriceMap, seedPromoMap, onSave, onInsert, onClose, showToast }) {
+      const isEdit = mode === "edit";
       const blankDraft = function() {
-        return { name: "", category: "שונות", categoryEmoji: "🛍️", quantity: 1, unit: "יחידות", note: "", barcodes: {}, matchedNames: {} };
+        return { name: "", category: "שונות", categoryEmoji: "🛍️", quantity: 1, unit: "יחידות", note: "", barcodes: {}, matchedNames: {}, originalName: null };
       };
-      const [draft, setDraft] = useState(blankDraft());
-      const [tab, setTab] = useState("details");
+      const [draft, setDraft] = useState(function() {
+        if (!isEdit || !item) return blankDraft();
+        // Migrate the legacy single shared `barcode` field (pre-existing
+        // items from before chains got independent barcodes) into the
+        // per-vendor map here, so an old item doesn't look unmatched for
+        // every vendor just because it predates that change.
+        var barcodes = Object.assign({}, item.barcodes || {});
+        if (item.barcode) (activeProfiles || []).forEach(function(p) { if (!barcodes[p.vendor]) barcodes[p.vendor] = item.barcode; });
+        return Object.assign({}, blankDraft(), item, { barcodes: barcodes, matchedNames: item.matchedNames || {} });
+      });
+      const [tab, setTab] = useState(isEdit && pricingEnabled ? "vendors" : "details");
       const [searchScope, setSearchScope] = useState(null); // null = כל הרשתות
-      const [searchQuery, setSearchQuery] = useState("");
+      const [searchQuery, setSearchQuery] = useState(draft.originalName || draft.name || "");
       const [candidates, setCandidates] = useState(null); // { vendors, list } | null
       const [isResolving, setIsResolving] = useState(false);
-      const [priceMap, setPriceMap] = useState({});   // { profileId: { barcode: price } }
-      const [promoMap, setPromoMap] = useState({});   // { profileId: { barcode: promoInfo } }
+      // Edit mode seeds from the list's already-known prices (a snapshot at
+      // open time) so already-matched vendors show real prices immediately
+      // instead of "בודק מחיר..."; add mode starts empty, nothing is known yet.
+      const [priceMap, setPriceMap] = useState(function() { return (isEdit && seedPriceMap) ? seedPriceMap : {}; });
+      const [promoMap, setPromoMap] = useState(function() { return (isEdit && seedPromoMap) ? seedPromoMap : {}; });
       const [saving, setSaving] = useState(false);
 
-      const handleInsert = function() {
+      const showVendorsTab = pricingEnabled && tab === "vendors";
+
+      const clearMatch = function() {
+        var revertTo = (draft.originalName && draft.originalName.trim()) || draft.name || "";
+        setDraft(function(prev) { return Object.assign({}, prev, { barcodes: {}, matchedNames: {}, originalName: null, name: revertTo }); });
+        setSearchQuery(revertTo);
+        setSearchScope(null);
+        setCandidates(null);
+        setPriceMap({});
+        setPromoMap({});
+      };
+
+      const handlePrimary = function() {
         if (!draft.name.trim() || saving) return;
         setSaving(true);
-        onInsert(draft, function() {
-          setSaving(false);
-          setDraft(blankDraft());
-          setTab("details");
-          setSearchScope(null);
-          setSearchQuery("");
-          setCandidates(null);
-          setPriceMap({});
-          setPromoMap({});
-        });
+        if (isEdit) {
+          onSave(draft);
+        } else {
+          onInsert(draft, function() {
+            setSaving(false);
+            setDraft(blankDraft());
+            setTab("details");
+            setSearchScope(null);
+            setSearchQuery("");
+            setCandidates(null);
+            setPriceMap({});
+            setPromoMap({});
+          });
+        }
       };
 
       return (
-        <Modal onClose={onCancel} disableClose>
-          <h3 className="text-lg font-bold text-center mb-1">הוספת פריט</h3>
-          <div className="flex bg-gray-100 rounded-xl p-1 mb-4">
-            {[["details", "פרטי פריט"], ["vendors", "בדיקת מחירים"]].map(function(t) {
-              var key = t[0], label = t[1];
-              return (
-                <button key={key} onClick={function() {
-                  // Moving into the price-check tab should start the search
-                  // from whatever name was just typed, not a blank box —
-                  // only fills in if the box is still empty so it doesn't
-                  // clobber a query the user already edited themselves.
-                  if (key === "vendors" && !searchQuery.trim() && draft.name.trim()) setSearchQuery(draft.name);
-                  setTab(key);
-                }}
-                  className={"flex-1 py-2 rounded-lg text-sm font-medium transition " + (tab === key ? "bg-white shadow text-blue-600" : "text-gray-500")}>
-                  {label}
-                </button>
-              );
-            })}
-          </div>
-          {tab === "details" && (
-            <div className="space-y-3">
-              <div>
-                <label className="text-xs text-gray-500 block mb-1">שם</label>
-                <input value={draft.name} autoFocus onChange={function(e) { setDraft(Object.assign({}, draft, { name: e.target.value })); }}
-                  className="w-full border border-gray-200 rounded-xl px-4 py-3 text-right focus:outline-none focus:border-blue-400" />
-              </div>
-              <div className="grid grid-cols-2 gap-2">
-                <div>
-                  <label className="text-xs text-gray-500 block mb-1">כמות</label>
-                  <div className="flex items-center gap-1">
-                    <button type="button"
-                      onClick={function() { setDraft(Object.assign({}, draft, { quantity: Math.max(0.1, Math.round(((parseFloat(draft.quantity) || 1) - 1) * 10) / 10) })); }}
-                      className="w-10 h-11 rounded-xl bg-gray-100 text-gray-600 text-xl font-bold flex items-center justify-center active:bg-gray-200 flex-shrink-0">−</button>
-                    <input type="number" min="0.1" step="0.1" value={draft.quantity} onChange={function(e) { setDraft(Object.assign({}, draft, { quantity: e.target.value })); }}
-                      className="w-full min-w-0 border border-gray-200 rounded-xl px-1 py-3 text-center focus:outline-none focus:border-blue-400" />
-                    <button type="button"
-                      onClick={function() { setDraft(Object.assign({}, draft, { quantity: Math.round(((parseFloat(draft.quantity) || 0) + 1) * 10) / 10 })); }}
-                      className="w-10 h-11 rounded-xl bg-blue-50 text-blue-600 text-xl font-bold flex items-center justify-center active:bg-blue-100 flex-shrink-0">+</button>
-                  </div>
-                </div>
-                <div>
-                  <label className="text-xs text-gray-500 block mb-1">יחידה</label>
-                  <select value={draft.unit} onChange={function(e) { setDraft(Object.assign({}, draft, { unit: e.target.value })); }}
-                    className="w-full border border-gray-200 rounded-xl px-3 py-3 text-right focus:outline-none focus:border-blue-400 bg-white">
-                    {UNITS.map(function(u) { return <option key={u} value={u}>{u}</option>; })}
-                  </select>
-                </div>
-              </div>
-              <div>
-                <label className="text-xs text-gray-500 block mb-1">קטגוריה</label>
-                <div className="flex flex-wrap gap-1.5 max-h-28 overflow-y-auto">
-                  {(categories && categories.length > 0 ? categories : DEFAULT_CATEGORIES).map(function(cat) {
-                    return (
-                      <button key={cat.id} onClick={function() { setDraft(Object.assign({}, draft, { category: cat.label, categoryEmoji: cat.emoji })); }}
-                        className={"text-xs px-2.5 py-1 rounded-full border transition " + (draft.category === cat.label ? "bg-blue-600 text-white border-blue-600" : "bg-white text-gray-600 border-gray-200")}>
-                        {cat.emoji} {cat.label}
-                      </button>
-                    );
-                  })}
-                </div>
-              </div>
-              <div>
-                <label className="text-xs text-gray-500 block mb-1">הערה</label>
-                <input value={draft.note} onChange={function(e) { setDraft(Object.assign({}, draft, { note: e.target.value })); }} placeholder="אופציונלי"
-                  className="w-full border border-gray-200 rounded-xl px-4 py-3 text-right focus:outline-none focus:border-blue-400" />
-              </div>
+        <Modal onClose={onClose} disableClose={!isEdit}>
+          <h3 className="text-lg font-bold text-center mb-1">{isEdit ? "עריכת פריט" : "הוספת פריט"}</h3>
+          {/* Per-vendor status (barcode, price, promo) lives in its own tab —
+              a full row per vendor next to the name/qty/category/note fields
+              was too much in one scroll, and this mirrors the same tab
+              pattern already used in Settings. */}
+          {pricingEnabled && (
+            <div className="flex bg-gray-100 rounded-xl p-1 mb-4">
+              {[["details", "פרטי פריט"], ["vendors", isEdit ? "רשתות" : "בדיקת מחירים"]].map(function(t) {
+                var key = t[0], label = t[1];
+                return (
+                  <button key={key} onClick={function() {
+                    // Moving into the price-check tab should start the search
+                    // from whatever name is currently set, not a blank box —
+                    // only fills in if the box is still empty so it doesn't
+                    // clobber a query the user already edited themselves.
+                    if (key === "vendors" && !searchQuery.trim() && draft.name.trim()) setSearchQuery(draft.name);
+                    setTab(key);
+                  }}
+                    className={"flex-1 py-2 rounded-lg text-sm font-medium transition " + (tab === key ? "bg-white shadow text-blue-600" : "text-gray-500")}>
+                    {label}
+                  </button>
+                );
+              })}
             </div>
           )}
-          {tab === "vendors" && (
-            <VendorMatchPanel draft={draft} setDraft={setDraft} activeProfiles={activeProfiles} groupId={groupId} showToast={showToast}
-              searchScope={searchScope} setSearchScope={setSearchScope} searchQuery={searchQuery} setSearchQuery={setSearchQuery}
-              candidates={candidates} setCandidates={setCandidates} isResolving={isResolving} setIsResolving={setIsResolving}
-              priceMap={priceMap} setPriceMap={setPriceMap} promoMap={promoMap} setPromoMap={setPromoMap} />
-          )}
-          <div className="flex gap-2 mt-5">
-            <button onClick={onCancel} className="flex-1 py-4 rounded-2xl border border-gray-200 text-gray-600 font-medium">ביטול</button>
-            <button onClick={handleInsert} disabled={!draft.name.trim() || saving}
-              className="flex-1 bg-blue-600 text-white py-4 rounded-2xl font-semibold disabled:opacity-40">
-              {saving ? <Spinner /> : "הוסף לרשימה"}
-            </button>
+          {/* Fixed min-height so switching tabs doesn't visibly resize the
+              dialog — details and vendors have very different natural
+              heights otherwise. */}
+          <div style={{ minHeight: 360 }}>
+          {!showVendorsTab && (
+          <div className="space-y-3">
+            <div>
+              <label className="text-xs text-gray-500 block mb-1">שם</label>
+              <input value={draft.name} autoFocus={!isEdit} onChange={function(e) { setDraft(Object.assign({}, draft, { name: e.target.value })); }}
+                className="w-full border border-gray-200 rounded-xl px-4 py-3 text-right focus:outline-none focus:border-blue-400" />
+            </div>
+            <div className="grid grid-cols-2 gap-2">
+              <div>
+                <label className="text-xs text-gray-500 block mb-1">כמות</label>
+                {/* +/- buttons instead of relying on the native number input's
+                    tiny spinner arrows (or opening the keyboard) just to bump
+                    a quantity by 1 — the single most common edit here. */}
+                <div className="flex items-center gap-1">
+                  <button type="button"
+                    onClick={function() { setDraft(Object.assign({}, draft, { quantity: Math.max(0.1, Math.round(((parseFloat(draft.quantity) || 1) - 1) * 10) / 10) })); }}
+                    className="w-10 h-11 rounded-xl bg-gray-100 text-gray-600 text-xl font-bold flex items-center justify-center active:bg-gray-200 flex-shrink-0">−</button>
+                  <input type="number" min="0.1" step="0.1" value={draft.quantity} onChange={function(e) { setDraft(Object.assign({}, draft, { quantity: e.target.value })); }}
+                    className="w-full min-w-0 border border-gray-200 rounded-xl px-1 py-3 text-center focus:outline-none focus:border-blue-400" />
+                  <button type="button"
+                    onClick={function() { setDraft(Object.assign({}, draft, { quantity: Math.round(((parseFloat(draft.quantity) || 0) + 1) * 10) / 10 })); }}
+                    className="w-10 h-11 rounded-xl bg-blue-50 text-blue-600 text-xl font-bold flex items-center justify-center active:bg-blue-100 flex-shrink-0">+</button>
+                </div>
+              </div>
+              <div>
+                <label className="text-xs text-gray-500 block mb-1">יחידה</label>
+                <select value={draft.unit} onChange={function(e) { setDraft(Object.assign({}, draft, { unit: e.target.value })); }}
+                  className="w-full border border-gray-200 rounded-xl px-3 py-3 text-right focus:outline-none focus:border-blue-400 bg-white">
+                  {UNITS.map(function(u) { return <option key={u} value={u}>{u}</option>; })}
+                </select>
+              </div>
+            </div>
+            <div>
+              <label className="text-xs text-gray-500 block mb-1">קטגוריה</label>
+              <div className="flex flex-wrap gap-1.5 max-h-28 overflow-y-auto">
+                {(categories && categories.length > 0 ? categories : DEFAULT_CATEGORIES).map(function(cat) {
+                  return (
+                    <button key={cat.id} onClick={function() { setDraft(Object.assign({}, draft, { category: cat.label, categoryEmoji: cat.emoji })); }}
+                      className={"text-xs px-2.5 py-1 rounded-full border transition " + (draft.category === cat.label ? "bg-blue-600 text-white border-blue-600" : "bg-white text-gray-600 border-gray-200")}>
+                      {cat.emoji} {cat.label}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+            <div>
+              <label className="text-xs text-gray-500 block mb-1">הערה</label>
+              <input value={draft.note} onChange={function(e) { setDraft(Object.assign({}, draft, { note: e.target.value })); }} placeholder="אופציונלי"
+                className="w-full border border-gray-200 rounded-xl px-4 py-3 text-right focus:outline-none focus:border-blue-400" />
+            </div>
           </div>
+          )}
+          {showVendorsTab && (
+            <div className="space-y-2">
+              {draft.originalName && (
+                <div className="text-xs text-gray-500 bg-blue-50 border border-blue-100 rounded-xl p-3 space-y-2">
+                  <div className="flex items-center gap-2">
+                    <span className="flex-shrink-0">שם מקורי:</span>
+                    <input value={draft.originalName || ""} dir="rtl"
+                      onChange={function(e) { setDraft(Object.assign({}, draft, { originalName: e.target.value })); }}
+                      className="flex-1 min-w-0 border border-blue-200 rounded-lg px-2 py-1 text-xs bg-white focus:outline-none focus:border-blue-400" />
+                    <button type="button" onClick={function() { setSearchQuery(draft.originalName || ""); }}
+                      disabled={!draft.originalName} title="העתק לתיבת החיפוש"
+                      className="px-2 py-1 rounded-lg border border-blue-200 text-gray-500 bg-white disabled:opacity-40 flex-shrink-0">
+                      📋
+                    </button>
+                  </div>
+                  <button onClick={clearMatch} className="text-blue-600 font-medium">נקה והתחל מחדש</button>
+                </div>
+              )}
+              <VendorMatchPanel draft={draft} setDraft={setDraft} activeProfiles={activeProfiles} groupId={groupId} showToast={showToast}
+                searchScope={searchScope} setSearchScope={setSearchScope} searchQuery={searchQuery} setSearchQuery={setSearchQuery}
+                candidates={candidates} setCandidates={setCandidates} isResolving={isResolving} setIsResolving={setIsResolving}
+                priceMap={priceMap} setPriceMap={setPriceMap} promoMap={promoMap} setPromoMap={setPromoMap} />
+              {itemHasMixedVendorMatches(draft, (activeProfiles || []).map(function(p) { return p.vendor; })) && (
+                <div className="text-[11px] text-amber-600 bg-amber-50 border border-amber-100 rounded-xl px-3 py-2">
+                  ⚠️ הרשתות מותאמות לברקודים שונים — ייתכן שאלו מוצרים שונים (למשל גודל אריזה שונה), לא בהכרח אותו פריט
+                </div>
+              )}
+            </div>
+          )}
+          </div>
+          {isEdit ? (
+            <button onClick={handlePrimary} disabled={!draft.name.trim() || saving}
+              className="w-full bg-blue-600 text-white py-4 rounded-2xl font-semibold mt-5 disabled:opacity-40">
+              {saving ? <Spinner /> : "שמור שינויים"}
+            </button>
+          ) : (
+            <div className="flex gap-2 mt-5">
+              <button onClick={onClose} className="flex-1 py-4 rounded-2xl border border-gray-200 text-gray-600 font-medium">ביטול</button>
+              <button onClick={handlePrimary} disabled={!draft.name.trim() || saving}
+                className="flex-1 bg-blue-600 text-white py-4 rounded-2xl font-semibold disabled:opacity-40">
+                {saving ? <Spinner /> : "הוסף לרשימה"}
+              </button>
+            </div>
+          )}
         </Modal>
       );
     }

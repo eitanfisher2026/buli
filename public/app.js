@@ -1,6 +1,6 @@
     const { useState, useEffect, useRef } = React;
 
-    const VERSION = "v6.43";
+    const VERSION = "v6.44";
 
     // ── CONFIG ────────────────────────────────────────────────────────────────────
     const FIREBASE_CONFIG = {
@@ -614,7 +614,7 @@
     }
     function Header({ onBack, title, right, onMenu }) {
       return (
-        <div className="bg-blue-600 text-white px-4 pt-10 pb-4">
+        <div className="bg-blue-600 text-white px-4 pt-6 pb-4">
           <div className="flex items-center gap-3" dir="ltr">
             {onBack && (
               <button onClick={onBack} className="flex items-center gap-1 text-white font-semibold text-sm bg-white/20 px-3 py-1.5 rounded-full flex-shrink-0">
@@ -1925,7 +1925,7 @@
 
       if (lists === null || tasks === null) return (
         <div className="bg-gray-50 flex flex-col" style={{height:"100dvh"}}>
-          <div className="bg-blue-600 text-white px-4 pt-10 pb-5 flex-shrink-0">
+          <div className="bg-blue-600 text-white px-4 pt-6 pb-5 flex-shrink-0">
             <div className="flex items-center justify-between gap-2">
               <div className="w-9 h-9 flex-shrink-0" />
               <div className="text-center flex-1 min-w-0">
@@ -2012,7 +2012,7 @@
 
       return (
         <div className="bg-gray-50 flex flex-col" style={{height:"100dvh"}} onClick={() => setMenuId(null)}>
-          <div className="bg-blue-600 text-white px-4 pt-10 pb-4 flex-shrink-0">
+          <div className="bg-blue-600 text-white px-4 pt-6 pb-4 flex-shrink-0">
             <div className="flex items-center justify-between gap-2">
               <button onClick={e => { e.stopPropagation(); setShowProfileCard(true); }} title={user.displayName}
                 className="w-9 h-9 rounded-full bg-white/20 flex items-center justify-center flex-shrink-0 overflow-hidden">
@@ -4672,7 +4672,7 @@
 
       return (
         <div className="bg-gray-50 flex flex-col print-list-root" style={{height:"100dvh"}}>
-          <div className="bg-blue-600 text-white px-4 pt-10 pb-3 flex-shrink-0 no-print">
+          <div className="bg-blue-600 text-white px-4 pt-6 pb-3 flex-shrink-0 no-print">
             {/* One line for nav+title+overflow (icon-only back button now
                 that print/share/settings all live in ☰, so there's room),
                 a single icon toolbar below for everything list-related. */}
@@ -4728,8 +4728,8 @@
 
           {!isNotes && (
             <div className="bg-white border-b border-gray-100 px-4 py-2 flex-shrink-0 no-print">
-              <div className="flex items-center justify-between gap-2">
-                <div className="flex items-center gap-1.5 min-w-0">
+              <div className="flex items-center justify-between gap-2 flex-wrap">
+                <div className="flex items-center gap-1.5 flex-wrap min-w-0">
                   {!pricingEnabled && (
                     <div className="flex bg-gray-100 rounded-full p-0.5 flex-shrink-0">
                       <button onClick={function() { setSortBy("name"); }}
@@ -4764,12 +4764,12 @@
                   {pricingEnabled && !isTasks && (
                     <div className="flex bg-gray-100 rounded-full p-0.5 flex-shrink-0">
                       <button onClick={function() { setViewMode("list"); }}
-                        className={"text-xs px-3 py-1.5 rounded-full transition font-medium whitespace-nowrap " + (viewMode !== "table" ? "bg-white text-blue-600 shadow-sm" : "text-gray-500")}>
-                        📋 רשימה
+                        className={"text-xs px-3 py-1.5 rounded-full transition font-bold whitespace-nowrap " + (viewMode !== "table" ? "bg-white text-blue-600 shadow-sm" : "text-gray-500")}>
+                        רשימה
                       </button>
                       <button onClick={function() { setViewMode("table"); }}
-                        className={"text-xs px-3 py-1.5 rounded-full transition font-medium whitespace-nowrap " + (viewMode === "table" ? "bg-white text-blue-600 shadow-sm" : "text-gray-500")}>
-                        🔢 טבלה
+                        className={"text-xs px-3 py-1.5 rounded-full transition font-bold whitespace-nowrap " + (viewMode === "table" ? "bg-white text-blue-600 shadow-sm" : "text-gray-500")}>
+                        טבלה
                       </button>
                     </div>
                   )}
@@ -4781,7 +4781,7 @@
                   {!(viewMode === "table" && pricingEnabled && !isTasks) && (
                     <button onClick={function() { setShowFilters(function(p) { return !p; }); }} title="מסננים"
                       className={"relative w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0 border " + (showFilters ? "bg-blue-50 border-blue-200 text-blue-600" : "bg-gray-50 border-gray-200 text-gray-500")}>
-                      <span className="text-sm">🔍</span>
+                      <span className="text-sm">🎚️</span>
                       {(filterStatus !== "all" || filterPerson !== "all" || singleShopId || filterVendorProfile === "noBarcode") && (
                         <span className="absolute -top-0.5 -left-0.5 w-2 h-2 bg-orange-500 rounded-full" />
                       )}

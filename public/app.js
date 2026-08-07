@@ -1,6 +1,6 @@
     const { useState, useEffect, useRef } = React;
 
-    const VERSION = "v6.35";
+    const VERSION = "v6.36";
 
     // ── CONFIG ────────────────────────────────────────────────────────────────────
     const FIREBASE_CONFIG = {
@@ -3743,7 +3743,7 @@
     }
 
     // ── LIST SCREEN ───────────────────────────────────────────────────────────────
-    function ListScreen({ user, listId, onBack, onHome, onAdd, showToast }) {
+    function ListScreen({ user, listId, onBack, onHome, onMenu, onAdd, showToast }) {
       const [categories, setCategories] = useState([]);
       const [list,       setList]       = useState(null);
       const [items,      setItems]      = useState([]);

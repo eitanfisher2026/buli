@@ -1,6 +1,6 @@
     const { useState, useEffect, useRef } = React;
 
-    const VERSION = "v6.48";
+    const VERSION = "v6.49";
 
     // ── CONFIG ────────────────────────────────────────────────────────────────────
     const FIREBASE_CONFIG = {
@@ -4247,6 +4247,7 @@
 
       const [pricesRefreshing, setPricesRefreshing] = useState(false);
       const [pricesLoading, setPricesLoading] = useState(false);
+      const [quickRefreshing, setQuickRefreshing] = useState(false);
       const [viewMode, setViewMode] = useState(function() { return localStorage.getItem("buli_view_mode") || "list"; }); // "list" | "table" — table is pricing-only
       useEffect(function() { localStorage.setItem("buli_view_mode", viewMode); }, [viewMode]);
 
@@ -4286,6 +4287,25 @@
         fetchPrices(only, true).then(function(result) {
           setPricesRefreshing(false);
           reportRefreshResult(result);
+        });
+      };
+
+      // Lighter than "🔄 רענן מחירים": that one force-refetches live from
+      // each vendor's catalog (a real, slower re-scrape, hence the
+      // confirmation dialog). This just re-pulls prices for barcodes the
+      // items already have from what's already cached server-side — for
+      // when a barcode/match was just added (via the edit dialog or an
+      // auto-resolve) and its price hasn't shown up on this screen yet,
+      // which today only happens automatically in some cases (see the
+      // unresolvedSignature effect above) — not a live vendor round-trip,
+      // so it's fast and doesn't need a "which vendor" picker.
+      const quickRefreshPrices = () => {
+        var barcodesByVendor = collectBarcodesByVendor(items.filter(itemHasAnyBarcode));
+        if (Object.keys(barcodesByVendor).length === 0) { showToast("אין פריטים עם ברקוד לעדכן"); return; }
+        setQuickRefreshing(true);
+        fetchPrices(barcodesByVendor, false).then(function() {
+          setQuickRefreshing(false);
+          showToast("תצוגת המחירים עודכנה");
         });
       };
 
@@ -4893,9 +4913,18 @@
                     </div>
                   )}
                   {pricingEnabled && !isTasks && (
-                    <button onClick={openRefreshDialog} disabled={pricesRefreshing} title={pricesLoading ? "טוען מחירים..." : list.pricesRefreshedAt ? ("עודכן: " + formatRefreshTime(list.pricesRefreshedAt)) : "רענן מחירים"}
+                    <button onClick={openRefreshDialog} disabled={pricesRefreshing} title={pricesLoading ? "טוען מחירים..." : list.pricesRefreshedAt ? ("עודכן: " + formatRefreshTime(list.pricesRefreshedAt)) : "רענן מחירים מהרשת (איטי)"}
                       className="w-8 h-8 rounded-full bg-gray-50 border border-gray-200 flex items-center justify-center text-blue-600 flex-shrink-0 disabled:opacity-50">
                       {pricesRefreshing || pricesLoading ? <Spinner /> : <span className="text-sm">🔄</span>}
+                    </button>
+                  )}
+                  {/* Distinct from "🔄" on purpose — this doesn't hit the
+                      vendor, it just re-syncs the screen with prices for
+                      barcodes items already have (fast, no picker). */}
+                  {pricingEnabled && !isTasks && (
+                    <button onClick={quickRefreshPrices} disabled={quickRefreshing} title="עדכן מחירים לפי ברקוד (מהיר)"
+                      className="w-8 h-8 rounded-full bg-green-50 border border-green-200 flex items-center justify-center text-green-600 flex-shrink-0 disabled:opacity-50">
+                      {quickRefreshing ? <Spinner /> : <span className="text-sm">🔃</span>}
                     </button>
                   )}
                   {pricingEnabled && !isTasks && (
@@ -5085,7 +5114,7 @@
             )}
           </div>
 
-          {canAddItems && !(viewMode === "table" && pricingEnabled && !isTasks && !isNotes) && (
+          {canAddItems && (
             <button onClick={() => {
               if (!isTasks && !isNotes && pricingEnabled && addMode === "single") setShowQuickAdd(true);
               else onAdd(list.type, list.name);
@@ -6003,13 +6032,19 @@
         setPromoMap({});
       };
 
-      const doSave = function() {
+      // In add mode there are two ways to save: stay open and reset for the
+      // next item ("שמור והמשך", the default for rapid one-at-a-time entry)
+      // or save this one and close ("שמור וצא"). `quitAfter` picks which.
+      const [savingQuit, setSavingQuit] = useState(false);
+      const doSave = function(quitAfter) {
         setSaving(true);
+        setSavingQuit(!!quitAfter);
         if (isEdit) {
           onSave(draft);
         } else {
           onInsert(draft, function() {
             setSaving(false);
+            if (quitAfter) { onClose(); return; }
             setDraft(blankDraft());
             setTab("details");
             setSearchScope(null);
@@ -6021,16 +6056,18 @@
         }
       };
 
-      const handlePrimary = function() {
+      const [pendingQuitAfter, setPendingQuitAfter] = useState(false);
+      const handlePrimary = function(quitAfter) {
         if (!draft.name.trim() || saving || isResolving) return;
         // Results are still sitting on screen unpicked — a tap on the
         // primary button here is more likely a mis-tap than an intentional
         // "skip the price check", so confirm before going ahead.
         if (candidates && candidates.list && candidates.list.length > 0) {
+          setPendingQuitAfter(quitAfter);
           setPendingNoMatchConfirm(true);
           return;
         }
-        doSave();
+        doSave(quitAfter);
       };
 
       return (
@@ -6042,12 +6079,21 @@
               {saving ? <Spinner /> : "שמור שינויים"}
             </button>
           ) : (
-            <div className="flex gap-2">
-              <button onClick={onClose} className="flex-1 py-3 rounded-2xl border border-gray-200 text-gray-600 font-medium text-sm">ביטול</button>
-              <button onClick={handlePrimary} disabled={!draft.name.trim() || saving || isResolving}
-                className="flex-1 bg-blue-600 text-white py-3 rounded-2xl font-semibold text-sm disabled:opacity-40">
-                {saving ? <Spinner /> : "הוסף לרשימה"}
+            <div className="space-y-2">
+              <button onClick={function() { handlePrimary(false); }} disabled={!draft.name.trim() || saving || isResolving}
+                className="w-full bg-blue-600 text-white py-3 rounded-2xl font-semibold text-sm disabled:opacity-40">
+                {saving && !savingQuit ? <Spinner /> : "שמור והמשך"}
               </button>
+              <div className="flex gap-2">
+                <button onClick={onClose} disabled={saving}
+                  className="flex-1 py-2.5 rounded-2xl border border-gray-200 text-gray-600 font-medium text-xs disabled:opacity-40">
+                  בטל וצא
+                </button>
+                <button onClick={function() { handlePrimary(true); }} disabled={!draft.name.trim() || saving || isResolving}
+                  className="flex-1 py-2.5 rounded-2xl border border-blue-300 text-blue-600 font-medium text-xs disabled:opacity-40">
+                  {saving && savingQuit ? <Spinner /> : "שמור וצא"}
+                </button>
+              </div>
             </div>
           )
         }>
@@ -6168,7 +6214,7 @@
         </Modal>
         {pendingNoMatchConfirm && (
           <ConfirmDialog message="לא נבחרה התאמת מחיר מתוצאות החיפוש — להוסיף את הפריט בכל זאת?" confirmLabel="הוסף בכל זאת"
-            onConfirm={function() { setPendingNoMatchConfirm(false); doSave(); }}
+            onConfirm={function() { setPendingNoMatchConfirm(false); doSave(pendingQuitAfter); }}
             onClose={function() { setPendingNoMatchConfirm(false); }} />
         )}
         </React.Fragment>

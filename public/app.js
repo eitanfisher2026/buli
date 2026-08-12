@@ -1,6 +1,6 @@
     const { useState, useEffect, useRef } = React;
 
-    const VERSION = "v6.49";
+    const VERSION = "v6.50";
 
     // ── CONFIG ────────────────────────────────────────────────────────────────────
     const FIREBASE_CONFIG = {
@@ -4915,15 +4915,18 @@
                   {pricingEnabled && !isTasks && (
                     <button onClick={openRefreshDialog} disabled={pricesRefreshing} title={pricesLoading ? "טוען מחירים..." : list.pricesRefreshedAt ? ("עודכן: " + formatRefreshTime(list.pricesRefreshedAt)) : "רענן מחירים מהרשת (איטי)"}
                       className="w-8 h-8 rounded-full bg-gray-50 border border-gray-200 flex items-center justify-center text-blue-600 flex-shrink-0 disabled:opacity-50">
-                      {pricesRefreshing || pricesLoading ? <Spinner /> : <span className="text-sm">🔄</span>}
+                      {pricesRefreshing || pricesLoading ? <Spinner /> : <span className="text-sm">⬇️</span>}
                     </button>
                   )}
-                  {/* Distinct from "🔄" on purpose — this doesn't hit the
+                  {/* Distinct from "⬇️" on purpose — this doesn't hit the
                       vendor, it just re-syncs the screen with prices for
-                      barcodes items already have (fast, no picker). */}
+                      barcodes items already have (fast, no picker). Emoji
+                      glyphs carry their own fixed color (text-green-600 on
+                      the span does nothing to them), so "green" has to come
+                      from a solid-filled badge, not a text-color class. */}
                   {pricingEnabled && !isTasks && (
                     <button onClick={quickRefreshPrices} disabled={quickRefreshing} title="עדכן מחירים לפי ברקוד (מהיר)"
-                      className="w-8 h-8 rounded-full bg-green-50 border border-green-200 flex items-center justify-center text-green-600 flex-shrink-0 disabled:opacity-50">
+                      className="w-8 h-8 rounded-full bg-green-500 flex items-center justify-center flex-shrink-0 disabled:opacity-50 shadow-sm">
                       {quickRefreshing ? <Spinner /> : <span className="text-sm">🔃</span>}
                     </button>
                   )}

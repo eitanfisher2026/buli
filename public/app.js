@@ -1,6 +1,6 @@
     const { useState, useEffect, useRef } = React;
 
-    const VERSION = "v6.58";
+    const VERSION = "v6.59";
 
     // ── CONFIG ────────────────────────────────────────────────────────────────────
     const FIREBASE_CONFIG = {
@@ -6003,7 +6003,12 @@
 
       const selectScope = function(vendorId) {
         setSearchScope(vendorId);
-        setSearchQuery((vendorId && draft.matchedNames[vendorId]) || draft.name || "");
+        // Only fills in a starting query when the box is empty — switching
+        // to a different (already-matched) vendor row shouldn't clobber a
+        // search the user is actively mid-typing/mid-researching.
+        if (!searchQuery.trim()) {
+          setSearchQuery((vendorId && draft.matchedNames[vendorId]) || draft.name || "");
+        }
       };
 
       const runSearchWith = function(vendorId, query) {

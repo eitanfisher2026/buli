@@ -1,6 +1,6 @@
     const { useState, useEffect, useRef } = React;
 
-    const VERSION = "v6.63";
+    const VERSION = "v6.64";
 
     // ── CONFIG ────────────────────────────────────────────────────────────────────
     const FIREBASE_CONFIG = {
@@ -4076,6 +4076,28 @@
         // eslint-disable-next-line react-hooks/exhaustive-deps
       }, [pricingEnabled, filterVendorProfile, activeProfiles, profiles]);
 
+      // With exactly one vendor displayed, default the sort to that vendor's
+      // aisle order (if a matching store profile exists) rather than כללי —
+      // there's nothing else to compare against, so its order is the useful
+      // default. Fires once per distinct single-vendor id (tracked by ref),
+      // not on every render, so it never fights a deliberate "כללי" choice
+      // the user makes afterward for that same vendor.
+      const autoShopSortRef = useRef(null);
+      useEffect(function() {
+        if (!pricingEnabled || isTasks) return;
+        if (visibleProfiles.length !== 1 || profiles.length === 0) return;
+        var only = visibleProfiles[0];
+        if (autoShopSortRef.current === only.id) return;
+        autoShopSortRef.current = only.id;
+        if (filterVendorProfile === only.id) return;
+        var shopLabel = profileLabel(only, visibleProfiles);
+        var hasMatch = profiles.some(function(p) { return p.name === shopLabel; });
+        if (hasMatch) {
+          setFilterVendorProfile(only.id);
+          localStorage.setItem("buli_filter_vendor", only.id);
+        }
+      }, [pricingEnabled, isTasks, visibleProfiles, profiles, filterVendorProfile]);
+
       // ─── Price comparison (any number of active vendor+branch profiles) —
       // no AI, plain lookups. item.barcodes is keyed by vendor CHAIN (a GTIN
       // doesn't change by branch); priceMap is keyed by PROFILE id (price
@@ -4324,7 +4346,11 @@
         var updates = {};
         var createdCount = 0;
         var createdRefs = []; // [{id, name, profile}], in plan.vendors order
-        var visiblePool = visibleProfiles.length > 0 ? visibleProfiles : activeProfiles;
+        // The full active pool, not just what's currently visible on THIS
+        // list — a vendor hidden here (but still active overall) would
+        // otherwise never get an explicit "hide" written for the new list,
+        // and show up there by default since listVendorFilters is sparse.
+        var visiblePool = activeProfiles;
         plan.vendors.forEach(function(p) {
           var vendorItems = plan.byVendor[p.id] || [];
           if (vendorItems.length === 0) return;
@@ -4366,18 +4392,10 @@
           // going home right after this would still show the pre-creation
           // snapshot, silently missing the lists just created.
           homeDataCache = null;
-          // "Selected" here means the app's one "major list" concept
-          // (buli_major_list, already used elsewhere to auto-open a list) —
-          // only one can hold that, so it goes to the first list created.
-          // Same reasoning for the filter-by-vendor default (buli_filter_vendor
-          // is a device-wide "last used" setting, not stored per list), so
-          // only the first new list's vendor can meaningfully claim it; every
-          // new list still gets its own correct per-list vendor visibility above.
-          if (createdRefs.length > 0) {
-            var first = createdRefs[0];
-            localStorage.setItem("buli_major_list", JSON.stringify({ id: first.id, name: first.name }));
-            localStorage.setItem("buli_filter_vendor", first.profile.id);
-          }
+          // Each new list has exactly one displayed vendor, so the
+          // single-vendor auto-default effect (above) sets its own
+          // סידור לפי חנות correctly the moment it's opened — nothing to
+          // pre-set here.
           setCreatedListsCount(createdCount);
         }, function(err) { setCreatingListsFromPlan(false); showToast("שגיאה: " + (err && err.message || "?")); });
         });
@@ -4882,15 +4900,10 @@
         if (filterStatus === "done"    && !item.done) return false;
         if (filterStatus === "pending" &&  item.done) return false;
         if (filterVendorProfile === "noBarcode" && itemHasAnyBarcode(item)) return false;
-        if (filterVendorProfile !== "all" && filterVendorProfile !== "noBarcode") {
-          var prof = activeProfiles.find(function(p) { return p.id === filterVendorProfile; });
-          if (prof) {
-            var bc = itemVendorBarcode(item, prof.vendor);
-            var vp = priceMap[prof.id];
-            var soldThere = !!(bc && vp && (bc in vp) && vp[bc] != null);
-            if (!soldThere) return false;
-          }
-        }
+        // Picking a shop here (via "סידور לפי חנות") only reorders categories
+        // to match its aisle layout (see the activeProfile-deriving effect) —
+        // it must never also hide items that vendor doesn't carry, that's a
+        // different, separate concern from ordering.
         return true;
       });
       const notDone = filteredItems.filter(i => !i.done);
@@ -4953,7 +4966,10 @@
       };
 
       const doneCount  = filteredItems.filter(i => i.done).length;
-      const isFiltered = filterStatus !== "all" || filterPerson !== "all" || filterVendorProfile !== "all";
+      // filterVendorProfile no longer hides anything by itself (see
+      // filteredItems above) except its dedicated "noBarcode" value — a
+      // vendor selected there only reorders categories now.
+      const isFiltered = filterStatus !== "all" || filterPerson !== "all" || filterVendorProfile === "noBarcode";
       const singleShopId = (pricingEnabled && !isTasks && filterVendorProfile !== "all" && filterVendorProfile !== "noBarcode") ? filterVendorProfile : null;
       const singleShopProfile = singleShopId ? activeProfiles.find(function(p) { return p.id === singleShopId; }) : null;
 
@@ -5226,11 +5242,8 @@
                     {isFiltered ? filteredItems.length + "/" + items.length : doneCount + "/" + items.length}
                   </span>
                   <button onClick={function() { setShowFilters(function(p) { return !p; }); }} title="מסננים"
-                    className={"relative w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0 border " + (showFilters ? "bg-blue-50 border-blue-200 text-blue-600" : "bg-gray-50 border-gray-200 text-gray-500")}>
+                    className={"w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0 border " + (showFilters ? "bg-blue-50 border-blue-200 text-blue-600" : "bg-gray-50 border-gray-200 text-gray-500")}>
                     <span className="text-sm">🎚️</span>
-                    {(filterStatus !== "all" || filterPerson !== "all" || singleShopId || filterVendorProfile === "noBarcode") && (
-                      <span className="absolute -top-0.5 -left-0.5 w-2 h-2 bg-orange-500 rounded-full" />
-                    )}
                   </button>
                   {isFiltered && (
                     <button onClick={clearAllFilters} className="text-gray-400 hover:text-gray-600 text-xs flex-shrink-0" title="נקה פילטרים">✕</button>
@@ -5298,11 +5311,14 @@
                       })}
                     </div>
                   </div>
-                  {pricingEnabled && !isTasks && visibleProfiles.length > 0 && (
+                  {/* Only meaningful with exactly one displayed vendor — with
+                      several, there's no single coherent aisle order to sort
+                      by (same reasoning table view already applies). */}
+                  {pricingEnabled && !isTasks && visibleProfiles.length === 1 && (
                     <div>
                       <div className="text-gray-400 text-xs mb-1">סידור לפי חנות</div>
                       <div className="flex flex-wrap gap-1">
-                        {[{ id: "all", label: "הכל" }]
+                        {[{ id: "all", label: "כללי" }]
                           .concat(visibleProfiles.map(function(p) { return { id: p.id, label: profileLabel(p, visibleProfiles) }; }))
                           .map(function(opt) {
                             return (

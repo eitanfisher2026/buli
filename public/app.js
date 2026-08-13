@@ -1,6 +1,6 @@
     const { useState, useEffect, useRef } = React;
 
-    const VERSION = "v6.51";
+    const VERSION = "v6.52";
 
     // ── CONFIG ────────────────────────────────────────────────────────────────────
     const FIREBASE_CONFIG = {
@@ -4749,6 +4749,18 @@
             <Modal onClose={function() { setShowHeaderMenu(false); }}>
               <h3 className="text-lg font-bold text-center mb-4">פעולות</h3>
               <div className="space-y-2">
+                {pricingEnabled && !isTasks && (
+                  <button onClick={function() { setShowHeaderMenu(false); openRefreshDialog(); }}
+                    className="w-full text-right flex items-center gap-3 px-4 py-3 rounded-xl bg-gray-50 hover:bg-gray-100">
+                    <span className="text-lg">⬇️</span><span className="text-sm font-medium text-gray-700">רענן מחירים מהרשת</span>
+                  </button>
+                )}
+                {pricingEnabled && !isTasks && (
+                  <button onClick={function() { setShowHeaderMenu(false); openPromoBrowser(); }}
+                    className="w-full text-right flex items-center gap-3 px-4 py-3 rounded-xl bg-gray-50 hover:bg-gray-100">
+                    <span className="text-lg">🏷️</span><span className="text-sm font-medium text-gray-700">מבצעים</span>
+                  </button>
+                )}
                 {!isNotes && !isTasks && (
                   <button onClick={function() { setShowHeaderMenu(false); window.print(); }}
                     className="w-full text-right flex items-center gap-3 px-4 py-3 rounded-xl bg-gray-50 hover:bg-gray-100">
@@ -4812,8 +4824,10 @@
 
           {!isNotes && (
             <div className="bg-white border-b border-gray-100 px-4 py-2 flex-shrink-0 no-print">
-              <div className="flex items-center justify-between gap-2 flex-wrap">
-                <div className="flex items-center gap-1.5 flex-wrap min-w-0">
+              <div className="flex items-center gap-2">
+                {/* Right zone (RTL start): add items, then a quick refresh —
+                    the heavier vendor refresh and promotions moved into ☰. */}
+                <div className="flex items-center gap-1.5 flex-shrink-0 min-w-0">
                   {!pricingEnabled && (
                     <div className="flex bg-gray-100 rounded-full p-0.5 flex-shrink-0">
                       <button onClick={function() { setSortBy("name"); }}
@@ -4829,34 +4843,24 @@
                       </button>
                     </div>
                   )}
-                  {pricingEnabled && !isTasks && (
-                    <button onClick={openRefreshDialog} disabled={pricesRefreshing} title={pricesLoading ? "טוען מחירים..." : list.pricesRefreshedAt ? ("עודכן: " + formatRefreshTime(list.pricesRefreshedAt)) : "רענן מחירים מהרשת (איטי)"}
-                      className="w-8 h-8 rounded-full bg-gray-50 border border-gray-200 flex items-center justify-center text-blue-600 flex-shrink-0 disabled:opacity-50">
-                      {pricesRefreshing || pricesLoading ? <Spinner /> : <span className="text-sm">⬇️</span>}
+                  {pricingEnabled && !isTasks && !isNotes && (
+                    <button onClick={function() {
+                      if (addMode === "single") setShowQuickAdd(true);
+                      else onAdd(list.type, list.name);
+                    }} className="bg-blue-600 text-white px-4 py-2 rounded-xl shadow font-semibold text-sm flex items-center gap-1.5 flex-shrink-0 no-print">
+                      <span className="text-base font-light">+</span> הוסף פריטים
                     </button>
                   )}
-                  {/* Distinct from "⬇️" on purpose — this doesn't hit the
-                      vendor, it just re-syncs the screen with prices for
-                      barcodes items already have (fast, no picker). Emoji
-                      glyphs carry their own fixed color (text-green-600 on
-                      the span does nothing to them), so "green" has to come
-                      from a solid-filled badge, not a text-color class. */}
                   {pricingEnabled && !isTasks && (
                     <button onClick={quickRefreshPrices} disabled={quickRefreshing} title="עדכן מחירים לפי ברקוד (מהיר)"
-                      className="w-8 h-8 rounded-full bg-green-500 flex items-center justify-center flex-shrink-0 disabled:opacity-50 shadow-sm">
+                      className="w-8 h-8 rounded-full bg-gray-50 border border-gray-200 flex items-center justify-center text-gray-500 flex-shrink-0 disabled:opacity-50">
                       {quickRefreshing ? <Spinner /> : <span className="text-sm">🔃</span>}
                     </button>
                   )}
-                  {pricingEnabled && !isTasks && (
-                    <button onClick={openPromoBrowser} title="מבצעים"
-                      className="w-8 h-8 rounded-full bg-gray-50 border border-gray-200 flex items-center justify-center text-gray-500 flex-shrink-0">
-                      <span className="text-sm">🏷️</span>
-                    </button>
-                  )}
-                  {/* The most-used control here — bigger, labeled, and both
-                      states always shown side by side (a real segmented
-                      toggle) instead of one button that morphs and resizes
-                      depending on which state it's in. */}
+                </div>
+                {/* Center zone: the list/table toggle, kept centered
+                    regardless of how wide the side zones end up. */}
+                <div className="flex-1 flex justify-center min-w-0">
                   {pricingEnabled && !isTasks && (
                     <div className="flex bg-gray-100 rounded-full p-0.5 flex-shrink-0">
                       <button onClick={function() { setViewMode("list"); }}
@@ -4870,26 +4874,26 @@
                     </div>
                   )}
                 </div>
+                {/* Left zone (RTL end): counter + filters, now available in
+                    table view too, not just list view. */}
                 <div className="flex items-center gap-1.5 flex-shrink-0">
                   <span className="text-xs text-gray-400 whitespace-nowrap">
                     {isFiltered ? filteredItems.length + "/" + items.length : doneCount + "/" + items.length}
                   </span>
-                  {!(viewMode === "table" && pricingEnabled && !isTasks) && (
-                    <button onClick={function() { setShowFilters(function(p) { return !p; }); }} title="מסננים"
-                      className={"relative w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0 border " + (showFilters ? "bg-blue-50 border-blue-200 text-blue-600" : "bg-gray-50 border-gray-200 text-gray-500")}>
-                      <span className="text-sm">🎚️</span>
-                      {(filterStatus !== "all" || filterPerson !== "all" || singleShopId || filterVendorProfile === "noBarcode") && (
-                        <span className="absolute -top-0.5 -left-0.5 w-2 h-2 bg-orange-500 rounded-full" />
-                      )}
-                    </button>
-                  )}
-                  {isFiltered && !(viewMode === "table" && pricingEnabled && !isTasks) && (
+                  <button onClick={function() { setShowFilters(function(p) { return !p; }); }} title="מסננים"
+                    className={"relative w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0 border " + (showFilters ? "bg-blue-50 border-blue-200 text-blue-600" : "bg-gray-50 border-gray-200 text-gray-500")}>
+                    <span className="text-sm">🎚️</span>
+                    {(filterStatus !== "all" || filterPerson !== "all" || singleShopId || filterVendorProfile === "noBarcode") && (
+                      <span className="absolute -top-0.5 -left-0.5 w-2 h-2 bg-orange-500 rounded-full" />
+                    )}
+                  </button>
+                  {isFiltered && (
                     <button onClick={clearAllFilters} className="text-gray-400 hover:text-gray-600 text-xs flex-shrink-0" title="נקה פילטרים">✕</button>
                   )}
                 </div>
               </div>
-              {showFilters && !(viewMode === "table" && pricingEnabled && !isTasks) && (
-                <div className="mt-2 bg-gray-50 rounded-2xl p-2.5 space-y-2.5">
+              {showFilters && (
+                <div className="mt-2 bg-gray-50 border border-gray-200 rounded-2xl p-2.5 space-y-2.5">
                   <div className="flex justify-end">
                     <button onClick={function() { setShowFilters(false); }} className="text-gray-400 hover:text-gray-600 text-sm w-6 h-6 flex items-center justify-center flex-shrink-0" title="סגור מסננים">✕</button>
                   </div>
@@ -5033,7 +5037,11 @@
             )}
           </div>
 
-          {canAddItems && (
+          {/* Pricing-enabled shopping lists get "הוסף פריטים" inline in the
+              toolbar above instead (both list and table view) — this
+              floating version stays for tasks/notes/non-pricing lists,
+              which have no toolbar row to put it in. */}
+          {canAddItems && !(pricingEnabled && !isTasks && !isNotes) && (
             <button onClick={() => {
               if (!isTasks && !isNotes && pricingEnabled && addMode === "single") setShowQuickAdd(true);
               else onAdd(list.type, list.name);

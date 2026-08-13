@@ -1,6 +1,6 @@
     const { useState, useEffect, useRef } = React;
 
-    const VERSION = "v6.52";
+    const VERSION = "v6.53";
 
     // ── CONFIG ────────────────────────────────────────────────────────────────────
     const FIREBASE_CONFIG = {
@@ -4847,8 +4847,8 @@
                     <button onClick={function() {
                       if (addMode === "single") setShowQuickAdd(true);
                       else onAdd(list.type, list.name);
-                    }} className="bg-blue-600 text-white px-4 py-2 rounded-xl shadow font-semibold text-sm flex items-center gap-1.5 flex-shrink-0 no-print">
-                      <span className="text-base font-light">+</span> הוסף פריטים
+                    }} className="bg-blue-600 text-white px-2.5 py-1.5 rounded-xl shadow font-semibold text-xs flex items-center gap-1 flex-shrink-0 no-print">
+                      <span className="text-sm font-light">+</span> הוסף
                     </button>
                   )}
                   {pricingEnabled && !isTasks && (
@@ -5993,6 +5993,15 @@
         }
         doSave(quitAfter);
       };
+      // "סיים" is one smart action, not a plain cancel: if a name was
+      // actually typed, it saves-and-closes just like handlePrimary(true);
+      // if the field is still empty, there's nothing to save, so it just
+      // closes — the user shouldn't have to notice which case they're in.
+      const handleFinish = function() {
+        if (saving || isResolving) return;
+        if (!draft.name.trim()) { onClose(); return; }
+        handlePrimary(true);
+      };
 
       return (
         <React.Fragment>
@@ -6003,21 +6012,15 @@
               {saving ? <Spinner /> : "שמור שינויים"}
             </button>
           ) : (
-            <div className="space-y-2">
+            <div className="flex gap-2">
               <button onClick={function() { handlePrimary(false); }} disabled={!draft.name.trim() || saving || isResolving}
-                className="w-full bg-blue-600 text-white py-3 rounded-2xl font-semibold text-sm disabled:opacity-40">
-                {saving && !savingQuit ? <Spinner /> : "שמור והמשך"}
+                className="flex-1 bg-blue-600 text-white py-3 rounded-2xl font-semibold text-sm disabled:opacity-40">
+                {saving && !savingQuit ? <Spinner /> : "+ הוסף"}
               </button>
-              <div className="flex gap-2">
-                <button onClick={onClose} disabled={saving}
-                  className="flex-1 py-2.5 rounded-2xl border border-gray-200 text-gray-600 font-medium text-xs disabled:opacity-40">
-                  בטל וצא
-                </button>
-                <button onClick={function() { handlePrimary(true); }} disabled={!draft.name.trim() || saving || isResolving}
-                  className="flex-1 py-2.5 rounded-2xl border border-blue-300 text-blue-600 font-medium text-xs disabled:opacity-40">
-                  {saving && savingQuit ? <Spinner /> : "שמור וצא"}
-                </button>
-              </div>
+              <button onClick={handleFinish} disabled={saving || isResolving}
+                className="flex-1 py-3 rounded-2xl border border-gray-200 text-gray-600 font-medium text-sm disabled:opacity-40">
+                {saving && savingQuit ? <Spinner /> : "סיים"}
+              </button>
             </div>
           )
         }>

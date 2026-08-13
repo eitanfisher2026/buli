@@ -1755,3 +1755,32 @@ exports.setUserPreferences = onCall(
     return { ok: true };
   }
 );
+
+// The store category-order profile (globalProfiles) for a vendor chain is
+// ONE shared record across the whole family, auto-created client-side the
+// moment any pricing user adds that chain (see ensureStoreProfilesForVendors
+// in app.js) — but removal has to happen here, server-side, because it
+// requires checking every OTHER user's vendorProfiles too: one person
+// removing their own copy of a chain must never delete a shared shelf-layout
+// order that someone else in the family is still actively using.
+exports.syncStoreProfileOnVendorRemoved = onCall(
+  { timeoutSeconds: 30, memory: '128MiB', region: 'europe-west1' },
+  async (request) => {
+    await requireAuthorized(request);
+    const { vendor } = request.data || {};
+    if (!vendor || typeof vendor !== 'string') throw new HttpsError('invalid-argument', 'vendor required');
+    const usersSnap = await db.ref('users').once('value');
+    const usersVal = usersSnap.val() || {};
+    const stillUsed = Object.values(usersVal).some((u) => {
+      const profiles = u && u.vendorProfiles;
+      return profiles && Object.values(profiles).some((p) => p && p.vendor === vendor);
+    });
+    if (stillUsed) return { removed: false };
+    const gpSnap = await db.ref('globalProfiles').once('value');
+    const gpVal = gpSnap.val() || {};
+    const match = Object.entries(gpVal).find(([, p]) => p && p.vendorId === vendor);
+    if (!match) return { removed: false };
+    await db.ref(`globalProfiles/${match[0]}`).remove();
+    return { removed: true };
+  }
+);

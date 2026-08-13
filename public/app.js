@@ -1,6 +1,6 @@
     const { useState, useEffect, useRef } = React;
 
-    const VERSION = "v6.55";
+    const VERSION = "v6.56";
 
     // ── CONFIG ────────────────────────────────────────────────────────────────────
     const FIREBASE_CONFIG = {
@@ -834,7 +834,7 @@
           {screen === "home"       && <HomeScreen       user={user} isAdmin={role === "admin" && !simulateRegular} isRealAdmin={role === "admin"} simulating={simulateRegular} onToggleSimulate={toggleSimulate} onOpenList={goList} onCategories={() => go("categories")} showToast={setToast} onAddTask={() => goAdd("tasks_" + user.uid, "tasks")} onCreateShoppingList={(id, name, single) => single ? goList(id, name) : goAdd(id, "shopping", name)} onCreateNotesList={(id, name) => goAdd(id, "notes", name)} autoOpenSettings={autoOpenSettings} onAutoOpenedSettings={() => setAutoOpenSettings(false)} fontScale={fontScale} onSetFontScale={setFontScale} />}
           {screen === "list"       && <ListScreen       user={user} listId={listId} onBack={goBack} onMenu={goMenu} onAdd={(type, name) => goAdd(listId, type, name || listName)} showToast={setToast} />}
           {screen === "add"        && <AddScreen        user={user} listId={listId} listType={listType} listName={listName} onBack={goBack} onMenu={goMenu} showToast={setToast} showStickyToast={setStickyToast} />}
-          {screen === "categories" && <CategoriesScreen user={user} onBack={goBack} onMenu={goMenu} showToast={setToast} />}
+          {screen === "categories" && <CategoriesScreen user={user} onBack={goBack} showToast={setToast} />}
           {toast && <Toast msg={toast} onClose={() => setToast("")} />}
           {stickyToast.length > 0 && (
             <div onClick={() => setStickyToast([])}
@@ -1047,7 +1047,12 @@
           setMyNickname(snaps[5].val() || "");
           if (!enabled) return; // no pricing for this user — skip the vendor-profile listener and settings call entirely
           profilesRef = db.ref("users/" + user.uid + "/vendorProfiles");
-          onProfiles = function(snap2) { setVendorProfiles(snap2.val() || {}); };
+          onProfiles = function(snap2) {
+            var val = snap2.val() || {};
+            setVendorProfiles(val);
+            var vendorIds = Array.from(new Set(Object.values(val).map(function(p) { return p && p.vendor; }).filter(Boolean)));
+            ensureStoreProfilesForVendors(vendorIds);
+          };
           profilesRef.on("value", onProfiles);
           fns.httpsCallable("getPricingSettings")().then(function(res) {
             setMaxActiveVendors((res.data && res.data.maxActiveVendors) || 3);
@@ -1131,10 +1136,31 @@
         fns.httpsCallable("dismissVendorRequest")({ id: id }).catch(function() { showToast("שגיאה במחיקת הבקשה"); });
       };
 
-      // Adds a new vendor+branch to the shared pool — always, regardless of
-      // which group is currently selected, since the pool isn't per-group.
-      // It starts active only in the default group; other groups toggle it
-      // on deliberately (see toggleVendorProfileActive).
+      // Ensures a shared "סידור בחנות" (globalProfiles) entry exists for every
+      // distinct vendor chain across this user's active vendor pool — one
+      // per chain name, not per branch. This is a single shared list across
+      // the whole family (like globalCategories), so it only ever CREATES
+      // here; a chain's entry is only removed once no one anywhere still
+      // has it (see syncStoreProfileOnVendorRemoved, called from
+      // removeVendorProfile). Marked with vendorId so it's identifiable as
+      // vendor-derived, distinct from a manually-added store profile.
+      const ensureStoreProfilesForVendors = function(vendorIds) {
+        if (!vendorIds || vendorIds.length === 0) return;
+        db.ref("globalProfiles").once("value").then(function(snap) {
+          var val = snap.val() || {};
+          var existing = new Set(Object.values(val).map(function(p) { return p && p.vendorId; }).filter(Boolean));
+          var order = (categories || []).map(function(c) { return c.label; });
+          var updates = {};
+          vendorIds.forEach(function(vid) {
+            if (existing.has(vid)) return;
+            var meta = VENDOR_LIST.find(function(v) { return v.id === vid; });
+            var key = db.ref("globalProfiles").push().key;
+            updates["globalProfiles/" + key] = { name: meta ? meta.label : vid, categoryOrder: order, vendorId: vid };
+          });
+          if (Object.keys(updates).length > 0) db.ref().update(updates);
+        });
+      };
+
       const addVendorProfile = function(vendor, branchId) {
         if (!vendor || !branchId) return;
         var alreadySaved = Object.values(vendorProfiles).some(function(p) { return p && p.vendor === vendor && String(p.branchId) === String(branchId); });
@@ -1147,11 +1173,16 @@
         setNewProfileBranchId("");
       };
 
-      // Removes a branch from the shared pool entirely — it disappears from
-      // every group's toggle list, not just the one currently open.
+      // Removes a branch from the pool entirely. The shared store-order
+      // profile for this chain (if any) is only deleted once the server
+      // confirms no one else in the family still has this chain either.
       const removeVendorProfile = function(profileId) {
+        var removed = vendorProfiles[profileId];
         db.ref("users/" + user.uid + "/vendorProfiles/" + profileId).remove();
         priceCacheByList = {};
+        if (removed && removed.vendor) {
+          fns.httpsCallable("syncStoreProfileOnVendorRemoved")({ vendor: removed.vendor }).catch(function() {});
+        }
       };
 
       // Syncs the pool + default-group toggles to match the owner's current
@@ -2822,7 +2853,7 @@
 
               {settingsTab === "vendors" && (<div>
               <button onClick={function() { setShowSettings(false); onCategories(); }} className="w-full text-right px-3 py-3 mb-2 text-sm text-gray-700 hover:bg-gray-50 rounded-xl flex items-center gap-3 border border-gray-100">
-                <span className="text-lg w-7 text-center">⚙️</span><span>קטגוריות וחנויות</span>
+                <span className="text-lg w-7 text-center">🗺️</span><span>סדר קטגוריות בחנות</span>
               </button>
               {myPricingEnabled && (
                 <div className="space-y-2">
@@ -3490,7 +3521,7 @@
       return order;
     }
 
-    function CategoriesScreen({ user, onBack, onMenu, showToast }) {
+    function CategoriesScreen({ user, onBack, showToast }) {
       const [categories,    setCategories]    = useState(null);
       const [editingId,     setEditingId]     = useState(null);
       const [editLabel,     setEditLabel]     = useState("");
@@ -3624,7 +3655,7 @@
 
       if (categories === null) return (
         <div className="bg-gray-50 flex flex-col" style={{height:"100dvh"}}>
-          <Header onBack={onBack} onMenu={onMenu} title="הגדרות" />
+          <Header onBack={onBack} title="הגדרות" />
           <div className="flex-1 flex items-center justify-center">
             <Spinner large />
           </div>
@@ -3635,7 +3666,7 @@
 
       return (
         <div className="bg-gray-50 flex flex-col" style={{height:"100dvh"}}>
-          <Header onBack={onBack} onMenu={onMenu} title="הגדרות" />
+          <Header onBack={onBack} title="הגדרות" />
           <div className="flex-1 overflow-y-auto p-4 pb-8">
 
             {/* — Categories section — */}
@@ -3692,7 +3723,7 @@
             </div>
 
             {/* — Store profiles section — */}
-            <h2 className="font-bold text-gray-600 text-sm mb-1 text-right">פרופילי חנויות 🏪</h2>
+            <h2 className="font-bold text-gray-600 text-sm mb-1 text-right">סידור בחנות 🏪</h2>
             <p className="text-xs text-gray-400 mb-3 text-right">סדר קטגוריות שונה לכל רשת סופרמרקט</p>
             <div className="space-y-2 mb-4">
               {profiles.length === 0 && (
@@ -4742,7 +4773,7 @@
             <div className="space-y-2">
               {[...arr].sort((a,b) => (a.name||"").localeCompare(b.name||"","he")).map(item =>
                 <ItemRow key={item.id} item={item} canEdit={canEditItem(item)} onToggle={toggle} onDelete={remove} onEdit={() => editFn(item)} onUpdateNote={updateNote} isTasks={false} currentUserId={user.uid}
-                  priceMap={priceMap} promoMap={promoMap} activeProfiles={visibleProfiles} singleShopId={singleShopId} priceCandidates={candidatesByName[item.name]} onPickPrice={() => setPickerItem(item)} isResolving={resolvingNames.has(item.name)} />
+                  priceMap={priceMap} promoMap={promoMap} activeProfiles={pricingEnabled ? visibleProfiles : null} singleShopId={singleShopId} priceCandidates={candidatesByName[item.name]} onPickPrice={() => setPickerItem(item)} isResolving={resolvingNames.has(item.name)} />
               )}
             </div>
           );
@@ -4764,7 +4795,7 @@
             </div>
             <div className="space-y-2">
               {group.items.map(item => <ItemRow key={item.id} item={item} canEdit={canEditItem(item)} onToggle={toggle} onDelete={remove} onEdit={() => editFn(item)} onUpdateNote={updateNote} isTasks={false} currentUserId={user.uid}
-                  priceMap={priceMap} promoMap={promoMap} activeProfiles={visibleProfiles} singleShopId={singleShopId} priceCandidates={candidatesByName[item.name]} onPickPrice={() => setPickerItem(item)} isResolving={resolvingNames.has(item.name)} />)}
+                  priceMap={priceMap} promoMap={promoMap} activeProfiles={pricingEnabled ? visibleProfiles : null} singleShopId={singleShopId} priceCandidates={candidatesByName[item.name]} onPickPrice={() => setPickerItem(item)} isResolving={resolvingNames.has(item.name)} />)}
             </div>
           </div>
         ));
@@ -5034,7 +5065,7 @@
                   </div>
                   {pricingEnabled && !isTasks && visibleProfiles.length > 0 && (
                     <div>
-                      <div className="text-gray-400 text-xs mb-1">הצג פריטים לחנות</div>
+                      <div className="text-gray-400 text-xs mb-1">סידור לפי חנות</div>
                       <div className="flex flex-wrap gap-1">
                         {[{ id: "all", label: "הכל" }]
                           .concat(visibleProfiles.map(function(p) { return { id: p.id, label: profileLabel(p, visibleProfiles) }; }))

@@ -1,6 +1,6 @@
     const { useState, useEffect, useRef } = React;
 
-    const VERSION = "v6.62";
+    const VERSION = "v6.63";
 
     // ── CONFIG ────────────────────────────────────────────────────────────────────
     const FIREBASE_CONFIG = {
@@ -6215,7 +6215,14 @@
               else statusText = "₪" + row.price.toFixed(2);
               var matchedName = draft.matchedNames[row.p.vendor];
               return (
-                <button key={row.p.id} onClick={function() { if (needsAction) findPriceForVendor(row.p.vendor); else selectScope(row.p.vendor); }}
+                <button key={row.p.id} onClick={function() {
+                  if (needsAction) { findPriceForVendor(row.p.vendor); return; }
+                  // Toggle: tapping the row that's already the active scope
+                  // switches back to "כל הרשתות" instead of re-selecting
+                  // itself, so the price comes back instead of staying
+                  // hidden until the user finds the all-networks pill.
+                  selectScope(searchScope === row.p.vendor ? null : row.p.vendor);
+                }}
                   className={"w-full flex items-center justify-between gap-2 rounded-xl px-3 py-2.5 hover:bg-gray-100 text-right " + (searchScope === row.p.vendor ? "bg-blue-50 ring-1 ring-blue-200" : "bg-gray-50")}>
                   <div className="min-w-0 flex-1">
                     <div className="text-sm text-gray-700">{profileLabel(row.p, activeProfiles)}</div>

@@ -1,6 +1,6 @@
     const { useState, useEffect, useRef } = React;
 
-    const VERSION = "v6.64";
+    const VERSION = "v6.65";
 
     // ── CONFIG ────────────────────────────────────────────────────────────────────
     const FIREBASE_CONFIG = {
@@ -4076,27 +4076,7 @@
         // eslint-disable-next-line react-hooks/exhaustive-deps
       }, [pricingEnabled, filterVendorProfile, activeProfiles, profiles]);
 
-      // With exactly one vendor displayed, default the sort to that vendor's
-      // aisle order (if a matching store profile exists) rather than כללי —
-      // there's nothing else to compare against, so its order is the useful
-      // default. Fires once per distinct single-vendor id (tracked by ref),
-      // not on every render, so it never fights a deliberate "כללי" choice
-      // the user makes afterward for that same vendor.
       const autoShopSortRef = useRef(null);
-      useEffect(function() {
-        if (!pricingEnabled || isTasks) return;
-        if (visibleProfiles.length !== 1 || profiles.length === 0) return;
-        var only = visibleProfiles[0];
-        if (autoShopSortRef.current === only.id) return;
-        autoShopSortRef.current = only.id;
-        if (filterVendorProfile === only.id) return;
-        var shopLabel = profileLabel(only, visibleProfiles);
-        var hasMatch = profiles.some(function(p) { return p.name === shopLabel; });
-        if (hasMatch) {
-          setFilterVendorProfile(only.id);
-          localStorage.setItem("buli_filter_vendor", only.id);
-        }
-      }, [pricingEnabled, isTasks, visibleProfiles, profiles, filterVendorProfile]);
 
       // ─── Price comparison (any number of active vendor+branch profiles) —
       // no AI, plain lookups. item.barcodes is keyed by vendor CHAIN (a GTIN
@@ -4450,6 +4430,30 @@
       // minus whatever this list has hidden. Every price-fetch/render site
       // should use this, not the raw activeProfiles.
       var visibleProfiles = activeProfiles.filter(function(p) { return !hiddenVendorProfileIds.has(p.id); });
+
+      // With exactly one vendor displayed, default the sort to that vendor's
+      // aisle order (if a matching store profile exists) rather than כללי —
+      // there's nothing else to compare against, so its order is the useful
+      // default. Fires once per distinct single-vendor id (tracked by ref),
+      // not on every render, so it never fights a deliberate "כללי" choice
+      // the user makes afterward for that same vendor. Checks list.type
+      // directly (not the isTasks const, which isn't assigned until after
+      // this component's early-return checks — referencing it here would
+      // throw, not just read stale).
+      useEffect(function() {
+        if (!pricingEnabled || (list && list.type === "tasks")) return;
+        if (visibleProfiles.length !== 1 || profiles.length === 0) return;
+        var only = visibleProfiles[0];
+        if (autoShopSortRef.current === only.id) return;
+        autoShopSortRef.current = only.id;
+        if (filterVendorProfile === only.id) return;
+        var shopLabel = profileLabel(only, visibleProfiles);
+        var hasMatch = profiles.some(function(p) { return p.name === shopLabel; });
+        if (hasMatch) {
+          setFilterVendorProfile(only.id);
+          localStorage.setItem("buli_filter_vendor", only.id);
+        }
+      }, [pricingEnabled, list, visibleProfiles, profiles, filterVendorProfile]);
 
       // Renaming an item (e.g. via ItemDialog) doesn't change items.length,
       // so it wouldn't otherwise re-trigger a re-resolve for a still-unmatched

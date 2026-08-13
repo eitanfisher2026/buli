@@ -1,6 +1,6 @@
     const { useState, useEffect, useRef } = React;
 
-    const VERSION = "v6.57";
+    const VERSION = "v6.58";
 
     // ── CONFIG ────────────────────────────────────────────────────────────────────
     const FIREBASE_CONFIG = {
@@ -412,6 +412,23 @@
       var known = others.filter(function(o) { return o != null; });
       if (known.length === 0 || known.every(function(o) { return mine < o; })) return "text-green-600";
       return "text-gray-700";
+    }
+
+    // All size-k subsets of arr, order-independent — used by the basket
+    // optimizer over a handful of vendors (k<=3), never large enough to
+    // need anything smarter than brute enumeration.
+    function combinations(arr, k) {
+      var results = [];
+      function helper(start, combo) {
+        if (combo.length === k) { results.push(combo.slice()); return; }
+        for (var i = start; i < arr.length; i++) {
+          combo.push(arr[i]);
+          helper(i + 1, combo);
+          combo.pop();
+        }
+      }
+      helper(0, []);
+      return results;
     }
 
     // Plain vendor label ("רמי לוי"), disambiguated with the branch number
@@ -3821,6 +3838,11 @@
       const [showCategorizeChoice, setShowCategorizeChoice] = useState(false);
       const [categorizing, setCategorizing] = useState(false);
       const [showExportChoice, setShowExportChoice] = useState(false);
+      const [showOptimizer, setShowOptimizer] = useState(false);
+      const [optimizerLoading, setOptimizerLoading] = useState(false);
+      const [optimizerPlans, setOptimizerPlans] = useState([]);
+      const [selectedPlanK, setSelectedPlanK] = useState(null);
+      const [creatingListsFromPlan, setCreatingListsFromPlan] = useState(false);
       const [pricingEnabled, setPricingEnabled] = useState(true);
       const [keyboardWarningEnabled, setKeyboardWarningEnabled] = useState(true);
       const [addMode, setAddMode] = useState("single"); // "group" | "single"
@@ -3927,7 +3949,7 @@
         var hasBarcodes = draft.barcodes && Object.keys(draft.barcodes).length > 0;
         var payload = {
           name: name, category: draft.category || "שונות", categoryEmoji: draft.categoryEmoji || "🛍️",
-          quantity: draft.quantity || 1, unit: draft.unit || "יחידות", note: draft.note || "", done: false,
+          quantity: draft.quantity || 1, unit: draft.unit || "יחידות", note: draft.note || "", optional: !!draft.optional, done: false,
           barcodes: hasBarcodes ? draft.barcodes : null,
           matchedNames: hasBarcodes ? draft.matchedNames : null,
           addedBy: user.uid, addedByName: user.displayName, addedByColor: getUserColor(user.uid),
@@ -4232,6 +4254,97 @@
         if (Object.keys(only).length > 0) fetchPrices(only, false);
       };
 
+      // Best split of the list's not-yet-bought items across 1..3 of the
+      // currently displayed vendors — "must" items (item.optional !== true)
+      // are a hard-ish constraint (a combo is scored by how few it misses,
+      // before cost), "optional" items are opportunistic: included only
+      // when one of the combo's vendors happens to carry them, otherwise
+      // silently skipped, never counted as missing. Small numbers only
+      // (capped at 3 of however many vendors are displayed), so plain
+      // enumeration is exact and fast — no real optimizer needed.
+      const computeOptimalBaskets = function() {
+        var candidateItems = items.filter(function(i) { return !i.done; });
+        var pool = visibleProfiles;
+        var maxK = Math.min(3, pool.length);
+        var plans = [];
+        for (var k = 1; k <= maxK; k++) {
+          var combos = combinations(pool, k);
+          var best = null;
+          combos.forEach(function(combo) {
+            var totalCost = 0;
+            var missingItems = [];
+            var byVendor = {};
+            combo.forEach(function(p) { byVendor[p.id] = []; });
+            candidateItems.forEach(function(item) {
+              var priced = itemProfilePrices(item, combo, priceMap, promoMap);
+              if (priced.length === 0) {
+                if (!item.optional) missingItems.push(item.name);
+                return;
+              }
+              var bestEntry = priced.reduce(function(acc, e) {
+                var eff = (e.promo && e.promo.active) ? e.promo.price : e.price;
+                var accEff = (acc.promo && acc.promo.active) ? acc.promo.price : acc.price;
+                return eff < accEff ? e : acc;
+              });
+              var effPrice = (bestEntry.promo && bestEntry.promo.active) ? bestEntry.promo.price : bestEntry.price;
+              totalCost += effPrice * (item.quantity || 1);
+              byVendor[bestEntry.profile.id].push({ item: item, price: effPrice });
+            });
+            if (!best || missingItems.length < best.missingItems.length ||
+                (missingItems.length === best.missingItems.length && totalCost < best.totalCost)) {
+              best = { k: k, vendors: combo, totalCost: totalCost, missingItems: missingItems, byVendor: byVendor };
+            }
+          });
+          if (best) plans.push(best);
+        }
+        return plans;
+      };
+
+      const openOptimizer = function() {
+        if (visibleProfiles.length === 0) { showToast("אין רשתות מוצגות להשוואה — הפעילו לפחות רשת אחת"); return; }
+        setShowOptimizer(true);
+        setSelectedPlanK(null);
+        setOptimizerLoading(true);
+        var barcodesByVendor = onlyVisibleVendorBarcodes(collectBarcodesByVendor(items.filter(function(i) { return !i.done; })));
+        fetchPrices(barcodesByVendor, false).then(function() {
+          setOptimizerPlans(computeOptimalBaskets());
+          setOptimizerLoading(false);
+        });
+      };
+
+      // Copies each vendor's sub-basket into its own new list — nothing
+      // automatic and the original list is untouched, since the plan itself
+      // is only ever computed on the fly, never saved.
+      const createListsFromPlan = function(plan) {
+        setCreatingListsFromPlan(true);
+        var now = Date.now();
+        var updates = {};
+        var createdCount = 0;
+        plan.vendors.forEach(function(p) {
+          var vendorItems = plan.byVendor[p.id] || [];
+          if (vendorItems.length === 0) return;
+          var newListId = db.ref("lists").push().key;
+          var listName = list.name + " - " + profileLabel(p, plan.vendors);
+          createdCount++;
+          updates["lists/" + newListId] = { name: listName, type: "shopping", isPrivate: false, done: false, ownerId: user.uid, ownerName: user.displayName, sharedWith: {}, createdAt: now };
+          updates["listsByUser/" + user.uid + "/" + newListId] = true;
+          vendorItems.forEach(function(entry, idx) {
+            var itemKey = db.ref("items/" + newListId).push().key;
+            updates["items/" + newListId + "/" + itemKey] = {
+              name: entry.item.name, category: entry.item.category, categoryEmoji: entry.item.categoryEmoji,
+              quantity: entry.item.quantity || 1, unit: entry.item.unit || "יחידות", note: entry.item.note || "",
+              done: false, addedBy: user.uid, addedByName: user.displayName, addedByColor: getUserColor(user.uid),
+              createdAt: now + idx
+            };
+          });
+        });
+        db.ref().update(updates).then(function() {
+          setCreatingListsFromPlan(false);
+          showToast(createdCount + " רשימות נוצרו!");
+          setShowOptimizer(false);
+        }, function(err) { setCreatingListsFromPlan(false); showToast("שגיאה: " + (err && err.message || "?")); });
+      };
+
       // Lighter than "🔄 רענן מחירים": that one force-refetches live from
       // each vendor's catalog (a real, slower re-scrape, hence the
       // confirmation dialog). This just re-pulls prices for barcodes the
@@ -4489,7 +4602,7 @@
         setEditItem(null);
         db.ref("items/" + listId + "/" + updated.id).update({
           name: updated.name, quantity: updated.quantity !== "" && updated.quantity != null ? Number(updated.quantity) || 1 : null,
-          unit: updated.unit, category: updated.category, note: updated.note || "",
+          unit: updated.unit, category: updated.category, note: updated.note || "", optional: !!updated.optional,
           barcode: updated.barcode || null, barcodes: updated.barcodes || null, originalName: updated.originalName || null,
           // The vendor tab now stages barcode/name matches locally (see
           // ItemDialog) instead of writing each pick straight to the DB —
@@ -4845,6 +4958,12 @@
                     <span className="text-lg">🏷️</span><span className="text-sm font-medium text-gray-700">מבצעים</span>
                   </button>
                 )}
+                {pricingEnabled && !isTasks && (
+                  <button onClick={function() { setShowHeaderMenu(false); openOptimizer(); }}
+                    className="w-full text-right flex items-center gap-3 px-4 py-3 rounded-xl bg-gray-50 hover:bg-gray-100">
+                    <span className="text-lg">🧮</span><span className="text-sm font-medium text-gray-700">אופטימיזציית קניות</span>
+                  </button>
+                )}
                 {!isNotes && !isTasks && (
                   <button onClick={function() { setShowHeaderMenu(false); window.print(); }}
                     className="w-full text-right flex items-center gap-3 px-4 py-3 rounded-xl bg-gray-50 hover:bg-gray-100">
@@ -4920,6 +5039,67 @@
                 </button>
               </div>
               <button onClick={function() { setShowExportChoice(false); }} className="w-full mt-3 py-2.5 text-gray-500 text-sm">ביטול</button>
+            </Modal>
+          )}
+
+          {showOptimizer && (
+            <Modal onClose={function() { setShowOptimizer(false); }}>
+              <h3 className="text-lg font-bold text-center mb-1">אופטימיזציית קניות</h3>
+              <p className="text-xs text-gray-400 text-center mb-4">השוואת עלות קנייה במספר חנויות שונה — הרשימה המקורית לא משתנה</p>
+              {optimizerLoading ? (
+                <div className="flex justify-center py-10"><Spinner large /></div>
+              ) : optimizerPlans.length === 0 ? (
+                <p className="text-center text-gray-400 text-sm py-6">אין מספיק נתוני מחיר להשוואה</p>
+              ) : (
+                <div className="space-y-2">
+                  {optimizerPlans.map(function(plan) {
+                    var isSelected = selectedPlanK === plan.k;
+                    var vendorNames = plan.vendors.map(function(p) { return profileLabel(p, plan.vendors); }).join(" + ");
+                    return (
+                      <div key={plan.k}>
+                        <button onClick={function() { setSelectedPlanK(isSelected ? null : plan.k); }}
+                          className={"w-full text-right rounded-xl px-4 py-3 border transition " + (isSelected ? "bg-blue-50 border-blue-400" : "bg-white border-gray-200")}>
+                          <div className="flex items-center justify-between">
+                            <span className="font-semibold text-gray-800 text-sm">{plan.k === 1 ? "חנות אחת" : plan.k + " חנויות"}</span>
+                            <span className="font-bold text-blue-600 text-sm">₪{plan.totalCost.toFixed(2)}</span>
+                          </div>
+                          <div className="text-xs text-gray-500 mt-1">{vendorNames}</div>
+                          {plan.missingItems.length > 0 && (
+                            <div className="text-[11px] text-amber-600 mt-1">חסר: {plan.missingItems.join(", ")}</div>
+                          )}
+                        </button>
+                        {isSelected && (
+                          <div className="mt-2 mb-1 space-y-2 px-1">
+                            {plan.vendors.map(function(p) {
+                              var vendorItems = plan.byVendor[p.id] || [];
+                              if (vendorItems.length === 0) return null;
+                              return (
+                                <div key={p.id} className="bg-gray-50 rounded-xl p-2.5">
+                                  <div className="text-xs font-semibold text-gray-600 mb-1">{profileLabel(p, plan.vendors)}</div>
+                                  <div className="space-y-0.5">
+                                    {vendorItems.map(function(entry) {
+                                      return (
+                                        <div key={entry.item.id} className="flex items-center justify-between text-xs text-gray-600">
+                                          <span>{entry.item.name}</span>
+                                          <span>₪{entry.price.toFixed(2)}</span>
+                                        </div>
+                                      );
+                                    })}
+                                  </div>
+                                </div>
+                              );
+                            })}
+                            <button onClick={function() { createListsFromPlan(plan); }} disabled={creatingListsFromPlan}
+                              className="w-full bg-blue-600 text-white py-2.5 rounded-xl font-medium text-sm disabled:opacity-40">
+                              {creatingListsFromPlan ? <Spinner /> : "+ צור רשימות לפי התכנית"}
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
             </Modal>
           )}
 
@@ -5653,7 +5833,7 @@
             )}
             <div className="flex-1 min-w-0">
               <span onClick={!isTasks && canEdit ? function(e) { e.stopPropagation(); onEdit(); } : undefined}
-                className={`font-medium text-sm ${item.done ? "line-through text-gray-400" : (!isTasks && canEdit ? "text-blue-600 underline decoration-blue-200 underline-offset-2" : "text-gray-800")} ${!isTasks && canEdit ? "cursor-pointer" : ""}`}>
+                className={`font-medium text-sm ${item.done ? "line-through text-gray-400" : (!isTasks && item.optional) ? "text-gray-400" : (!isTasks && canEdit ? "text-blue-600 underline decoration-blue-200 underline-offset-2" : "text-gray-800")} ${!isTasks && canEdit ? "cursor-pointer" : ""}`}>
                 {!isTasks && activeProfiles && itemHasMixedVendorMatches(item, activeProfiles.map(function(p) { return p.vendor; })) && <span className="text-amber-500 no-underline" title="הרשתות מותאמות למוצרים שונים">! </span>}
                 {itemDisplayName(item)}
               </span>
@@ -6038,7 +6218,7 @@
         // catch-all, not a stale literal that no longer matches anything.
         var activeCats = (categories && categories.length > 0) ? categories : DEFAULT_CATEGORIES;
         var other = activeCats.find(function(c) { return c.id === "other"; }) || activeCats[activeCats.length - 1];
-        return { name: "", category: other.label, categoryEmoji: other.emoji, quantity: 1, unit: "יחידות", note: "", barcodes: {}, matchedNames: {}, originalName: null };
+        return { name: "", category: other.label, categoryEmoji: other.emoji, quantity: 1, unit: "יחידות", note: "", optional: false, barcodes: {}, matchedNames: {}, originalName: null };
       };
       const [draft, setDraft] = useState(function() {
         if (!isEdit || !item) return blankDraft();
@@ -6239,6 +6419,15 @@
               <input value={draft.note} onChange={function(e) { setDraft(Object.assign({}, draft, { note: e.target.value })); }} placeholder="אופציונלי"
                 className="w-full border border-gray-200 rounded-xl px-4 py-3 text-right focus:outline-none focus:border-blue-400" />
             </div>
+            {pricingEnabled && (
+              <div className="flex items-center justify-between">
+                <span className="text-sm text-gray-600">פריט לא חיוני (לא חובה לקנות)</span>
+                <button type="button" onClick={function() { setDraft(Object.assign({}, draft, { optional: !draft.optional })); }}
+                  className={"relative inline-flex h-6 w-11 items-center rounded-full transition-colors flex-shrink-0 " + (draft.optional ? "bg-blue-600" : "bg-gray-200")}>
+                  <span className={"inline-block h-4 w-4 rounded-full bg-white shadow transition-transform " + (draft.optional ? "translate-x-6" : "translate-x-1")} />
+                </button>
+              </div>
+            )}
           </div>
           )}
           {showVendorsTab && (

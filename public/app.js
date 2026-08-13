@@ -1,6 +1,6 @@
     const { useState, useEffect, useRef } = React;
 
-    const VERSION = "v6.59";
+    const VERSION = "v6.60";
 
     // ── CONFIG ────────────────────────────────────────────────────────────────────
     const FIREBASE_CONFIG = {
@@ -849,7 +849,7 @@
             </button>
           )}
           {screen === "home"       && <HomeScreen       user={user} isAdmin={role === "admin" && !simulateRegular} isRealAdmin={role === "admin"} simulating={simulateRegular} onToggleSimulate={toggleSimulate} onOpenList={goList} onCategories={() => go("categories")} showToast={setToast} onAddTask={() => goAdd("tasks_" + user.uid, "tasks")} onCreateShoppingList={(id, name, single) => single ? goList(id, name) : goAdd(id, "shopping", name)} onCreateNotesList={(id, name) => goAdd(id, "notes", name)} autoOpenSettings={autoOpenSettings} onAutoOpenedSettings={() => setAutoOpenSettings(false)} fontScale={fontScale} onSetFontScale={setFontScale} />}
-          {screen === "list"       && <ListScreen       user={user} listId={listId} onBack={goBack} onMenu={goMenu} onAdd={(type, name) => goAdd(listId, type, name || listName)} showToast={setToast} />}
+          {screen === "list"       && <ListScreen       user={user} listId={listId} onBack={goBack} onMenu={goMenu} onHome={goHome} onAdd={(type, name) => goAdd(listId, type, name || listName)} showToast={setToast} />}
           {screen === "add"        && <AddScreen        user={user} listId={listId} listType={listType} listName={listName} onBack={goBack} onMenu={goMenu} showToast={setToast} showStickyToast={setStickyToast} />}
           {screen === "categories" && <CategoriesScreen user={user} onBack={goBack} showToast={setToast} />}
           {toast && <Toast msg={toast} onClose={() => setToast("")} />}
@@ -3804,7 +3804,7 @@
     }
 
     // ── LIST SCREEN ───────────────────────────────────────────────────────────────
-    function ListScreen({ user, listId, onBack, onMenu, onAdd, showToast }) {
+    function ListScreen({ user, listId, onBack, onMenu, onHome, onAdd, showToast }) {
       const [categories, setCategories] = useState([]);
       const [list,       setList]       = useState(null);
       const [items,      setItems]      = useState([]);
@@ -3843,6 +3843,7 @@
       const [optimizerPlans, setOptimizerPlans] = useState([]);
       const [selectedPlanK, setSelectedPlanK] = useState(null);
       const [creatingListsFromPlan, setCreatingListsFromPlan] = useState(false);
+      const [createdListsCount, setCreatedListsCount] = useState(null);
       const [pricingEnabled, setPricingEnabled] = useState(true);
       const [keyboardWarningEnabled, setKeyboardWarningEnabled] = useState(true);
       const [addMode, setAddMode] = useState("single"); // "group" | "single"
@@ -4304,6 +4305,7 @@
         if (visibleProfiles.length === 0) { showToast("אין רשתות מוצגות להשוואה — הפעילו לפחות רשת אחת"); return; }
         setShowOptimizer(true);
         setSelectedPlanK(null);
+        setCreatedListsCount(null);
         setOptimizerLoading(true);
         var barcodesByVendor = onlyVisibleVendorBarcodes(collectBarcodesByVendor(items.filter(function(i) { return !i.done; })));
         fetchPrices(barcodesByVendor, false).then(function() {
@@ -4340,8 +4342,12 @@
         });
         db.ref().update(updates).then(function() {
           setCreatingListsFromPlan(false);
-          showToast(createdCount + " רשימות נוצרו!");
-          setShowOptimizer(false);
+          // The home screen's list cache is a module-level snapshot that's
+          // only ever (re)fetched when empty — without invalidating it here,
+          // going home right after this would still show the pre-creation
+          // snapshot, silently missing the lists just created.
+          homeDataCache = null;
+          setCreatedListsCount(createdCount);
         }, function(err) { setCreatingListsFromPlan(false); showToast("שגיאה: " + (err && err.message || "?")); });
       };
 
@@ -5045,6 +5051,21 @@
           {showOptimizer && (
             <Modal onClose={function() { setShowOptimizer(false); }}>
               <h3 className="text-lg font-bold text-center mb-1">אופטימיזציית קניות</h3>
+              {createdListsCount != null ? (
+                <div className="text-center py-4">
+                  <div className="text-4xl mb-3">✅</div>
+                  <p className="text-gray-700 font-medium mb-5">{createdListsCount} רשימות נוצרו!</p>
+                  <div className="flex gap-2">
+                    <button onClick={function() { setShowOptimizer(false); }} className="flex-1 py-3 rounded-2xl border border-gray-200 text-gray-600 font-medium text-sm">
+                      סגור
+                    </button>
+                    <button onClick={function() { setShowOptimizer(false); onHome(); }} className="flex-1 bg-blue-600 text-white py-3 rounded-2xl font-semibold text-sm">
+                      🏠 לדף הבית
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <React.Fragment>
               <p className="text-xs text-gray-400 text-center mb-4">השוואת עלות קנייה במספר חנויות שונה — הרשימה המקורית לא משתנה</p>
               {optimizerLoading ? (
                 <div className="flex justify-center py-10"><Spinner large /></div>
@@ -5099,6 +5120,8 @@
                     );
                   })}
                 </div>
+              )}
+                </React.Fragment>
               )}
             </Modal>
           )}
@@ -5735,7 +5758,7 @@
                 var editable = !!(onEditItem && (!canEditItem || canEditItem(item)));
                 return (
                   <tr key={item.id} className={editable ? "cursor-pointer active:bg-gray-50" : ""} onClick={editable ? function() { onEditItem(item); } : undefined}>
-                    <td className={"sticky right-0 bg-white z-10 px-3 py-2 border-b border-gray-100 text-right " + (item.done ? "line-through text-gray-400" : (editable ? "text-blue-600 underline decoration-blue-200 underline-offset-2" : "text-gray-800"))}>
+                    <td className={"sticky right-0 bg-white z-10 px-3 py-2 border-b border-gray-100 text-right " + (item.done ? "line-through text-gray-400" : item.optional ? ("text-gray-400" + (editable ? " underline decoration-gray-300 underline-offset-2" : "")) : (editable ? "text-blue-600 underline decoration-blue-200 underline-offset-2" : "text-gray-800"))}>
                       {itemHasMixedVendorMatches(item, activeProfiles.map(function(p) { return p.vendor; })) && <span className="text-amber-500 font-bold" title="הרשתות מותאמות למוצרים שונים">! </span>}
                       {itemDisplayName(item)}
                       {qty !== 1 && <span className="text-gray-400"> ({qty})</span>}
@@ -5833,7 +5856,7 @@
             )}
             <div className="flex-1 min-w-0">
               <span onClick={!isTasks && canEdit ? function(e) { e.stopPropagation(); onEdit(); } : undefined}
-                className={`font-medium text-sm ${item.done ? "line-through text-gray-400" : (!isTasks && item.optional) ? "text-gray-400" : (!isTasks && canEdit ? "text-blue-600 underline decoration-blue-200 underline-offset-2" : "text-gray-800")} ${!isTasks && canEdit ? "cursor-pointer" : ""}`}>
+                className={`font-medium text-sm ${item.done ? "line-through text-gray-400" : (!isTasks && item.optional) ? ("text-gray-400" + (canEdit ? " underline decoration-gray-300 underline-offset-2" : "")) : (!isTasks && canEdit ? "text-blue-600 underline decoration-blue-200 underline-offset-2" : "text-gray-800")} ${!isTasks && canEdit ? "cursor-pointer" : ""}`}>
                 {!isTasks && activeProfiles && itemHasMixedVendorMatches(item, activeProfiles.map(function(p) { return p.vendor; })) && <span className="text-amber-500 no-underline" title="הרשתות מותאמות למוצרים שונים">! </span>}
                 {itemDisplayName(item)}
               </span>
@@ -6419,11 +6442,6 @@
                 })}
               </div>
             </div>
-            <div>
-              <label className="text-xs text-gray-500 block mb-1">הערה</label>
-              <input value={draft.note} onChange={function(e) { setDraft(Object.assign({}, draft, { note: e.target.value })); }} placeholder="אופציונלי"
-                className="w-full border border-gray-200 rounded-xl px-4 py-3 text-right focus:outline-none focus:border-blue-400" />
-            </div>
             {pricingEnabled && (
               <div className="flex items-center justify-between">
                 <span className="text-sm text-gray-600">פריט לא חיוני (לא חובה לקנות)</span>
@@ -6433,6 +6451,11 @@
                 </button>
               </div>
             )}
+            <div>
+              <label className="text-xs text-gray-500 block mb-1">הערה</label>
+              <input value={draft.note} onChange={function(e) { setDraft(Object.assign({}, draft, { note: e.target.value })); }} placeholder="אופציונלי"
+                className="w-full border border-gray-200 rounded-xl px-4 py-3 text-right focus:outline-none focus:border-blue-400" />
+            </div>
           </div>
           )}
           {showVendorsTab && (

@@ -1,6 +1,6 @@
     const { useState, useEffect, useRef } = React;
 
-    const VERSION = "v6.56";
+    const VERSION = "v6.57";
 
     // ── CONFIG ────────────────────────────────────────────────────────────────────
     const FIREBASE_CONFIG = {
@@ -5079,6 +5079,29 @@
                               </button>
                             );
                           })}
+                      </div>
+                    </div>
+                  )}
+                  {/* Without pricing there's no barcode/vendor data to filter
+                      items by — this only ever reorders categories to match
+                      a store's aisle layout (profiles = globalProfiles,
+                      the shared "סידור בחנות" list), same mechanism as the
+                      toolbar's שם/קטגוריה picker, just reachable from here too. */}
+                  {!pricingEnabled && !isTasks && profiles.length > 0 && (
+                    <div>
+                      <div className="text-gray-400 text-xs mb-1">סידור לפי חנות</div>
+                      <div className="flex flex-wrap gap-1">
+                        {[{ id: "default", name: "ברירת מחדל" }].concat(profiles).map(function(p) {
+                          return (
+                            <button key={p.id} onClick={function() {
+                              setSortBy("category");
+                              setActiveProfile(p.id);
+                              localStorage.setItem("buli_profile", p.id);
+                            }} className={"text-xs px-2.5 py-1 rounded-full transition whitespace-nowrap border " + (activeProfile===p.id ? "bg-blue-600 text-white border-blue-600 font-semibold" : "bg-white text-gray-500 border-gray-200")}>
+                              {p.name}
+                            </button>
+                          );
+                        })}
                       </div>
                     </div>
                   )}

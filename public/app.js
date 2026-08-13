@@ -1,6 +1,6 @@
     const { useState, useEffect, useRef } = React;
 
-    const VERSION = "v6.61";
+    const VERSION = "v6.62";
 
     // ── CONFIG ────────────────────────────────────────────────────────────────────
     const FIREBASE_CONFIG = {
@@ -4319,17 +4319,36 @@
       // is only ever computed on the fly, never saved.
       const createListsFromPlan = function(plan) {
         setCreatingListsFromPlan(true);
+        loadMyListsFor(user.uid).then(function(myLists) {
         var now = Date.now();
         var updates = {};
         var createdCount = 0;
+        var createdRefs = []; // [{id, name, profile}], in plan.vendors order
+        var visiblePool = visibleProfiles.length > 0 ? visibleProfiles : activeProfiles;
         plan.vendors.forEach(function(p) {
           var vendorItems = plan.byVendor[p.id] || [];
           if (vendorItems.length === 0) return;
+          // Numbered so re-running the optimizer on the same list doesn't
+          // produce indistinguishable duplicate names.
+          var baseName = list.name + " - " + profileLabel(p, plan.vendors);
+          var maxNum = 0;
+          myLists.forEach(function(l) {
+            if (l.name && l.name.indexOf(baseName + " #") === 0) {
+              var num = parseInt(l.name.substring((baseName + " #").length), 10);
+              if (!isNaN(num) && num > maxNum) maxNum = num;
+            }
+          });
+          var listName = baseName + " #" + (maxNum + 1);
           var newListId = db.ref("lists").push().key;
-          var listName = list.name + " - " + profileLabel(p, plan.vendors);
           createdCount++;
+          createdRefs.push({ id: newListId, name: listName, profile: p });
           updates["lists/" + newListId] = { name: listName, type: "shopping", isPrivate: false, done: false, ownerId: user.uid, ownerName: user.displayName, sharedWith: {}, createdAt: now };
           updates["listsByUser/" + user.uid + "/" + newListId] = true;
+          // Only this vendor should be displayed on the new list — hide
+          // every other currently-visible vendor for it.
+          visiblePool.forEach(function(vp) {
+            if (vp.id !== p.id) updates["users/" + user.uid + "/listVendorFilters/" + newListId + "/" + vp.id] = false;
+          });
           vendorItems.forEach(function(entry, idx) {
             var itemKey = db.ref("items/" + newListId).push().key;
             updates["items/" + newListId + "/" + itemKey] = {
@@ -4347,8 +4366,21 @@
           // going home right after this would still show the pre-creation
           // snapshot, silently missing the lists just created.
           homeDataCache = null;
+          // "Selected" here means the app's one "major list" concept
+          // (buli_major_list, already used elsewhere to auto-open a list) —
+          // only one can hold that, so it goes to the first list created.
+          // Same reasoning for the filter-by-vendor default (buli_filter_vendor
+          // is a device-wide "last used" setting, not stored per list), so
+          // only the first new list's vendor can meaningfully claim it; every
+          // new list still gets its own correct per-list vendor visibility above.
+          if (createdRefs.length > 0) {
+            var first = createdRefs[0];
+            localStorage.setItem("buli_major_list", JSON.stringify({ id: first.id, name: first.name }));
+            localStorage.setItem("buli_filter_vendor", first.profile.id);
+          }
           setCreatedListsCount(createdCount);
         }, function(err) { setCreatingListsFromPlan(false); showToast("שגיאה: " + (err && err.message || "?")); });
+        });
       };
 
       // Lighter than "🔄 רענן מחירים": that one force-refetches live from
@@ -5096,7 +5128,7 @@
                               if (vendorItems.length === 0) return null;
                               return (
                                 <div key={p.id} className="bg-gray-50 rounded-xl p-2.5">
-                                  <div className="text-xs font-semibold text-gray-600 mb-1">{profileLabel(p, plan.vendors)}</div>
+                                  <div className="text-xs font-semibold text-gray-600 mb-1">{profileLabel(p, plan.vendors)} ({vendorItems.length})</div>
                                   <div className="space-y-0.5">
                                     {vendorItems.map(function(entry) {
                                       return (

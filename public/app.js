@@ -1,6 +1,6 @@
     const { useState, useEffect, useRef } = React;
 
-    const VERSION = "v6.50";
+    const VERSION = "v6.51";
 
     // ── CONFIG ────────────────────────────────────────────────────────────────────
     const FIREBASE_CONFIG = {
@@ -1017,29 +1017,16 @@
       const [vendorRequestsLoading, setVendorRequestsLoading] = useState(false);
       const [vendorRequestsList, setVendorRequestsList] = useState([]);
       const [resettingToDefault, setResettingToDefault] = useState(false);
-      // A "group" is a named lens on the one shared pool of vendor+branch
-      // profiles — every profile is visible to every group, a group just
-      // toggles which ones are active for it (see profileActiveInGroup).
-      // The built-in default group (id null client-side, "default" server-
-      // side) is how every profile that existed before groups did keeps
-      // working with zero migration. The active-vendor cap applies per
-      // group, not summed across a user's groups.
-      const [vendorGroups, setVendorGroups] = useState({});
-      const [selectedGroupId, setSelectedGroupId] = useState(null);
       // Remembers the last tab per user (not just per session) so reopening
       // Settings later — even after a full reload — lands back where they
       // left off instead of always resetting to כללי.
       const [settingsTab, setSettingsTab] = useState(function() {
         return localStorage.getItem("buli_settings_tab_" + user.uid) || "general";
       }); // "general" | "users" | "vendors"
-      const [newGroupName, setNewGroupName] = useState("");
-      const [renamingGroupId, setRenamingGroupId] = useState(undefined); // undefined = not renaming; null is a valid target (the default group)
-      const [renameGroupInput, setRenameGroupInput] = useState("");
       const [contactMembers, setContactMembers] = useState(null);
 
       useEffect(function() {
         var profilesRef = null, onProfiles = null;
-        var groupsRef = null, onGroups = null;
         Promise.all([
           db.ref("users/" + user.uid + "/pricingEnabled").once("value"),
           db.ref("users/" + user.uid + "/menusEnabled").once("value"),
@@ -1062,91 +1049,36 @@
           profilesRef = db.ref("users/" + user.uid + "/vendorProfiles");
           onProfiles = function(snap2) { setVendorProfiles(snap2.val() || {}); };
           profilesRef.on("value", onProfiles);
-          groupsRef = db.ref("users/" + user.uid + "/vendorGroups");
-          onGroups = function(snap2) { setVendorGroups(snap2.val() || {}); };
-          groupsRef.on("value", onGroups);
           fns.httpsCallable("getPricingSettings")().then(function(res) {
             setMaxActiveVendors((res.data && res.data.maxActiveVendors) || 3);
           }).catch(function() {});
         });
         return function() {
           if (profilesRef && onProfiles) profilesRef.off("value", onProfiles);
-          if (groupsRef && onGroups) groupsRef.off("value", onGroups);
         };
       }, [user.uid]);
 
-      const activeCountInGroup = function(groupId) {
-        return Object.values(vendorProfiles).filter(function(p) { return p && profileActiveInGroup(p, groupId); }).length;
-      };
-      const activeVendorProfileCount = activeCountInGroup(selectedGroupId);
-      // Shown as the denominator everywhere a group's active count is
-      // displayed — deliberately the total pool size (every branch added
-      // under "כללי"), not the admin cap. The cap still limits how many can
-      // actually be toggled active at once, but showing it as X/cap read as
-      // "wrong" whenever the cap had changed since some were activated,
-      // since active count could then legitimately exceed it. Pool size is
-      // always a real, visible, easy-to-verify number instead.
+      const activeVendorProfileCount = Object.values(vendorProfiles).filter(function(p) { return p && profileActiveInGroup(p, null); }).length;
+      // Shown as the denominator next to the active count — deliberately the
+      // total pool size (every branch added), not the admin cap. The cap
+      // still limits how many can actually be toggled active at once, but
+      // showing it as X/cap read as "wrong" whenever the cap had changed
+      // since some were activated, since active count could then legitimately
+      // exceed it. Pool size is always a real, visible, easy-to-verify number.
       const vendorPoolSize = Object.keys(vendorProfiles).length;
-      // [{id, name, activeCount}], default group (id null) always first.
-      // Profiles are one shared pool now — a group's "count" is just how
-      // many of that pool are toggled active for it, not a member list.
-      const vendorGroupList = (function() {
-        var named = Object.entries(vendorGroups).filter(function(e) { return e[0] !== "default"; }).map(function(e) {
-          return { id: e[0], name: e[1].name, activeCount: activeCountInGroup(e[0]) };
-        });
-        named.sort(function(a, b) { return (a.name || "").localeCompare(b.name || "", "he"); });
-        var def = { id: null, name: (vendorGroups.default && vendorGroups.default.name) || "כללי", activeCount: activeCountInGroup(null) };
-        return [def].concat(named);
-      })();
 
-      const selectGroup = function(groupId) {
-        setSelectedGroupId(groupId);
-        setNewProfileVendorInput(""); setNewProfileBranchId(""); setBranchSearchQuery(""); setVendorRequestSent(false);
-      };
-
-      const createVendorGroup = function() {
-        if (!newGroupName.trim()) return;
-        db.ref("users/" + user.uid + "/vendorGroups").push({ name: newGroupName.trim(), createdAt: Date.now() }).then(function(ref) {
-          setNewGroupName("");
-          selectGroup(ref.key);
-        });
-      };
-
-      const renameVendorGroup = function(groupId, name) {
-        if (!name.trim()) { setRenamingGroupId(undefined); return; }
-        var path = groupId === null ? "default" : groupId;
-        db.ref("users/" + user.uid + "/vendorGroups/" + path).update({ name: name.trim() });
-        setRenamingGroupId(undefined);
-      };
-
-      const deleteVendorGroup = function(groupId) {
-        if (groupId === null) { showToast("לא ניתן למחוק את הקבוצה הראשית"); return; }
-        db.ref("users/" + user.uid + "/vendorGroups/" + groupId).remove();
-        if (selectedGroupId === groupId) selectGroup(null);
-      };
-
-      // Toggles whether an existing pool profile is active *for one group*
-      // — never creates or removes the profile itself, which is why a
-      // custom group never needs its own "add branch" flow.
-      const toggleVendorProfileActive = function(profileId, groupId) {
+      // Toggles whether an existing pool profile is active — never creates
+      // or removes the profile itself.
+      const toggleVendorProfileActive = function(profileId) {
         var p = vendorProfiles[profileId];
         if (!p) return;
-        var gid = groupId || "default";
-        var currentlyActive = profileActiveInGroup(p, gid);
-        if (!currentlyActive && activeCountInGroup(gid) >= maxActiveVendors) {
-          showToast("ניתן להשוות עד " + maxActiveVendors + " סניפים בו-זמנית בקבוצה זו");
+        var currentlyActive = profileActiveInGroup(p, null);
+        if (!currentlyActive && activeVendorProfileCount >= maxActiveVendors) {
+          showToast("ניתן להשוות עד " + maxActiveVendors + " סניפים בו-זמנית");
           return;
         }
         var updates = {};
-        if (!p.activeIn) {
-          // First-ever toggle on a profile still in one of the two older
-          // shapes — migrate its existing state into activeIn first, so its
-          // default-group status isn't silently lost the moment some other
-          // group starts toggling it (only the group being toggled right
-          // now would otherwise end up represented).
-          updates["users/" + user.uid + "/vendorProfiles/" + profileId + "/activeIn/" + (p.groupId || "default")] = !!p.active;
-        }
-        updates["users/" + user.uid + "/vendorProfiles/" + profileId + "/activeIn/" + gid] = !currentlyActive;
+        updates["users/" + user.uid + "/vendorProfiles/" + profileId + "/activeIn/default"] = !currentlyActive;
         db.ref().update(updates);
         // Every list caches its own last-known active-profiles snapshot for
         // the tab's lifetime (see the comment on priceCacheByList) so
@@ -1207,7 +1139,7 @@
         if (!vendor || !branchId) return;
         var alreadySaved = Object.values(vendorProfiles).some(function(p) { return p && p.vendor === vendor && String(p.branchId) === String(branchId); });
         if (alreadySaved) { showToast("הסניף כבר ברשימה שלך"); return; }
-        var canActivate = activeCountInGroup(null) < maxActiveVendors;
+        var canActivate = activeVendorProfileCount < maxActiveVendors;
         db.ref("users/" + user.uid + "/vendorProfiles").push({ vendor: vendor, branchId: branchId, addedAt: Date.now(), activeIn: { default: canActivate } });
         priceCacheByList = {};
         if (!canActivate) showToast("הסניף נוסף, אך לא הופעל — הגעת למגבלת " + maxActiveVendors + " סניפים פעילים בכללי");
@@ -2894,179 +2826,136 @@
               </button>
               {myPricingEnabled && (
                 <div className="space-y-2">
-                  {vendorGroupList.map(function(g) {
-                    var isOpen = showPricingSettings && selectedGroupId === g.id;
-                    var isRenaming = renamingGroupId === g.id;
-                    return (
-                      <div key={g.id || "default"}>
-                        {isRenaming ? (
-                          <div className="flex items-center gap-2 px-3 py-2">
-                            <input value={renameGroupInput} onChange={function(e) { setRenameGroupInput(e.target.value); }}
-                              autoFocus dir="rtl" className="flex-1 border border-blue-200 rounded-xl px-3 py-2 text-sm" />
-                            <button onClick={function() { renameVendorGroup(g.id, renameGroupInput); }} className="text-blue-600 text-sm font-medium px-2">שמור</button>
-                            <button onClick={function() { setRenamingGroupId(undefined); }} className="text-gray-400 text-sm px-1">בטל</button>
-                          </div>
-                        ) : (
-                          <button onClick={function() {
-                            if (isOpen) { setShowPricingSettings(false); return; }
-                            selectGroup(g.id); setShowPricingSettings(true);
-                            if (!vendorBranchLists.ramiLevy) loadVendorBranches();
-                          }} className={"w-full flex items-center justify-between px-3 py-3 rounded-xl border transition " + (isOpen ? "bg-white border-blue-200" : "bg-gray-50 border-transparent hover:bg-gray-100")}>
-                            <div className="flex items-center gap-3">
-                              <span className="text-lg w-7 text-center">💰</span>
-                              <div className="text-right">
-                                <div className="text-sm font-semibold text-gray-700 flex items-center gap-1.5">
-                                  {g.name}
-                                  <span onClick={function(e) { e.stopPropagation(); setRenamingGroupId(g.id); setRenameGroupInput(g.name === "כללי" ? "" : g.name); }}
-                                    className="text-gray-300 hover:text-blue-500 text-xs">✏️</span>
-                                </div>
-                                <div className="text-xs text-gray-400">{g.activeCount} / {vendorPoolSize} פעילים</div>
-                              </div>
-                            </div>
-                            <span className="text-gray-400 text-xs flex-shrink-0">{isOpen ? "▲ הסתר" : "▼ הצג"}</span>
+                  <button onClick={function() {
+                    if (showPricingSettings) { setShowPricingSettings(false); return; }
+                    setShowPricingSettings(true);
+                    if (!vendorBranchLists.ramiLevy) loadVendorBranches();
+                  }} className={"w-full flex items-center justify-between px-3 py-3 rounded-xl border transition " + (showPricingSettings ? "bg-white border-blue-200" : "bg-gray-50 border-transparent hover:bg-gray-100")}>
+                    <div className="flex items-center gap-3">
+                      <span className="text-lg w-7 text-center">💰</span>
+                      <div className="text-right">
+                        <div className="text-sm font-semibold text-gray-700">רשתות להשוואת מחירים</div>
+                        <div className="text-xs text-gray-400">{activeVendorProfileCount} / {vendorPoolSize} פעילים</div>
+                      </div>
+                    </div>
+                    <span className="text-gray-400 text-xs flex-shrink-0">{showPricingSettings ? "▲ הסתר" : "▼ הצג"}</span>
+                  </button>
+                  {showPricingSettings && (
+                    <div className="mt-2 bg-white border border-gray-100 rounded-2xl p-4">
+                      <div className="space-y-5">
+                        {/* The header row above still toggles open/closed,
+                            but re-tapping it to close wasn't obvious — this
+                            is a visible, unambiguous close action right
+                            where the user is already looking. */}
+                        <div className="flex items-center justify-between -mt-1">
+                          <span className="text-sm font-semibold text-gray-700">רשתות להשוואת מחירים</span>
+                          <button onClick={function() { setShowPricingSettings(false); }}
+                            className="text-gray-400 hover:text-gray-600 text-xs border border-gray-200 rounded-full px-2.5 py-1 flex items-center gap-1">
+                            ✕ סגור
                           </button>
-                        )}
-                        {isOpen && (
-                          <div className="mt-2 bg-white border border-gray-100 rounded-2xl p-4">
-                            <div className="space-y-5">
-                              {/* The header row above still toggles open/closed,
-                                  but re-tapping it to close wasn't obvious — this
-                                  is a visible, unambiguous close action right
-                                  where the user is already looking. */}
-                              <div className="flex items-center justify-between -mt-1">
-                                <span className="text-sm font-semibold text-gray-700">{g.name}</span>
-                                <button onClick={function() { setShowPricingSettings(false); }}
-                                  className="text-gray-400 hover:text-gray-600 text-xs border border-gray-200 rounded-full px-2.5 py-1 flex items-center gap-1">
-                                  ✕ סגור
-                                </button>
-                              </div>
-                              {g.id === null && (
-                                <div className="flex items-center justify-between">
-                                  <button onClick={resetToDefaultProfiles} disabled={resettingToDefault}
-                                    className="text-xs text-blue-500 border border-blue-200 bg-blue-50 rounded-full px-2.5 py-1 disabled:opacity-50 flex items-center gap-1">
-                                    {resettingToDefault ? <Spinner /> : "↩️"} החזר לרשימת ברירת המחדל
-                                  </button>
-                                  <div className="text-xs text-gray-400">
-                                    פעילים להשוואה: {activeVendorProfileCount} / {vendorPoolSize}
-                                  </div>
-                                </div>
-                              )}
-                              {g.id !== null && (
-                                <div>
-                                  <div className="text-xs text-gray-400 mb-2">
-                                    בחר אילו מהסניפים שלך פעילים בקבוצה הזו — אין צורך להוסיף אותם שוב, הם כבר ב"כללי".
-                                  </div>
-                                  <button onClick={function() { deleteVendorGroup(g.id); }}
-                                    className="text-xs text-red-400 border border-red-100 bg-red-50 rounded-full px-2.5 py-1">
-                                    🗑️ מחק קבוצה
-                                  </button>
-                                </div>
-                              )}
-                              {(function() {
-                                var poolProfiles = Object.entries(vendorProfiles);
-                                return poolProfiles.length > 0 && (
-                                  <div className="space-y-1.5">
-                                    {poolProfiles.map(function(entry) {
-                                      var pid = entry[0], p = entry[1];
-                                      var meta = VENDOR_LIST.find(function(x) { return x.id === p.vendor; });
-                                      var info = (vendorBranchLists[p.vendor] || {})[p.branchId] || {};
-                                      var isActive = profileActiveInGroup(p, g.id);
-                                      return (
-                                        <div key={pid} className={"flex items-center justify-between rounded-xl px-3 py-2 border " + (isActive ? "bg-green-50 border-green-200" : "bg-gray-50 border-transparent")}>
-                                          <div className="text-xs text-gray-700 flex-1 text-right">
-                                            <span className="font-semibold">{meta ? meta.label : p.vendor}</span>
-                                            {" — "}{info.name || ("סניף " + parseInt(p.branchId, 10))}{info.address ? " — " + info.address : ""}
-                                          </div>
-                                          <div className="flex items-center gap-2 flex-shrink-0">
-                                            <button onClick={function() { toggleVendorProfileActive(pid, g.id); }}
-                                              className={"text-xs border rounded-full px-2 py-0.5 " + (isActive ? "text-green-600 border-green-200 bg-white" : "text-gray-400 border-gray-200 bg-white")}>
-                                              {isActive ? "פעיל" : "כבוי"}
-                                            </button>
-                                            {g.id === null && <button onClick={function() { removeVendorProfile(pid); }} className="text-gray-300 hover:text-red-500 text-sm px-1">✕</button>}
-                                          </div>
-                                        </div>
-                                      );
-                                    })}
+                        </div>
+                        <div className="flex items-center justify-between">
+                          <button onClick={resetToDefaultProfiles} disabled={resettingToDefault}
+                            className="text-xs text-blue-500 border border-blue-200 bg-blue-50 rounded-full px-2.5 py-1 disabled:opacity-50 flex items-center gap-1">
+                            {resettingToDefault ? <Spinner /> : "↩️"} החזר לרשימת ברירת המחדל
+                          </button>
+                          <div className="text-xs text-gray-400">
+                            פעילים להשוואה: {activeVendorProfileCount} / {vendorPoolSize}
+                          </div>
+                        </div>
+                        {(function() {
+                          var poolProfiles = Object.entries(vendorProfiles);
+                          return poolProfiles.length > 0 && (
+                            <div className="space-y-1.5">
+                              {poolProfiles.map(function(entry) {
+                                var pid = entry[0], p = entry[1];
+                                var meta = VENDOR_LIST.find(function(x) { return x.id === p.vendor; });
+                                var info = (vendorBranchLists[p.vendor] || {})[p.branchId] || {};
+                                var isActive = profileActiveInGroup(p, null);
+                                return (
+                                  <div key={pid} className={"flex items-center justify-between rounded-xl px-3 py-2 border " + (isActive ? "bg-green-50 border-green-200" : "bg-gray-50 border-transparent")}>
+                                    <div className="text-xs text-gray-700 flex-1 text-right">
+                                      <span className="font-semibold">{meta ? meta.label : p.vendor}</span>
+                                      {" — "}{info.name || ("סניף " + parseInt(p.branchId, 10))}{info.address ? " — " + info.address : ""}
+                                    </div>
+                                    <div className="flex items-center gap-2 flex-shrink-0">
+                                      <button onClick={function() { toggleVendorProfileActive(pid); }}
+                                        className={"text-xs border rounded-full px-2 py-0.5 " + (isActive ? "text-green-600 border-green-200 bg-white" : "text-gray-400 border-gray-200 bg-white")}>
+                                        {isActive ? "פעיל" : "כבוי"}
+                                      </button>
+                                      <button onClick={function() { removeVendorProfile(pid); }} className="text-gray-300 hover:text-red-500 text-sm px-1">✕</button>
+                                    </div>
                                   </div>
                                 );
-                              })()}
-                              {g.id === null && (
-                              <div className="border-t border-gray-100 pt-3">
-                                <div className="text-xs font-semibold text-gray-500 mb-1.5">הוסף סניף להשוואה</div>
-                                <input list="vendor-name-suggestions" value={newProfileVendorInput}
-                                  onChange={function(e) { setNewProfileVendorInput(e.target.value); setNewProfileBranchId(""); setVendorRequestSent(false); setBranchSearchQuery(""); }}
-                                  placeholder="הקלד שם רשת, למשל: רמי לוי" dir="rtl"
-                                  className="w-full border border-gray-200 rounded-xl px-3 py-2 text-sm bg-white mb-2" />
-                                <datalist id="vendor-name-suggestions">
-                                  {VENDOR_NAME_SUGGESTIONS.map(function(name) { return <option key={name} value={name} />; })}
-                                </datalist>
-                                {(function() {
-                                  var trimmed = newProfileVendorInput.trim();
-                                  var matched = VENDOR_LIST.find(function(v) { return v.label === trimmed; });
-                                  var vendorLoading = matched ? vendorBranchLists[matched.id] == null : false;
-                                  var q = branchSearchQuery.trim().toLowerCase();
-                                  var branchEntries = matched ? Object.entries(vendorBranchLists[matched.id] || {})
-                                    .filter(function(entry) {
-                                      if (!q) return true;
-                                      var hay = ((entry[1].name || "") + " " + (entry[1].address || "") + " " + (entry[1].city || "") + " " + entry[0]).toLowerCase();
-                                      return hay.indexOf(q) !== -1;
-                                    })
-                                    .sort(function(a, b) { return (a[1].name||"").localeCompare(b[1].name||"", "he"); }) : [];
-                                  return (
-                                    <div>
-                                      {matched && (
-                                        <input value={branchSearchQuery} onChange={function(e) { setBranchSearchQuery(e.target.value); }}
-                                          placeholder="חפש סניף לפי שם או עיר..." dir="rtl"
-                                          className="w-full border border-gray-200 rounded-xl px-3 py-2 text-sm bg-white mb-2" />
-                                      )}
-                                      <div className="flex gap-2 items-center">
-                                        <select value={newProfileBranchId} disabled={!matched || vendorLoading} onChange={function(e) { setNewProfileBranchId(e.target.value); }}
-                                          className="flex-1 min-w-0 border border-gray-200 rounded-xl px-3 py-2 text-sm bg-white disabled:bg-gray-50 disabled:text-gray-400">
-                                          <option value="">
-                                            {!matched ? "הקלד רשת קודם" : vendorLoading ? "טוען סניפים..." : branchEntries.length > 0 ? "בחר סניף... (" + branchEntries.length + ")" : "לא נמצאו סניפים"}
-                                          </option>
-                                          {branchEntries.map(function(entry) {
-                                            return <option key={entry[0]} value={entry[0]}>{entry[1].name} — {entry[1].address} (סניף {parseInt(entry[0], 10)})</option>;
-                                          })}
-                                        </select>
-                                        {vendorLoading && <Spinner />}
-                                        <button onClick={function() { addVendorProfile(matched.id, newProfileBranchId); }} disabled={!matched || !newProfileBranchId}
-                                          className="bg-blue-600 text-white text-sm px-3 py-2 rounded-xl font-medium disabled:opacity-40 flex-shrink-0">+ הוסף</button>
-                                      </div>
-                                      {trimmed && !matched && (
-                                        <div className="bg-orange-50 border border-orange-100 rounded-xl p-3 text-xs text-orange-700 space-y-2 mt-2">
-                                          <div>"{trimmed}" עדיין לא נתמכת בבולי.</div>
-                                          {vendorRequestSent ? (
-                                            <div className="text-green-600 font-medium">הבקשה נשלחה למנהל ✓</div>
-                                          ) : (
-                                            <button onClick={function() { requestVendorSupport(trimmed); }}
-                                              className="text-orange-700 font-medium border border-orange-200 bg-white rounded-lg px-3 py-1.5">
-                                              בקש מהמנהל להוסיף את הרשת
-                                            </button>
-                                          )}
-                                        </div>
-                                      )}
-                                    </div>
-                                  );
-                                })()}
-                              </div>
-                              )}
+                              })}
                             </div>
-                          </div>
-                        )}
+                          );
+                        })()}
+                        <div className="border-t border-gray-100 pt-3">
+                          <div className="text-xs font-semibold text-gray-500 mb-1.5">הוסף סניף להשוואה</div>
+                          <input list="vendor-name-suggestions" value={newProfileVendorInput}
+                            onChange={function(e) { setNewProfileVendorInput(e.target.value); setNewProfileBranchId(""); setVendorRequestSent(false); setBranchSearchQuery(""); }}
+                            placeholder="הקלד שם רשת, למשל: רמי לוי" dir="rtl"
+                            className="w-full border border-gray-200 rounded-xl px-3 py-2 text-sm bg-white mb-2" />
+                          <datalist id="vendor-name-suggestions">
+                            {VENDOR_NAME_SUGGESTIONS.map(function(name) { return <option key={name} value={name} />; })}
+                          </datalist>
+                          {(function() {
+                            var trimmed = newProfileVendorInput.trim();
+                            var matched = VENDOR_LIST.find(function(v) { return v.label === trimmed; });
+                            var vendorLoading = matched ? vendorBranchLists[matched.id] == null : false;
+                            var q = branchSearchQuery.trim().toLowerCase();
+                            var branchEntries = matched ? Object.entries(vendorBranchLists[matched.id] || {})
+                              .filter(function(entry) {
+                                if (!q) return true;
+                                var hay = ((entry[1].name || "") + " " + (entry[1].address || "") + " " + (entry[1].city || "") + " " + entry[0]).toLowerCase();
+                                return hay.indexOf(q) !== -1;
+                              })
+                              .sort(function(a, b) { return (a[1].name||"").localeCompare(b[1].name||"", "he"); }) : [];
+                            return (
+                              <div>
+                                {matched && (
+                                  <input value={branchSearchQuery} onChange={function(e) { setBranchSearchQuery(e.target.value); }}
+                                    placeholder="חפש סניף לפי שם או עיר..." dir="rtl"
+                                    className="w-full border border-gray-200 rounded-xl px-3 py-2 text-sm bg-white mb-2" />
+                                )}
+                                <div className="flex gap-2 items-center">
+                                  <select value={newProfileBranchId} disabled={!matched || vendorLoading} onChange={function(e) { setNewProfileBranchId(e.target.value); }}
+                                    className="flex-1 min-w-0 border border-gray-200 rounded-xl px-3 py-2 text-sm bg-white disabled:bg-gray-50 disabled:text-gray-400">
+                                    <option value="">
+                                      {!matched ? "הקלד רשת קודם" : vendorLoading ? "טוען סניפים..." : branchEntries.length > 0 ? "בחר סניף... (" + branchEntries.length + ")" : "לא נמצאו סניפים"}
+                                    </option>
+                                    {branchEntries.map(function(entry) {
+                                      return <option key={entry[0]} value={entry[0]}>{entry[1].name} — {entry[1].address} (סניף {parseInt(entry[0], 10)})</option>;
+                                    })}
+                                  </select>
+                                  {vendorLoading && <Spinner />}
+                                  <button onClick={function() { addVendorProfile(matched.id, newProfileBranchId); }} disabled={!matched || !newProfileBranchId}
+                                    className="bg-blue-600 text-white text-sm px-3 py-2 rounded-xl font-medium disabled:opacity-40 flex-shrink-0">+ הוסף</button>
+                                </div>
+                                {trimmed && !matched && (
+                                  <div className="bg-orange-50 border border-orange-100 rounded-xl p-3 text-xs text-orange-700 space-y-2 mt-2">
+                                    <div>"{trimmed}" עדיין לא נתמכת בבולי.</div>
+                                    {vendorRequestSent ? (
+                                      <div className="text-green-600 font-medium">הבקשה נשלחה למנהל ✓</div>
+                                    ) : (
+                                      <button onClick={function() { requestVendorSupport(trimmed); }}
+                                        className="text-orange-700 font-medium border border-orange-200 bg-white rounded-lg px-3 py-1.5">
+                                        בקש מהמנהל להוסיף את הרשת
+                                      </button>
+                                    )}
+                                  </div>
+                                )}
+                              </div>
+                            );
+                          })()}
+                        </div>
                       </div>
-                    );
-                  })}
-                  <div className="flex items-center gap-2 px-1 pt-1">
-                    <input value={newGroupName} onChange={function(e) { setNewGroupName(e.target.value); }}
-                      placeholder="שם קבוצה חדשה, למשל: קניה גדולה" dir="rtl"
-                      className="flex-1 border border-gray-200 rounded-xl px-3 py-2 text-sm bg-white" />
-                    <button onClick={createVendorGroup} disabled={!newGroupName.trim()}
-                      className="bg-blue-600 text-white text-sm px-3 py-2 rounded-xl font-medium disabled:opacity-40 flex-shrink-0">+ קבוצה</button>
-                  </div>
+                    </div>
+                  )}
                   {isAdmin && (
                     <div className="pt-3 border-t border-gray-100 flex items-center justify-between">
-                      <div className="text-xs font-semibold text-gray-500">מגבלת סניפים פעילים לכל קבוצה (מנהל)</div>
+                      <div className="text-xs font-semibold text-gray-500">מגבלת סניפים פעילים</div>
                       <input type="number" min="1" max="10" value={maxActiveVendors}
                         onChange={function(e) { saveMaxActiveVendors(e.target.value); }}
                         className="w-16 border border-gray-200 rounded-xl px-2 py-1.5 text-sm text-center" />
@@ -3920,6 +3809,11 @@
       // barcodes with a real single-item promo cheaper than the catalog
       // price (see itemProfilePrices); everything else is just absent.
       const [promoMap,       setPromoMap]       = useState(function() { return (priceCacheEntry && priceCacheEntry.promoMap) || {}; });
+      // Which of this user's active vendors this specific list has hidden —
+      // per-user, per-list, persisted (users/{uid}/listVendorFilters/{listId})
+      // so it survives sessions/devices. Absence of a profile's id here means
+      // visible (default-on) — only explicit hides are stored, sparse.
+      const [hiddenVendorProfileIds, setHiddenVendorProfileIds] = useState(function() { return new Set(); });
       // { [itemName]: { vendors: [chainIds searched], list: [candidates] } }
       const [candidatesByName, setCandidatesByName] = useState({});
       const [pickerItem,      setPickerItem]      = useState(null);
@@ -3931,19 +3825,8 @@
       // item" button hasn't appeared yet but real work is happening.
       const [resolvingNames,  setResolvingNames]  = useState(function() { return new Set(); });
       const itemsListenerRef = useRef(null); // { ref, cb } for the live items subscription below
-      // Which vendor group this list compares against — null means the
-      // default group (today's behavior for every list that never picks
-      // one). Only loaded/shown once pricing is enabled.
-      const [vendorGroups, setVendorGroups] = useState({});
-      useEffect(function() {
-        if (!pricingEnabled) return;
-        var ref = db.ref("users/" + user.uid + "/vendorGroups");
-        var cb = function(snap) { setVendorGroups(snap.val() || {}); };
-        ref.on("value", cb);
-        return function() { ref.off("value", cb); };
-      }, [pricingEnabled, user.uid]);
 
-      // A real browse/search view of this list's group's promotions — lazy-
+      // A real browse/search view of this user's active vendors' promotions — lazy-
       // loaded only when opened, not on every list open (could be a lot of
       // data across a group's active branches).
       const [showPromoBrowser, setShowPromoBrowser] = useState(false);
@@ -3955,7 +3838,7 @@
         setShowPromoBrowser(true);
         setSelectedPromoItems({});
         if (promoBrowserData !== null) return;
-        fns.httpsCallable("getVendorPromotions")({ groupId: (list && list.vendorGroupId) || null }).then(function(res) {
+        fns.httpsCallable("getVendorPromotions")({}).then(function(res) {
           setPromoBrowserData(res.data);
         }, function() { setPromoBrowserData("error"); showToast("שגיאה בטעינת מבצעים"); });
       };
@@ -4022,17 +3905,6 @@
           showToast("נוסף: " + name);
           done();
         }, function(err) { showToast("שגיאה: " + (err && err.message || "?")); done(); });
-      };
-
-      const setListVendorGroup = function(groupId) {
-        db.ref("lists/" + listId + "/vendorGroupId").set(groupId || null);
-        setList(function(prev) { return prev ? Object.assign({}, prev, { vendorGroupId: groupId }) : prev; });
-        // The whole point of switching groups is a different vendor set —
-        // nothing in the old priceMap/activeProfiles applies anymore.
-        priceCacheByList[listId] = undefined;
-        setActiveProfiles([]);
-        setPriceMap({});
-        setPromoMap({});
       };
 
       const loadList = function() {
@@ -4115,6 +3987,12 @@
         db.ref("users/" + user.uid + "/keyboardWarning").once("value").then(function(snap) {
           setKeyboardWarningEnabled(snap.val() !== false);
         });
+        db.ref("users/" + user.uid + "/listVendorFilters/" + listId).once("value").then(function(snap) {
+          var val = snap.val() || {};
+          var hidden = new Set();
+          Object.keys(val).forEach(function(pid) { if (val[pid] === false) hidden.add(pid); });
+          setHiddenVendorProfileIds(hidden);
+        });
       };
       useEffect(function() {
         loadList();
@@ -4182,6 +4060,17 @@
         });
         return out;
       }
+      // Drops any vendor this list currently has hidden — used at every
+      // manual "bring me prices" action so a hidden vendor never gets
+      // fetched just because the user asked to refresh everything else.
+      function onlyVisibleVendorBarcodes(barcodesByVendor) {
+        var visibleVendorIds = visibleProfiles.map(function(p) { return p.vendor; });
+        var out = {};
+        Object.keys(barcodesByVendor).forEach(function(v) {
+          if (visibleVendorIds.indexOf(v) !== -1) out[v] = barcodesByVendor[v];
+        });
+        return out;
+      }
       const applyItemMatch = (item, vendorBarcodes, matchedName, vendorNames) => {
         var nextBarcodes = Object.assign({}, item.barcodes, vendorBarcodes);
         var updates = { barcodes: nextBarcodes };
@@ -4203,7 +4092,7 @@
       const fetchPrices = (barcodesByVendor, force) => {
         var hasAny = Object.keys(barcodesByVendor || {}).some(function(v) { return barcodesByVendor[v] && barcodesByVendor[v].length > 0; });
         if (!hasAny) return Promise.resolve(null);
-        return fns.httpsCallable("getBasketPrices")({ barcodesByVendor: barcodesByVendor, force: !!force, groupId: (list && list.vendorGroupId) || null }).then(function(res) {
+        return fns.httpsCallable("getBasketPrices")({ barcodesByVendor: barcodesByVendor, force: !!force }).then(function(res) {
           var byProfile = res.data.prices || {};
           var byProfilePromo = res.data.promoPrices || {};
           var nextProfiles = res.data.profiles || activeProfiles;
@@ -4237,13 +4126,13 @@
       // This bootstraps it directly, once, independent of pricing.
       useEffect(function() {
         if (!pricingEnabled || activeProfiles.length > 0) return;
-        fns.httpsCallable("getBasketPrices")({ barcodesByVendor: {}, force: false, groupId: (list && list.vendorGroupId) || null }).then(function(res) {
+        fns.httpsCallable("getBasketPrices")({ barcodesByVendor: {}, force: false }).then(function(res) {
           if (res.data.profiles && res.data.profiles.length > 0) {
             setActiveProfiles(res.data.profiles);
             priceCacheByList[listId] = Object.assign({}, priceCacheByList[listId], { activeProfiles: res.data.profiles });
           }
         }).catch(function() {});
-      }, [pricingEnabled, list && list.vendorGroupId]);
+      }, [pricingEnabled]);
 
       const [pricesRefreshing, setPricesRefreshing] = useState(false);
       const [pricesLoading, setPricesLoading] = useState(false);
@@ -4267,7 +4156,7 @@
       };
 
       const refreshAllPrices = () => {
-        var barcodesByVendor = collectBarcodesByVendor(items.filter(itemHasAnyBarcode));
+        var barcodesByVendor = onlyVisibleVendorBarcodes(collectBarcodesByVendor(items.filter(itemHasAnyBarcode)));
         if (Object.keys(barcodesByVendor).length === 0) { showToast("אין פריטים עם ברקוד לרענון"); return; }
         setRefreshDialog(null);
         setPricesRefreshing(true);
@@ -4290,6 +4179,27 @@
         });
       };
 
+      // Which of this user's active vendors this list currently shows/hides
+      // (see hiddenVendorProfileIds) — hiding one stops fetching its prices
+      // here entirely (performance); showing one again brings its prices in
+      // immediately below instead of waiting for the next background pass.
+      const toggleListVendorVisibility = (profileId) => {
+        var nowHidden = !hiddenVendorProfileIds.has(profileId);
+        setHiddenVendorProfileIds(function(prev) {
+          var next = new Set(prev);
+          if (nowHidden) next.add(profileId); else next.delete(profileId);
+          return next;
+        });
+        db.ref("users/" + user.uid + "/listVendorFilters/" + listId + "/" + profileId).set(nowHidden ? false : null);
+        if (nowHidden) return;
+        var profile = activeProfiles.find(function(p) { return p.id === profileId; });
+        if (!profile) return;
+        var all = collectBarcodesByVendor(items.filter(itemHasAnyBarcode));
+        var only = {};
+        if (all[profile.vendor] && all[profile.vendor].length > 0) only[profile.vendor] = all[profile.vendor];
+        if (Object.keys(only).length > 0) fetchPrices(only, false);
+      };
+
       // Lighter than "🔄 רענן מחירים": that one force-refetches live from
       // each vendor's catalog (a real, slower re-scrape, hence the
       // confirmation dialog). This just re-pulls prices for barcodes the
@@ -4300,7 +4210,7 @@
       // unresolvedSignature effect above) — not a live vendor round-trip,
       // so it's fast and doesn't need a "which vendor" picker.
       const quickRefreshPrices = () => {
-        var barcodesByVendor = collectBarcodesByVendor(items.filter(itemHasAnyBarcode));
+        var barcodesByVendor = onlyVisibleVendorBarcodes(collectBarcodesByVendor(items.filter(itemHasAnyBarcode)));
         if (Object.keys(barcodesByVendor).length === 0) { showToast("אין פריטים עם ברקוד לעדכן"); return; }
         setQuickRefreshing(true);
         fetchPrices(barcodesByVendor, false).then(function() {
@@ -4313,9 +4223,9 @@
         var barcodesByVendor = collectBarcodesByVendor(items.filter(itemHasAnyBarcode));
         if (Object.keys(barcodesByVendor).length === 0) { showToast("אין פריטים עם ברקוד לרענון"); return; }
         setRefreshDialog({ loading: true, rows: [] });
-        fns.httpsCallable("getActiveCatalogTimestamps")({ groupId: (list && list.vendorGroupId) || null }).then(function(res) {
+        fns.httpsCallable("getActiveCatalogTimestamps")({}).then(function(res) {
           var ts = res.data.timestamps || [];
-          var rows = activeProfiles
+          var rows = visibleProfiles
             .filter(function(p) { return barcodesByVendor[p.vendor] && barcodesByVendor[p.vendor].length > 0; })
             .map(function(p) {
               var t = ts.find(function(x) { return x.id === p.id; });
@@ -4331,7 +4241,14 @@
       // Only chains among the user's currently active profiles count as
       // "relevant" for missing-vendor checks — a saved-but-inactive (or
       // never-added) chain must never make an item look permanently unmatched.
+      // Deliberately the full active pool, not visibleProfiles — matching
+      // stays on in the background for hidden vendors too, so they're ready
+      // the instant they're un-hidden instead of needing a fresh resolve.
       var activeVendorIds = activeProfiles.reduce(function(acc, p) { if (acc.indexOf(p.vendor) === -1) acc.push(p.vendor); return acc; }, []);
+      // What's actually displayed/priced for THIS list — the active pool
+      // minus whatever this list has hidden. Every price-fetch/render site
+      // should use this, not the raw activeProfiles.
+      var visibleProfiles = activeProfiles.filter(function(p) { return !hiddenVendorProfileIds.has(p.id); });
 
       // Renaming an item (e.g. via ItemDialog) doesn't change items.length,
       // so it wouldn't otherwise re-trigger a re-resolve for a still-unmatched
@@ -4343,7 +4260,7 @@
         if (!pricingEnabled || items.length === 0) return;
         var barcoded = items.filter(itemHasAnyBarcode);
         if (barcoded.length > 0) {
-          var missing = missingBarcodesByVendor(barcoded, activeProfiles, priceMap);
+          var missing = missingBarcodesByVendor(barcoded, visibleProfiles, priceMap);
           var hasMissing = Object.keys(missing).some(function(v) { return missing[v] && missing[v].length > 0; });
           if (hasMissing) {
             setPricesLoading(true);
@@ -4366,7 +4283,7 @@
             return next;
           });
         };
-        fns.httpsCallable("resolveItemBarcodes")({ items: unresolvedNames, groupId: (list && list.vendorGroupId) || null }).then(function(res) {
+        fns.httpsCallable("resolveItemBarcodes")({ items: unresolvedNames }).then(function(res) {
           clearResolving();
           var results = res.data.results || {};
           var newlyResolved = [];
@@ -4407,7 +4324,7 @@
           }
         }).catch(function() { clearResolving(); });
         // eslint-disable-next-line react-hooks/exhaustive-deps
-      }, [pricingEnabled, items.length, unresolvedSignature, list && list.vendorGroupId]);
+      }, [pricingEnabled, items.length, unresolvedSignature]);
 
       useEffect(function() {
         if (pickerItem) setPickerQuery(pickerItem.name);
@@ -4639,7 +4556,7 @@
         var q = pickerQuery.trim();
         if (!q || pickerSearching) return;
         setPickerSearching(true);
-        fns.httpsCallable("resolveItemBarcodes")({ items: [q], force: true, groupId: (list && list.vendorGroupId) || null }).then(function(res) {
+        fns.httpsCallable("resolveItemBarcodes")({ items: [q], force: true }).then(function(res) {
           var r = (res.data.results || {})[q];
           setCandidatesByName(function(prev) {
             var next = Object.assign({}, prev);
@@ -4772,7 +4689,7 @@
             <div className="space-y-2">
               {[...arr].sort((a,b) => (a.name||"").localeCompare(b.name||"","he")).map(item =>
                 <ItemRow key={item.id} item={item} canEdit={canEditItem(item)} onToggle={toggle} onDelete={remove} onEdit={() => editFn(item)} onUpdateNote={updateNote} isTasks={false} currentUserId={user.uid}
-                  priceMap={priceMap} promoMap={promoMap} activeProfiles={activeProfiles} singleShopId={singleShopId} priceCandidates={candidatesByName[item.name]} onPickPrice={() => setPickerItem(item)} isResolving={resolvingNames.has(item.name)} />
+                  priceMap={priceMap} promoMap={promoMap} activeProfiles={visibleProfiles} singleShopId={singleShopId} priceCandidates={candidatesByName[item.name]} onPickPrice={() => setPickerItem(item)} isResolving={resolvingNames.has(item.name)} />
               )}
             </div>
           );
@@ -4794,7 +4711,7 @@
             </div>
             <div className="space-y-2">
               {group.items.map(item => <ItemRow key={item.id} item={item} canEdit={canEditItem(item)} onToggle={toggle} onDelete={remove} onEdit={() => editFn(item)} onUpdateNote={updateNote} isTasks={false} currentUserId={user.uid}
-                  priceMap={priceMap} promoMap={promoMap} activeProfiles={activeProfiles} singleShopId={singleShopId} priceCandidates={candidatesByName[item.name]} onPickPrice={() => setPickerItem(item)} isResolving={resolvingNames.has(item.name)} />)}
+                  priceMap={priceMap} promoMap={promoMap} activeProfiles={visibleProfiles} singleShopId={singleShopId} priceCandidates={candidatesByName[item.name]} onPickPrice={() => setPickerItem(item)} isResolving={resolvingNames.has(item.name)} />)}
             </div>
           </div>
         ));
@@ -4999,21 +4916,20 @@
                       </button>
                     </div>
                   )}
-                  {pricingEnabled && Object.keys(vendorGroups).length > 0 && (
+                  {pricingEnabled && !isTasks && activeProfiles.length > 0 && (
                     <div>
-                      <div className="text-gray-400 text-xs mb-1">קבוצת רשתות</div>
-                      <div className="flex flex-wrap gap-1">
-                        <button onClick={function() { setListVendorGroup(null); }}
-                          className={"text-xs px-2.5 py-1 rounded-full transition whitespace-nowrap border " + (!list.vendorGroupId ? "bg-blue-600 text-white border-blue-600 font-semibold" : "bg-white text-gray-500 border-gray-200")}>
-                          כללי
-                        </button>
-                        {Object.entries(vendorGroups).map(function(entry) {
-                          var gid = entry[0], g = entry[1];
+                      <div className="text-gray-400 text-xs mb-1">רשתות מוצגות</div>
+                      <div className="space-y-1">
+                        {activeProfiles.map(function(p) {
+                          var isVisible = !hiddenVendorProfileIds.has(p.id);
                           return (
-                            <button key={gid} onClick={function() { setListVendorGroup(gid); }}
-                              className={"text-xs px-2.5 py-1 rounded-full transition whitespace-nowrap border " + (list.vendorGroupId === gid ? "bg-blue-600 text-white border-blue-600 font-semibold" : "bg-white text-gray-500 border-gray-200")}>
-                              {g.name}
-                            </button>
+                            <div key={p.id} className="flex items-center justify-between rounded-xl px-2.5 py-1.5 bg-white border border-gray-200">
+                              <span className="text-xs text-gray-700">{profileLabel(p, activeProfiles)}</span>
+                              <button onClick={function() { toggleListVendorVisibility(p.id); }}
+                                className={"text-xs border rounded-full px-2 py-0.5 flex-shrink-0 " + (isVisible ? "text-green-600 border-green-200 bg-white" : "text-gray-400 border-gray-200 bg-white")}>
+                                {isVisible ? "מוצג" : "מוסתר"}
+                              </button>
+                            </div>
                           );
                         })}
                       </div>
@@ -5033,12 +4949,12 @@
                       })}
                     </div>
                   </div>
-                  {pricingEnabled && !isTasks && activeProfiles.length > 0 && (
+                  {pricingEnabled && !isTasks && visibleProfiles.length > 0 && (
                     <div>
                       <div className="text-gray-400 text-xs mb-1">הצג פריטים לחנות</div>
                       <div className="flex flex-wrap gap-1">
                         {[{ id: "all", label: "הכל" }]
-                          .concat(activeProfiles.map(function(p) { return { id: p.id, label: profileLabel(p, activeProfiles) }; }))
+                          .concat(visibleProfiles.map(function(p) { return { id: p.id, label: profileLabel(p, visibleProfiles) }; }))
                           .map(function(opt) {
                             return (
                               <button key={opt.id} onClick={function() {
@@ -5092,7 +5008,7 @@
                 <button onClick={clearAllFilters} className="mt-4 text-sm text-blue-500 bg-blue-50 px-5 py-2 rounded-full">נקה פילטרים</button>
               </div>
             ) : viewMode === "table" && pricingEnabled && !isTasks && !isNotes ? (
-              <PriceComparisonTable items={orderByCategory(items.filter(function(i) { return !i.done; }))} activeProfiles={activeProfiles} priceMap={priceMap} promoMap={promoMap} canEditItem={canEditItem} onEditItem={editFn} />
+              <PriceComparisonTable items={orderByCategory(items.filter(function(i) { return !i.done; }))} activeProfiles={visibleProfiles} priceMap={priceMap} promoMap={promoMap} canEditItem={canEditItem} onEditItem={editFn} />
             ) : isTasks ? (
               <>
                 {renderGroup(notDone)}
@@ -5127,11 +5043,11 @@
           )}
 
           {editItem && <ItemDialog mode="edit" item={editItem} categories={categories} pricingEnabled={pricingEnabled}
-            activeProfiles={activeProfiles} groupId={(list && list.vendorGroupId) || null} seedPriceMap={priceMap} seedPromoMap={promoMap}
+            activeProfiles={activeProfiles} seedPriceMap={priceMap} seedPromoMap={promoMap}
             keyboardWarningEnabled={keyboardWarningEnabled}
             onSave={saveEdit} onClose={() => setEditItem(null)} showToast={showToast} />}
           {showQuickAdd && <ItemDialog mode="add" categories={categories} pricingEnabled={pricingEnabled}
-            activeProfiles={activeProfiles} groupId={(list && list.vendorGroupId) || null}
+            activeProfiles={activeProfiles}
             keyboardWarningEnabled={keyboardWarningEnabled}
             onInsert={insertQuickAddItem} onClose={() => setShowQuickAdd(false)} showToast={showToast} />}
           {noteEdit && <NoteEditModal item={noteEdit} onSave={saveNoteEdit} onClose={function() { setNoteEdit(null); }} />}
@@ -5145,7 +5061,7 @@
                 רענון מושך מחיר עדכני ישירות מהרשת ועשוי לקחת עד דקה לכל רשת — לכן יש לו עלות. רשת שכבר עודכנה היום לא תיטען שוב.
               </p>
               <p className="text-xs text-gray-400 text-center mb-4">
-                מרענן רק את הרשתות הפעילות בקבוצה "{list.vendorGroupId && vendorGroups[list.vendorGroupId] ? vendorGroups[list.vendorGroupId].name : "כללי"}" של הרשימה הזו.
+                מרענן רק את הרשתות המוצגות ברשימה הזו.
               </p>
               {refreshDialog.loading ? (
                 <div className="flex justify-center py-6"><Spinner /></div>
@@ -5182,10 +5098,7 @@
 
           {showPromoBrowser && (
             <Modal onClose={function() { setShowPromoBrowser(false); }}>
-              <h3 className="text-lg font-bold text-center mb-1">מבצעים</h3>
-              <p className="text-xs text-gray-400 text-center mb-3">
-                {list.vendorGroupId && vendorGroups[list.vendorGroupId] ? vendorGroups[list.vendorGroupId].name : "כללי"}
-              </p>
+              <h3 className="text-lg font-bold text-center mb-3">מבצעים</h3>
               <input value={promoSearchQuery} onChange={function(e) { setPromoSearchQuery(e.target.value); }}
                 placeholder="חפש מוצר, למשל: קפה" dir="rtl"
                 className="w-full border border-gray-200 rounded-xl px-3 py-2 text-sm mb-3" />
@@ -5196,7 +5109,7 @@
                   <p className="text-center text-gray-400 text-sm py-10">שגיאה בטעינה</p>
                 ) : (function() {
                   var profiles = promoBrowserData.profiles || [];
-                  if (profiles.length === 0) return <p className="text-center text-gray-400 text-sm py-10">אין רשתות פעילות בקבוצה זו</p>;
+                  if (profiles.length === 0) return <p className="text-center text-gray-400 text-sm py-10">אין רשתות פעילות</p>;
                   var q = promoSearchQuery.trim();
                   if (!q) return <p className="text-center text-gray-400 text-sm py-10">הקלידו שם מוצר כדי לחפש מבצעים</p>;
                   // Flatten every promotion's items into one list and dedupe
@@ -5761,7 +5674,7 @@
     // below (and the standalone בדיקת מחיר check further down, which has no
     // list at all). All state lives in the parent (it needs the draft after
     // the panel unmounts), this just renders and mutates it via the setters.
-    function VendorMatchPanel({ draft, setDraft, activeProfiles, groupId, showToast,
+    function VendorMatchPanel({ draft, setDraft, activeProfiles, showToast,
       searchScope, setSearchScope, searchQuery, setSearchQuery,
       candidates, setCandidates, isResolving, setIsResolving,
       priceMap, setPriceMap, promoMap, setPromoMap }) {
@@ -5776,7 +5689,7 @@
         var q = (query || "").trim();
         if (!q) return;
         setIsResolving(true);
-        var payload = { items: [q], force: true, groupId: groupId || null };
+        var payload = { items: [q], force: true };
         if (vendorId) payload.vendors = [vendorId];
         fns.httpsCallable("resolveItemBarcodes")(payload).then(function(res) {
           setIsResolving(false);
@@ -5974,7 +5887,7 @@
       } catch (e) {}
     }
 
-    function ItemDialog({ mode, item, categories, pricingEnabled, activeProfiles, groupId,
+    function ItemDialog({ mode, item, categories, pricingEnabled, activeProfiles,
       seedPriceMap, seedPromoMap, keyboardWarningEnabled, onSave, onInsert, onClose, showToast }) {
       const isEdit = mode === "edit";
       const blankDraft = function() {
@@ -6202,7 +6115,7 @@
                   <button onClick={clearMatch} className="text-blue-600 font-medium">נקה והתחל מחדש</button>
                 </div>
               )}
-              <VendorMatchPanel draft={draft} setDraft={setDraft} activeProfiles={activeProfiles} groupId={groupId} showToast={showToast}
+              <VendorMatchPanel draft={draft} setDraft={setDraft} activeProfiles={activeProfiles} showToast={showToast}
                 searchScope={searchScope} setSearchScope={setSearchScope} searchQuery={searchQuery} setSearchQuery={setSearchQuery}
                 candidates={candidates} setCandidates={setCandidates} isResolving={isResolving} setIsResolving={setIsResolving}
                 priceMap={priceMap} setPriceMap={setPriceMap} promoMap={promoMap} setPromoMap={setPromoMap} />
@@ -6232,9 +6145,6 @@
     // wizard) against a vendor GROUP instead of a list; only writes
     // anything if the user explicitly picks a list to add it to at the end.
     function CheckPriceModal({ user, onClose, showToast }) {
-      const [groupId, setGroupIdState] = useState(undefined); // undefined = still loading the default
-      const [vendorGroups, setVendorGroups] = useState(null);
-      const [showGroupPicker, setShowGroupPicker] = useState(false);
       const [activeProfiles, setActiveProfiles] = useState([]);
       const [profilesLoading, setProfilesLoading] = useState(true);
 
@@ -6251,38 +6161,13 @@
       const [inserting, setInserting] = useState(false);
       const [pendingNoMatchConfirm, setPendingNoMatchConfirm] = useState(false);
 
-      // First run (or no groups defined at all): ask which vendor group to
-      // use, then remember it — every check after that is one tap straight
-      // to search, no picker.
       useEffect(function() {
-        Promise.all([
-          db.ref("users/" + user.uid + "/checkPriceGroupId").once("value"),
-          db.ref("users/" + user.uid + "/vendorGroups").once("value"),
-        ]).then(function(snaps) {
-          var groups = snaps[1].val() || {};
-          setVendorGroups(groups);
-          var saved = snaps[0].val();
-          var namedGroupCount = Object.keys(groups).filter(function(k) { return k !== "default"; }).length;
-          if (saved != null) setGroupIdState(saved === "default" ? null : saved);
-          else if (namedGroupCount === 0) setGroupIdState(null);
-          else setShowGroupPicker(true);
-        });
-      }, []);
-
-      useEffect(function() {
-        if (groupId === undefined) return;
         setProfilesLoading(true);
-        fns.httpsCallable("getActiveCatalogTimestamps")({ groupId: groupId }).then(function(res) {
+        fns.httpsCallable("getActiveCatalogTimestamps")({}).then(function(res) {
           setActiveProfiles((res.data.timestamps || []).map(function(t) { return { id: t.id, vendor: t.vendor, branchId: t.branchId }; }));
           setProfilesLoading(false);
         }, function() { setProfilesLoading(false); showToast("שגיאה בטעינת רשתות"); });
-      }, [groupId]);
-
-      const chooseGroup = function(gid) {
-        setGroupIdState(gid);
-        setShowGroupPicker(false);
-        db.ref("users/" + user.uid + "/checkPriceGroupId").set(gid || "default");
-      };
+      }, []);
 
       // One product-name field, not two — VendorMatchPanel owns the search
       // box's text, so draft.name (what actually gets saved if the user
@@ -6333,51 +6218,27 @@
         }, function(err) { showToast("שגיאה: " + (err && err.message || "?")); setInserting(false); });
       };
 
-      var namedGroups = Object.keys(vendorGroups || {}).filter(function(k) { return k !== "default"; });
-
       return (
         <Modal onClose={onClose}>
           <h3 className="text-lg font-bold text-center mb-1">בדיקת מחיר</h3>
           <p className="text-xs text-gray-400 text-center mb-4">בודקים מחיר לפני שמחליטים אם להוסיף לרשימה</p>
-          {showGroupPicker ? (
-            <div className="space-y-2">
-              <p className="text-sm text-gray-600 text-center mb-2">באיזו קבוצת רשתות לבדוק?</p>
-              <button onClick={function() { chooseGroup(null); }} className="w-full text-right rounded-xl px-3 py-2.5 bg-gray-50 hover:bg-gray-100 text-sm">כללי</button>
-              {namedGroups.map(function(gid) {
-                return (
-                  <button key={gid} onClick={function() { chooseGroup(gid); }} className="w-full text-right rounded-xl px-3 py-2.5 bg-gray-50 hover:bg-gray-100 text-sm">
-                    {vendorGroups[gid].name}
-                  </button>
-                );
-              })}
-            </div>
+          {profilesLoading ? (
+            <div className="flex justify-center py-6"><Spinner /></div>
+          ) : activeProfiles.length === 0 ? (
+            <p className="text-xs text-gray-400 text-center py-4">אין רשתות פעילות</p>
           ) : (
-            <React.Fragment>
-              {namedGroups.length > 0 && (
-                <button onClick={function() { setShowGroupPicker(true); }}
-                  className="text-xs bg-gray-100 text-gray-600 rounded-full px-3 py-1.5 mb-3 flex items-center gap-1 mx-auto">
-                  🏪 {groupId && vendorGroups[groupId] ? vendorGroups[groupId].name : "כללי"} · שנה
-                </button>
-              )}
-              {profilesLoading ? (
-                <div className="flex justify-center py-6"><Spinner /></div>
-              ) : activeProfiles.length === 0 ? (
-                <p className="text-xs text-gray-400 text-center py-4">אין רשתות פעילות בקבוצה זו</p>
-              ) : (
-                <VendorMatchPanel draft={draft} setDraft={setDraft} activeProfiles={activeProfiles} groupId={groupId} showToast={showToast}
-                  searchScope={searchScope} setSearchScope={setSearchScope} searchQuery={searchQuery} setSearchQuery={setSearchQueryAndName}
-                  candidates={candidates} setCandidates={setCandidates} isResolving={isResolving} setIsResolving={setIsResolving}
-                  priceMap={priceMap} setPriceMap={setPriceMap} promoMap={promoMap} setPromoMap={setPromoMap} />
-              )}
-              <div className="flex gap-2 mt-5">
-                <button onClick={onClose} className="flex-1 py-4 rounded-2xl border border-gray-200 text-gray-600 font-medium">סגור</button>
-                <button onClick={requestAddToList} disabled={!draft.name.trim() || isResolving}
-                  className="flex-1 bg-blue-600 text-white py-4 rounded-2xl font-semibold disabled:opacity-40">
-                  הוסף לרשימה
-                </button>
-              </div>
-            </React.Fragment>
+            <VendorMatchPanel draft={draft} setDraft={setDraft} activeProfiles={activeProfiles} showToast={showToast}
+              searchScope={searchScope} setSearchScope={setSearchScope} searchQuery={searchQuery} setSearchQuery={setSearchQueryAndName}
+              candidates={candidates} setCandidates={setCandidates} isResolving={isResolving} setIsResolving={setIsResolving}
+              priceMap={priceMap} setPriceMap={setPriceMap} promoMap={promoMap} setPromoMap={setPromoMap} />
           )}
+          <div className="flex gap-2 mt-5">
+            <button onClick={onClose} className="flex-1 py-4 rounded-2xl border border-gray-200 text-gray-600 font-medium">סגור</button>
+            <button onClick={requestAddToList} disabled={!draft.name.trim() || isResolving}
+              className="flex-1 bg-blue-600 text-white py-4 rounded-2xl font-semibold disabled:opacity-40">
+              הוסף לרשימה
+            </button>
+          </div>
           {pendingNoMatchConfirm && (
             <ConfirmDialog message="לא נבחרה התאמת מחיר מתוצאות החיפוש — להוסיף את הפריט בכל זאת?" confirmLabel="הוסף בכל זאת"
               onConfirm={function() { setPendingNoMatchConfirm(false); openListPicker(); }}

@@ -1,6 +1,6 @@
     const { useState, useEffect, useRef } = React;
 
-    const VERSION = "v6.53";
+    const VERSION = "v6.54";
 
     // ── CONFIG ────────────────────────────────────────────────────────────────────
     const FIREBASE_CONFIG = {
@@ -4605,6 +4605,59 @@
         }
       };
 
+      const [showExportChoice, setShowExportChoice] = useState(false);
+      const downloadBlob = function(blob, filename) {
+        var url = URL.createObjectURL(blob);
+        var a = document.createElement("a");
+        a.href = url; a.download = filename;
+        document.body.appendChild(a); a.click(); document.body.removeChild(a);
+        setTimeout(function() { URL.revokeObjectURL(url); }, 1000);
+      };
+      // "Excel" here is an HTML table saved with an .xls extension, not a
+      // real binary xlsx — Excel opens that natively, it renders Hebrew and
+      // column alignment correctly (unlike a raw CSV, which needs a BOM and
+      // still mangles anything with a comma), and it needs no new library.
+      const exportList = function(format) {
+        setShowExportChoice(false);
+        var sorted = orderByCategory(items);
+        var vendorCols = (pricingEnabled && !isTasks) ? visibleProfiles : [];
+        var headers = ["שם", "קטגוריה", "כמות", "יחידה", "הערה", "סטטוס"].concat(vendorCols.map(function(p) { return profileLabel(p, vendorCols); }));
+        var rows = sorted.map(function(item) {
+          var priced = vendorCols.length > 0 ? itemProfilePrices(item, vendorCols, priceMap, promoMap) : [];
+          var byProfile = {};
+          priced.forEach(function(e) { byProfile[e.profile.id] = e; });
+          var base = [
+            item.name || "", item.category || "", item.quantity != null ? item.quantity : "",
+            item.unit || "", item.note || "", item.done ? "בוצע" : "פתוח"
+          ];
+          var vendorVals = vendorCols.map(function(p) {
+            var e = byProfile[p.id];
+            if (!e || e.price == null) return "";
+            var effective = (e.promo && e.promo.active) ? e.promo.price : e.price;
+            return effective.toFixed(2);
+          });
+          return base.concat(vendorVals);
+        });
+        var safeName = (list.name || "רשימה").replace(/[\\/:*?"<>|]/g, "_");
+        if (format === "csv") {
+          var csvLines = [headers].concat(rows).map(function(r) {
+            return r.map(function(v) {
+              var s = String(v == null ? "" : v);
+              return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+            }).join(",");
+          });
+          downloadBlob(new Blob(["﻿" + csvLines.join("\r\n")], { type: "text/csv;charset=utf-8;" }), safeName + ".csv");
+        } else {
+          var esc = function(v) { return String(v == null ? "" : v).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;"); };
+          var html = '<html><head><meta charset="UTF-8"></head><body dir="rtl">' +
+            '<table border="1" style="border-collapse:collapse;font-family:Arial;direction:rtl;">' +
+            '<tr>' + headers.map(function(h) { return '<th style="background:#eee;padding:4px 8px;">' + esc(h) + '</th>'; }).join("") + '</tr>' +
+            rows.map(function(r) { return '<tr>' + r.map(function(v) { return '<td style="padding:4px 8px;">' + esc(v) + '</td>'; }).join("") + '</tr>'; }).join("") +
+            '</table></body></html>';
+          downloadBlob(new Blob([html], { type: "application/vnd.ms-excel;charset=utf-8;" }), safeName + ".xls");
+        }
+      };
+
       const openShare = () => {
         var preSelected = contacts.filter(function(c) { return c.alwaysShare; }).map(function(c) { return c.id; });
         setSelectedContacts(preSelected);
@@ -4767,6 +4820,12 @@
                     <span className="text-lg">🖨️</span><span className="text-sm font-medium text-gray-700">הדפס / ייצוא ל-PDF</span>
                   </button>
                 )}
+                {!isNotes && !isTasks && (
+                  <button onClick={function() { setShowHeaderMenu(false); setShowExportChoice(true); }}
+                    className="w-full text-right flex items-center gap-3 px-4 py-3 rounded-xl bg-gray-50 hover:bg-gray-100">
+                    <span className="text-lg">📤</span><span className="text-sm font-medium text-gray-700">ייצוא רשימה</span>
+                  </button>
+                )}
                 {isOwner && !list.isPrivate && !isNotes && (
                   <button onClick={function() { setShowHeaderMenu(false); openShare(); }}
                     className="w-full text-right flex items-center gap-3 px-4 py-3 rounded-xl bg-gray-50 hover:bg-gray-100">
@@ -4810,6 +4869,26 @@
                 </button>
               </div>
               <button onClick={function() { setShowCategorizeChoice(false); }} className="w-full mt-3 py-2.5 text-gray-500 text-sm">ביטול</button>
+            </Modal>
+          )}
+
+          {showExportChoice && (
+            <Modal onClose={function() { setShowExportChoice(false); }}>
+              <h3 className="text-lg font-bold text-center mb-2">ייצוא רשימה</h3>
+              <p className="text-center text-gray-500 text-sm mb-5">באיזה פורמט?</p>
+              <div className="space-y-2">
+                <button onClick={function() { exportList("csv"); }}
+                  className="w-full text-right flex items-center gap-3 px-4 py-3 rounded-xl bg-gray-50 hover:bg-gray-100">
+                  <span className="text-lg">📄</span>
+                  <span className="text-sm font-medium text-gray-700">CSV</span>
+                </button>
+                <button onClick={function() { exportList("excel"); }}
+                  className="w-full text-right flex items-center gap-3 px-4 py-3 rounded-xl bg-gray-50 hover:bg-gray-100">
+                  <span className="text-lg">📊</span>
+                  <span className="text-sm font-medium text-gray-700">Excel</span>
+                </button>
+              </div>
+              <button onClick={function() { setShowExportChoice(false); }} className="w-full mt-3 py-2.5 text-gray-500 text-sm">ביטול</button>
             </Modal>
           )}
 

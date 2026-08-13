@@ -1,6 +1,6 @@
     const { useState, useEffect, useRef } = React;
 
-    const VERSION = "v6.60";
+    const VERSION = "v6.61";
 
     // ── CONFIG ────────────────────────────────────────────────────────────────────
     const FIREBASE_CONFIG = {
@@ -6194,7 +6194,7 @@
                       </div>
                     )}
                   </div>
-                  {needsAction ? (
+                  {needsAction || searchScope === row.p.vendor ? (
                     <span className="text-xs flex-shrink-0 font-semibold text-blue-600 bg-blue-50 px-2.5 py-1 rounded-full">🔍 מצא מחיר</span>
                   ) : (
                     <span className={"text-xs flex-shrink-0 font-semibold " + textClass}>{statusText}</span>

@@ -1,6 +1,6 @@
     const { useState, useEffect, useRef } = React;
 
-    const VERSION = "v6.54";
+    const VERSION = "v6.55";
 
     // ── CONFIG ────────────────────────────────────────────────────────────────────
     const FIREBASE_CONFIG = {
@@ -3789,6 +3789,7 @@
       const [showHeaderMenu, setShowHeaderMenu] = useState(false);
       const [showCategorizeChoice, setShowCategorizeChoice] = useState(false);
       const [categorizing, setCategorizing] = useState(false);
+      const [showExportChoice, setShowExportChoice] = useState(false);
       const [pricingEnabled, setPricingEnabled] = useState(true);
       const [keyboardWarningEnabled, setKeyboardWarningEnabled] = useState(true);
       const [addMode, setAddMode] = useState("single"); // "group" | "single"
@@ -4605,7 +4606,6 @@
         }
       };
 
-      const [showExportChoice, setShowExportChoice] = useState(false);
       const downloadBlob = function(blob, filename) {
         var url = URL.createObjectURL(blob);
         var a = document.createElement("a");

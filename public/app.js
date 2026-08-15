@@ -1,6 +1,6 @@
     const { useState, useEffect, useRef } = React;
 
-    const VERSION = "v6.66";
+    const VERSION = "v6.67";
 
     // ── CONFIG ────────────────────────────────────────────────────────────────────
     const FIREBASE_CONFIG = {
@@ -875,7 +875,7 @@
     function LoginScreen() {
       const [err, setErr] = useState("");
       return (
-        <div className="flex flex-col items-center justify-center min-h-screen bg-gradient-to-b from-blue-50 to-white px-6">
+        <div className="relative flex flex-col items-center justify-center min-h-screen bg-gradient-to-b from-blue-50 to-white px-6">
           <div className="text-8xl mb-4">🛒</div>
           <h1 className="text-5xl font-bold text-blue-600 mb-1">בולי</h1>
           <p className="text-gray-300 text-xs mb-10">{VERSION}</p>
@@ -886,6 +886,7 @@
             כניסה עם Google
           </button>
           {err && <p className="text-red-500 mt-4 text-sm text-center">{err}</p>}
+          <p className="absolute bottom-4 text-gray-300 text-xs">© {new Date().getFullYear()} בולי • כל הזכויות שמורות</p>
         </div>
       );
     }

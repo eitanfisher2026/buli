@@ -1,6 +1,6 @@
     const { useState, useEffect, useRef } = React;
 
-    const VERSION = "v6.67";
+    const VERSION = "v6.68";
 
     // ── CONFIG ────────────────────────────────────────────────────────────────────
     const FIREBASE_CONFIG = {
@@ -2137,6 +2137,7 @@
                 </div>
               </div>
             )}
+            <p className="text-center text-gray-300 text-[11px] mt-6">© {new Date().getFullYear()} בולי • כל הזכויות שמורות</p>
           </div>
 
           {editTask && <TaskEditModal item={editTask} onChange={setEditTask} onSave={saveTaskEdit} onDelete={deleteTask} onClose={() => setEditTask(null)} />}

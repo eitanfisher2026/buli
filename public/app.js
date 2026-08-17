@@ -1,6 +1,6 @@
     const { useState, useEffect, useRef } = React;
 
-    const VERSION = "v6.68";
+    const VERSION = "v6.69";
 
     // ── CONFIG ────────────────────────────────────────────────────────────────────
     const FIREBASE_CONFIG = {
@@ -186,7 +186,7 @@
       { id: "yohananof", label: "יוחננוף" },
       { id: "superYuda", label: "סופר יודה" },
       { id: "shufersal", label: "שופרסל" },
-      { id: "lahav", label: "מחסני להב" },
+      { id: "lahav", label: "פרש מרקט" },
       { id: "carrefour", label: "קרפור" },
     ];
     const VENDOR_IDS = VENDOR_LIST.map(function(v) { return v.id; });

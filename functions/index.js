@@ -671,6 +671,28 @@ const VENDORS = {
   // standard <Root> schema. Verified live 2026-08-17
   // (Stores7290639000004-*.xml present).
   stopMarket: { ftpUser: 'Stop_Market' },
+  // ויקטורי — old feed (Matrix) is dead, gov.il only lists the new
+  // laibcatalog.co.il API format. Standard <Root> schema inside the files
+  // themselves, including a real Stores file with address/city. Only the
+  // primary chain ID is used (the feed also lists a secondary one for an
+  // absorbed brand, not carried here — same simplification as Carrefour/
+  // Yenot Bitan). Verified live 2026-08-17 (75+ branches, real Stores file).
+  victory: { http: 'laibcatalog', chainId: '7290696200003' },
+  // מחסני השוק — same situation and same laibcatalog.co.il API as ויקטורי
+  // (its old Matrix feed is dead too). Verified live 2026-08-17 (real
+  // Stores7290661400001-*.xml present with address/city).
+  mahsaniAshuk: { http: 'laibcatalog', chainId: '7290661400001' },
+  // חצי חינם — not on Cerberus or laibcatalog at all; its own site
+  // (shop.hazi-hinam.co.il) with a paginated HTML file listing. XML schema
+  // inside is still the standard <Root> format. Verified live 2026-08-17.
+  haziHinam: { http: 'haziHinam', chainId: '7290700100008' },
+  // וולט מרקט — Wolt's own grocery-delivery chain (real branches with real
+  // addresses — confirmed by reading its actual Stores file before adding
+  // this, not a marketplace of third-party shops). Own feed at
+  // wm-gateway.wolt.com, one HTML page per date listing every file as a
+  // plain link list. Standard <Root> schema inside. Verified live
+  // 2026-08-17 (34 branches, real Stores file with address/city).
+  wolt: { http: 'wolt', chainId: '7290058249350' },
 };
 const FTP_HOST = 'url.retail.publishedprices.co.il';
 const SHUFERSAL_BASE_URL = 'https://prices.shufersal.co.il';
@@ -726,7 +748,14 @@ async function ftpDownloadBuffer(client, fileName) {
 function parseXmlBuffer(buf, isGz) {
   if (isGz) buf = require('zlib').gunzipSync(buf);
   const { XMLParser } = require('fast-xml-parser');
-  const parser = new XMLParser({ ignoreAttributes: false });
+  // fast-xml-parser's default entity-expansion cap (1000 total &amp;/&quot;/
+  // etc. across the whole document) is a DoS guard meant for untrusted XML —
+  // these feeds are trusted, regulated government price-transparency data,
+  // and a large branch's catalog can legitimately have thousands of items
+  // with escaped characters in their names, so the default silently threw
+  // "Entity expansion limit exceeded" on real (non-malicious) large
+  // catalogs. Verified live 2026-08-17 against a חצי חינם branch.
+  const parser = new XMLParser({ ignoreAttributes: false, processEntities: { maxTotalExpansions: 100000 } });
   return parser.parse(decodeXmlBuffer(buf));
 }
 
@@ -786,6 +815,73 @@ async function carrefourListFiles() {
 }
 
 async function carrefourDownloadXmlObject(fileEntry) {
+  const buf = await httpGet(fileEntry.url);
+  return parseXmlBuffer(buf, fileEntry.name.endsWith('.gz'));
+}
+
+// ── ויקטורי / מחסני השוק (HTTP, shared laibcatalog.co.il API) ──────────────
+// Both chains migrated off their old feeds onto this one JSON API — same
+// government-mandated XML schema inside the downloaded files as every other
+// vendor (verified live 2026-08-17), only the file *listing* mechanism
+// differs. One getfiles call returns every branch's files for the whole
+// chain in one shot, no per-branch pagination needed.
+const LAIBCATALOG_BASE_URL = 'https://laibcatalog.co.il';
+async function laibcatalogListFiles(chainId) {
+  const buf = await httpGet(`${LAIBCATALOG_BASE_URL}/webapi/api/getfiles?edi=${chainId}`);
+  const files = JSON.parse(buf.toString('utf8'));
+  return files.map((f) => ({ name: f.fileName, url: `${LAIBCATALOG_BASE_URL}/webapi/${chainId}/${f.fileName}` }));
+}
+async function laibcatalogDownloadXmlObject(fileEntry) {
+  const buf = await httpGet(fileEntry.url);
+  return parseXmlBuffer(buf, fileEntry.name.endsWith('.gz'));
+}
+
+// ── חצי חינם (HTTP, own site, not the government feed at all) ──────────────
+// shop.hazi-hinam.co.il/Prices lists files in an HTML table, paginated
+// (~50 rows/page), one query param per file type (t=1 price, t=2 promo,
+// t=3 stores) and date (d=YYYY-MM-DD) — no full/incremental distinction in
+// the type code itself, so callers filter by filename the same way as every
+// other vendor here. XML schema inside is the standard <Root> format.
+// Verified live 2026-08-17.
+const HAZI_HINAM_BASE_URL = 'https://shop.hazi-hinam.co.il';
+async function haziHinamListFiles(typeId) {
+  const date = new Date().toISOString().slice(0, 10);
+  let page = 1;
+  let maxPage = 1;
+  const all = [];
+  do {
+    const html = (await httpGet(`${HAZI_HINAM_BASE_URL}/Prices?p=${page}&s=&f=null&t=${typeId}&d=${date}`)).toString('utf8');
+    const pageNums = [...html.matchAll(/pagination-link" href="\?p=(\d+)/g)].map((m) => parseInt(m[1], 10));
+    if (pageNums.length > 0) maxPage = Math.max(maxPage, Math.max(...pageNums));
+    const rows = html.match(/<tr[\s\S]*?<\/tr>/g) || [];
+    rows.forEach((row) => {
+      const nameMatch = row.match(/([\w-]+\.gz)/);
+      const urlMatch = row.match(/href="([^"]+\.gz)"/);
+      if (nameMatch && urlMatch) all.push({ name: nameMatch[1], url: urlMatch[1] });
+    });
+    page++;
+  } while (page <= maxPage && page <= 20); // sane cap, real feed tops out around 3
+  return all;
+}
+async function haziHinamDownloadXmlObject(fileEntry) {
+  const buf = await httpGet(fileEntry.url);
+  return parseXmlBuffer(buf, fileEntry.name.endsWith('.gz'));
+}
+
+// ── וולט מרקט (HTTP, own feed) ──────────────────────────────────────────────
+// "Wolt Market" is Wolt's own grocery chain (real branches with real
+// addresses, not a marketplace of third-party shops — confirmed live by
+// reading its actual Stores file before adding this, 2026-08-17). One HTML
+// page per date lists every file as a plain link list, path already
+// relative to the base URL. Same standard <Root> schema inside.
+const WOLT_BASE_URL = 'https://wm-gateway.wolt.com/isr-prices/public/v1';
+async function woltListFiles() {
+  const date = new Date().toISOString().slice(0, 10);
+  const html = (await httpGet(`${WOLT_BASE_URL}/${date}.html`)).toString('utf8');
+  const matches = [...html.matchAll(/<a href="([^"]+)">([^<]+)<\/a>/g)];
+  return matches.map((m) => ({ name: m[2], url: `${WOLT_BASE_URL}/${m[1]}` }));
+}
+async function woltDownloadXmlObject(fileEntry) {
   const buf = await httpGet(fileEntry.url);
   return parseXmlBuffer(buf, fileEntry.name.endsWith('.gz'));
 }
@@ -905,6 +1001,21 @@ async function ingestVendorBranches(vendor) {
     const storeFiles = files.filter(f => /^stores/i.test(f.name)).sort((a, b) => b.name.localeCompare(a.name));
     if (storeFiles.length === 0) return null;
     obj = await carrefourDownloadXmlObject(storeFiles[0]);
+  } else if (VENDORS[vendor].http === 'laibcatalog') {
+    const files = await laibcatalogListFiles(VENDORS[vendor].chainId);
+    const storeFiles = files.filter(f => /^stores/i.test(f.name)).sort((a, b) => b.name.localeCompare(a.name));
+    if (storeFiles.length === 0) return null;
+    obj = await laibcatalogDownloadXmlObject(storeFiles[0]);
+  } else if (VENDORS[vendor].http === 'haziHinam') {
+    const files = await haziHinamListFiles(3);
+    const storeFiles = files.sort((a, b) => b.name.localeCompare(a.name));
+    if (storeFiles.length === 0) return null;
+    obj = await haziHinamDownloadXmlObject(storeFiles[0]);
+  } else if (VENDORS[vendor].http === 'wolt') {
+    const files = await woltListFiles();
+    const storeFiles = files.filter(f => /^stores/i.test(f.name)).sort((a, b) => b.name.localeCompare(a.name));
+    if (storeFiles.length === 0) return null;
+    obj = await woltDownloadXmlObject(storeFiles[0]);
   } else {
     const client = await ftpConnect(vendor);
     try {
@@ -944,6 +1055,33 @@ async function ingestVendorCatalog(vendor, branchId, uid, email) {
     const pick = candidates[0];
     if (!pick) throw new HttpsError('not-found', `No price file found for ${vendor} branch ${branchId}`);
     obj = await carrefourDownloadXmlObject(pick);
+  } else if (VENDORS[vendor].http === 'laibcatalog') {
+    const files = await laibcatalogListFiles(VENDORS[vendor].chainId);
+    const branchFiles = files.filter(f => f.name.includes(`-${branchId}-`));
+    let candidates = branchFiles.filter(f => /pricefull/i.test(f.name));
+    if (candidates.length === 0) candidates = branchFiles.filter(f => /price/i.test(f.name));
+    candidates.sort((a, b) => b.name.localeCompare(a.name));
+    const pick = candidates[0];
+    if (!pick) throw new HttpsError('not-found', `No price file found for ${vendor} branch ${branchId}`);
+    obj = await laibcatalogDownloadXmlObject(pick);
+  } else if (VENDORS[vendor].http === 'haziHinam') {
+    const files = await haziHinamListFiles(1);
+    const branchFiles = files.filter(f => f.name.includes(`-${branchId}-`));
+    let candidates = branchFiles.filter(f => /pricefull/i.test(f.name));
+    if (candidates.length === 0) candidates = branchFiles.filter(f => /price/i.test(f.name));
+    candidates.sort((a, b) => b.name.localeCompare(a.name));
+    const pick = candidates[0];
+    if (!pick) throw new HttpsError('not-found', `No price file found for ${vendor} branch ${branchId}`);
+    obj = await haziHinamDownloadXmlObject(pick);
+  } else if (VENDORS[vendor].http === 'wolt') {
+    const files = await woltListFiles();
+    const branchFiles = files.filter(f => f.name.includes(`-${branchId}-`));
+    let candidates = branchFiles.filter(f => /pricefull/i.test(f.name));
+    if (candidates.length === 0) candidates = branchFiles.filter(f => /price/i.test(f.name));
+    candidates.sort((a, b) => b.name.localeCompare(a.name));
+    const pick = candidates[0];
+    if (!pick) throw new HttpsError('not-found', `No price file found for ${vendor} branch ${branchId}`);
+    obj = await woltDownloadXmlObject(pick);
   } else {
     const client = await ftpConnect(vendor);
     try {
@@ -997,6 +1135,33 @@ async function ingestVendorPromotions(vendor, branchId, uid, email) {
     const pick = candidates[0];
     if (!pick) throw new HttpsError('not-found', `No promo file found for ${vendor} branch ${branchId}`);
     obj = await carrefourDownloadXmlObject(pick);
+  } else if (VENDORS[vendor].http === 'laibcatalog') {
+    const files = await laibcatalogListFiles(VENDORS[vendor].chainId);
+    const branchFiles = files.filter(f => f.name.includes(`-${branchId}-`));
+    let candidates = branchFiles.filter(f => /promofull/i.test(f.name));
+    if (candidates.length === 0) candidates = branchFiles.filter(f => /promo/i.test(f.name));
+    candidates.sort((a, b) => b.name.localeCompare(a.name));
+    const pick = candidates[0];
+    if (!pick) throw new HttpsError('not-found', `No promo file found for ${vendor} branch ${branchId}`);
+    obj = await laibcatalogDownloadXmlObject(pick);
+  } else if (VENDORS[vendor].http === 'haziHinam') {
+    const files = await haziHinamListFiles(2);
+    const branchFiles = files.filter(f => f.name.includes(`-${branchId}-`));
+    let candidates = branchFiles.filter(f => /promofull/i.test(f.name));
+    if (candidates.length === 0) candidates = branchFiles.filter(f => /promo/i.test(f.name));
+    candidates.sort((a, b) => b.name.localeCompare(a.name));
+    const pick = candidates[0];
+    if (!pick) throw new HttpsError('not-found', `No promo file found for ${vendor} branch ${branchId}`);
+    obj = await haziHinamDownloadXmlObject(pick);
+  } else if (VENDORS[vendor].http === 'wolt') {
+    const files = await woltListFiles();
+    const branchFiles = files.filter(f => f.name.includes(`-${branchId}-`));
+    let candidates = branchFiles.filter(f => /promofull/i.test(f.name));
+    if (candidates.length === 0) candidates = branchFiles.filter(f => /promo/i.test(f.name));
+    candidates.sort((a, b) => b.name.localeCompare(a.name));
+    const pick = candidates[0];
+    if (!pick) throw new HttpsError('not-found', `No promo file found for ${vendor} branch ${branchId}`);
+    obj = await woltDownloadXmlObject(pick);
   } else {
     const client = await ftpConnect(vendor);
     try {

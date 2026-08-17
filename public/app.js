@@ -1,6 +1,6 @@
     const { useState, useEffect, useRef } = React;
 
-    const VERSION = "v6.70";
+    const VERSION = "v6.71";
 
     // ── CONFIG ────────────────────────────────────────────────────────────────────
     const FIREBASE_CONFIG = {
@@ -191,6 +191,10 @@
       { id: "tivTaam", label: "טיב טעם" },
       { id: "salachDabach", label: "דבאח" },
       { id: "stopMarket", label: "סטופ מרקט" },
+      { id: "victory", label: "ויקטורי" },
+      { id: "mahsaniAshuk", label: "מחסני השוק" },
+      { id: "haziHinam", label: "חצי חינם" },
+      { id: "wolt", label: "וולט מרקט" },
     ];
     const VENDOR_IDS = VENDOR_LIST.map(function(v) { return v.id; });
     // Module-level (not component state) so it survives ListScreen mounting
@@ -317,8 +321,7 @@
     // isn't in VENDOR_LIST above just surfaces the "ask the admin" request
     // flow; it's never a claim that the chain works.
     const VENDOR_NAME_SUGGESTIONS = VENDOR_LIST.map(function(v) { return v.label; }).concat([
-      "יינות ביתן", "ויקטורי", "מגה",
-      "סופר פארם", "גוד פארם", "חצי חינם", "זול ובגדול", "מחסני השוק",
+      "יינות ביתן", "מגה", "סופר פארם", "גוד פארם", "זול ובגדול",
     ]);
 
     // Vendor+branch profiles are one shared pool per user — a group doesn't
@@ -1035,6 +1038,7 @@
       const [vendorRequestSent, setVendorRequestSent] = useState(false);
       const [branchSearchQuery, setBranchSearchQuery] = useState("");
       const [showVendorRequests, setShowVendorRequests] = useState(false);
+      const [showAvailableVendors, setShowAvailableVendors] = useState(false);
       const [vendorRequestsLoading, setVendorRequestsLoading] = useState(false);
       const [vendorRequestsList, setVendorRequestsList] = useState([]);
       const [resettingToDefault, setResettingToDefault] = useState(false);
@@ -2945,6 +2949,18 @@
                           );
                         })()}
                         <div className="border-t border-gray-100 pt-3">
+                          <button onClick={function() { setShowAvailableVendors(function(o) { return !o; }); }}
+                            className="w-full flex items-center justify-between text-xs font-semibold text-gray-500 mb-1.5">
+                            <span>רשתות זמינות ({VENDOR_LIST.length})</span>
+                            <span className="text-gray-400">{showAvailableVendors ? "▲ הסתר" : "▼ הצג"}</span>
+                          </button>
+                          {showAvailableVendors && (
+                            <div className="flex flex-wrap gap-1.5 mb-3">
+                              {VENDOR_LIST.map(function(v) {
+                                return <span key={v.id} className="text-xs bg-gray-100 text-gray-600 rounded-full px-2.5 py-1">{v.label}</span>;
+                              })}
+                            </div>
+                          )}
                           <div className="text-xs font-semibold text-gray-500 mb-1.5">הוסף סניף להשוואה</div>
                           <input list="vendor-name-suggestions" value={newProfileVendorInput}
                             onChange={function(e) { setNewProfileVendorInput(e.target.value); setNewProfileBranchId(""); setVendorRequestSent(false); setBranchSearchQuery(""); }}

@@ -659,6 +659,18 @@ const VENDORS = {
   // the same government-mandated format as every other vendor here.
   // Verified live 2026-08-04 (147 branches).
   carrefour: { http: 'carrefour' },
+  // טיב טעם — same Cerberus platform, blank password, no path quirks, root
+  // element <Root> like the standard integrations. Verified live 2026-08-17
+  // (Stores7290873255550-*.xml present, 492 files total on the feed).
+  tivTaam: { ftpUser: 'TivTaam' },
+  // דבאח (סאלח דבאח ובניו) — same Cerberus platform, but like superYuda it
+  // needs a real (non-blank) password. No path quirks, standard <Root>
+  // schema. Verified live 2026-08-17 (Stores7290526500006-*.xml present).
+  salachDabach: { ftpUser: 'SalachD', ftpPassword: '12345' },
+  // סטופ מרקט — same Cerberus platform, blank password, no path quirks,
+  // standard <Root> schema. Verified live 2026-08-17
+  // (Stores7290639000004-*.xml present).
+  stopMarket: { ftpUser: 'Stop_Market' },
 };
 const FTP_HOST = 'url.retail.publishedprices.co.il';
 const SHUFERSAL_BASE_URL = 'https://prices.shufersal.co.il';

@@ -1,6 +1,6 @@
     const { useState, useEffect, useRef } = React;
 
-    const VERSION = "v6.69";
+    const VERSION = "v6.70";
 
     // ── CONFIG ────────────────────────────────────────────────────────────────────
     const FIREBASE_CONFIG = {
@@ -188,6 +188,9 @@
       { id: "shufersal", label: "שופרסל" },
       { id: "lahav", label: "פרש מרקט" },
       { id: "carrefour", label: "קרפור" },
+      { id: "tivTaam", label: "טיב טעם" },
+      { id: "salachDabach", label: "דבאח" },
+      { id: "stopMarket", label: "סטופ מרקט" },
     ];
     const VENDOR_IDS = VENDOR_LIST.map(function(v) { return v.id; });
     // Module-level (not component state) so it survives ListScreen mounting
@@ -314,7 +317,7 @@
     // isn't in VENDOR_LIST above just surfaces the "ask the admin" request
     // flow; it's never a claim that the chain works.
     const VENDOR_NAME_SUGGESTIONS = VENDOR_LIST.map(function(v) { return v.label; }).concat([
-      "יינות ביתן", "ויקטורי", "טיב טעם", "מגה",
+      "יינות ביתן", "ויקטורי", "מגה",
       "סופר פארם", "גוד פארם", "חצי חינם", "זול ובגדול", "מחסני השוק",
     ]);
 

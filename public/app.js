@@ -1,6 +1,6 @@
     const { useState, useEffect, useRef } = React;
 
-    const VERSION = "v6.80";
+    const VERSION = "v6.81";
 
     // ── CONFIG ────────────────────────────────────────────────────────────────────
     const FIREBASE_CONFIG = {
@@ -2275,10 +2275,11 @@
                   {isDone && <div className="text-xs text-gray-400 text-right">✓</div>}
                 </>
               ) : (
-                <div className="text-xs text-gray-400 mt-0.5 flex items-center gap-1.5 justify-end">
-                  {dateStr && <span>{dateStr}</span>}
-                  {isDone && <><span>·</span><span>✓</span></>}
-                </div>
+                isDone && (
+                  <div className="text-xs text-gray-400 mt-0.5 flex items-center justify-end">
+                    <span>✓</span>
+                  </div>
+                )
               )}
             </div>
             {onMenuToggle && (
@@ -3104,17 +3105,6 @@
 
 
       // ── List-level actions (the combined "פעולות" menu below) ───────────
-      const toggleListDone = () => {
-        var now = Date.now();
-        var nowDone = !list.done;
-        db.ref("lists/" + listId).update({ done: nowDone, doneAt: nowDone ? now : null }).then(function() {
-          setList(function(prev) { return prev ? Object.assign({}, prev, { done: nowDone, doneAt: nowDone ? now : null }) : prev; });
-          homeDataCache = null; // Home's own list needs to reflect this next time it's shown
-          showToast(nowDone ? "הרשימה סומנה כהושלמה" : "הרשימה הוחזרה לפעילה");
-          if (nowDone) onHome();
-        }, function(err) { showToast("שגיאה: " + (err && err.message || "?")); });
-      };
-
       const openRename = () => { setRenameNameInput(list.name || ""); setShowRename(true); };
       const confirmRename = () => {
         var newName = renameNameInput.trim();
@@ -3333,12 +3323,6 @@
               <h3 className="text-lg font-bold text-center mb-4">פעולות</h3>
               <div className="space-y-2">
                 {/* — Status & cleanup — */}
-                {!isNotes && !isTasks && canEditAll && (
-                  <button onClick={function() { setShowHeaderMenu(false); toggleListDone(); }}
-                    className="w-full text-right flex items-center gap-3 px-4 py-3 rounded-xl bg-gray-50 hover:bg-gray-100">
-                    <span className="text-lg">{list.done ? "↩️" : "✅"}</span><span className="text-sm font-medium text-gray-700">{list.done ? "החזר לפעיל" : "סמן כהושלם"}</span>
-                  </button>
-                )}
                 {!isNotes && doneCount > 0 && canEditAll && !isFiltered && (
                   <button onClick={function() { setShowHeaderMenu(false); clearDone(); }}
                     className="w-full text-right flex items-center gap-3 px-4 py-3 rounded-xl bg-gray-50 hover:bg-gray-100">
@@ -3376,7 +3360,18 @@
                 {isOwner && !isNotes && (
                   <button onClick={function() { setShowHeaderMenu(false); openShare(); }}
                     className="w-full text-right flex items-center gap-3 px-4 py-3 rounded-xl bg-gray-50 hover:bg-gray-100 border-t border-gray-100">
-                    <span className="text-lg">🔗</span><span className="text-sm font-medium text-gray-700">שתף רשימה</span>
+                    <span className="text-lg">🔗</span>
+                    <span className="flex-1 min-w-0 text-right">
+                      <span className="block text-sm font-medium text-gray-700">שתף רשימה</span>
+                      {list.sharedWith && Object.keys(list.sharedWith).length > 0 && (
+                        <span className="block text-xs text-gray-400 truncate">
+                          משותפת עם {Object.keys(list.sharedWith).map(function(uid) {
+                            var c = contacts.find(function(x) { return x.id === uid; });
+                            return c ? c.name : uid;
+                          }).join(", ")}
+                        </span>
+                      )}
+                    </span>
                   </button>
                 )}
                 {!isNotes && !isTasks && (

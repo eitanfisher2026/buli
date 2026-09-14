@@ -1,6 +1,6 @@
     const { useState, useEffect, useRef } = React;
 
-    const VERSION = "v6.76";
+    const VERSION = "v6.78";
 
     // ── CONFIG ────────────────────────────────────────────────────────────────────
     const FIREBASE_CONFIG = {
@@ -2841,7 +2841,16 @@
           {/* Profile category order editor */}
           {editProfile && (
             <Modal onClose={function() { setEditProfile(null); }}>
-              <h3 className="text-lg font-bold text-center mb-1">{editProfile.name}</h3>
+              <input key={"profname:" + editProfile.id} defaultValue={editProfile.name}
+                onBlur={function(e) {
+                  var v = e.target.value.trim();
+                  if (!v || v === editProfile.name) { e.target.value = editProfile.name; return; }
+                  setEditProfile(function(prev) { return prev ? Object.assign({}, prev, { name: v }) : prev; });
+                  setProfiles(function(prev) { return prev.map(function(p) { return p.id === editProfile.id ? Object.assign({}, p, { name: v }) : p; }); });
+                  db.ref("globalProfiles/" + editProfile.id + "/name").set(v);
+                  showToast("השם עודכן");
+                }}
+                className="w-full text-lg font-bold text-center mb-1 border-b border-transparent focus:border-blue-300 focus:outline-none pb-1" />
               <p className="text-xs text-gray-400 text-center mb-4">גרור או לחץ חצים לשינוי הסדר</p>
               <div className="space-y-2 max-h-64 overflow-y-auto mb-4">
                 {profileCatOrder.map(function(label, idx) {
@@ -2895,6 +2904,7 @@
       const [shareEmail,       setShareEmail]       = useState("");
       const [shareRole,        setShareRole]        = useState("edit");
       const [sharing,          setSharing]          = useState(false);
+      const [removingShareUid, setRemovingShareUid] = useState(null);
       const [filterStatus, setFilterStatus] = useState(function() { return localStorage.getItem("buli_filter_status") || "all"; });
       const [filterPerson, setFilterPerson] = useState(function() { return localStorage.getItem("buli_filter_person") || "all"; });
       const [showFilters, setShowFilters] = useState(false);
@@ -3199,7 +3209,6 @@
         setShowShare(true);
       };
 
-      const [removingShareUid, setRemovingShareUid] = useState(null);
       const removeShare = (uid) => {
         setRemovingShareUid(uid);
         db.ref().update({ ["lists/" + listId + "/sharedWith/" + uid]: null, ["listsByUser/" + uid + "/" + listId]: null }).then(function() {

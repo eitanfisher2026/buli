@@ -1,6 +1,6 @@
     const { useState, useEffect, useRef } = React;
 
-    const VERSION = "v6.84";
+    const VERSION = "v6.85";
 
     // ── CONFIG ────────────────────────────────────────────────────────────────────
     const FIREBASE_CONFIG = {
@@ -709,7 +709,6 @@
       const [showInstallGuide, setShowInstallGuide] = useState(false);
 
       const [showSettings, setShowSettings] = useState(false);
-      const [showGearMenu, setShowGearMenu] = useState(false);
       const [showAISettings, setShowAISettings] = useState(false);
       const [notesSeparator, setNotesSeparator] = useState(function() { return localStorage.getItem("buli_notes_separator") || "הבא"; });
       const [editingNoteInstance, setEditingNoteInstance] = useState(null);
@@ -1411,7 +1410,7 @@
                 </div>
                 <p className="text-white/50 text-[11px] mt-0.5">אפליקציה לקניות משפחתית</p>
               </div>
-              <button onClick={e => { e.stopPropagation(); setShowGearMenu(true); }} title="הגדרות"
+              <button onClick={e => { e.stopPropagation(); switchSettingsTab(settingsTab); setShowSettings(true); }} title="הגדרות"
                 className="text-white text-lg w-9 h-9 flex items-center justify-center bg-white/20 rounded-full flex-shrink-0">⚙️</button>
             </div>
           </div>
@@ -1619,6 +1618,10 @@
                     className="w-8 h-8 rounded-full flex-shrink-0 border-2 border-white shadow-md"
                     title="שנה צבע" />
                 </div>
+                <button onClick={function() { auth.signOut(); }}
+                  className="mt-2 text-xs text-red-500 font-medium flex items-center gap-1">
+                  <span>🚪</span><span>התנתק</span>
+                </button>
                 {showColorPicker && (
                   <div className="mt-3">
                     <p className="text-xs text-gray-400 mb-2 text-right">הצבע שלי — גלוי לכולם ברשימות משותפות</p>
@@ -2083,11 +2086,6 @@
                   </div>
                 )}
               </div>
-
-              <div className="border-t border-gray-100 my-2" />
-              <button onClick={function() { auth.signOut(); }} className="w-full text-right px-3 py-3 text-sm text-red-500 hover:bg-red-50 rounded-xl flex items-center gap-3">
-                <span className="text-lg w-7 text-center">🚪</span><span>יציאה</span>
-              </button>
               </div>)}
 
             </Modal>
@@ -2143,22 +2141,6 @@
             </Modal>
           )}
 
-          {/* Quick menu behind ⚙️ — a choice of full Settings or signing
-              out directly, without digging to the bottom of Settings for it. */}
-          {showGearMenu && (
-            <Modal onClose={() => setShowGearMenu(false)}>
-              <div className="space-y-2">
-                <button onClick={() => { setShowGearMenu(false); switchSettingsTab(settingsTab); setShowSettings(true); }}
-                  className="w-full text-right px-4 py-3 text-sm text-gray-700 hover:bg-gray-50 rounded-xl flex items-center gap-3">
-                  <span className="text-lg">⚙️</span><span>הגדרות</span>
-                </button>
-                <button onClick={() => auth.signOut()}
-                  className="w-full text-right px-4 py-3 text-sm text-red-500 hover:bg-red-50 rounded-xl flex items-center gap-3">
-                  <span className="text-lg">🚪</span><span>התנתק</span>
-                </button>
-              </div>
-            </Modal>
-          )}
 
           {/* Install guide — iOS/Safari gets exact steps; every other browser
               that hasn't (yet) fired the native beforeinstallprompt gets a

@@ -1,6 +1,6 @@
     const { useState, useEffect, useRef } = React;
 
-    const VERSION = "v6.75";
+    const VERSION = "v6.76";
 
     // ── CONFIG ────────────────────────────────────────────────────────────────────
     const FIREBASE_CONFIG = {
@@ -3198,6 +3198,21 @@
         setShareEmail("");
         setShowShare(true);
       };
+
+      const [removingShareUid, setRemovingShareUid] = useState(null);
+      const removeShare = (uid) => {
+        setRemovingShareUid(uid);
+        db.ref().update({ ["lists/" + listId + "/sharedWith/" + uid]: null, ["listsByUser/" + uid + "/" + listId]: null }).then(function() {
+          setList(function(prev) {
+            if (!prev) return prev;
+            var nextShared = Object.assign({}, prev.sharedWith);
+            delete nextShared[uid];
+            return Object.assign({}, prev, { sharedWith: nextShared });
+          });
+          setRemovingShareUid(null);
+          showToast("ההרשאה הוסרה");
+        }, function(err) { setRemovingShareUid(null); showToast("שגיאה: " + (err && err.message || "?")); });
+      };
       const isOwnEmail = !!shareEmail.trim() && shareEmail.trim().toLowerCase() === (user.email || "").toLowerCase();
 
       const isTasks = list.type === "tasks";
@@ -3592,6 +3607,30 @@
               <p className="text-xs text-gray-400 text-center mb-4">
                 השיתוף נותן גישה בתוך בולי — לא נשלח מייל. האדם צריך כבר להיות רשום לבולי עם המייל הזה, ואז הרשימה תופיע אצלו בפעם הבאה שהוא פותח את האפליקציה.
               </p>
+              {list.sharedWith && Object.keys(list.sharedWith).length > 0 && (
+                <div className="mb-4">
+                  <p className="text-xs text-gray-400 mb-2 text-right">משותפת עם</p>
+                  <div className="space-y-2">
+                    {Object.entries(list.sharedWith).map(function(entry) {
+                      var uid = entry[0], role = entry[1];
+                      var c = contacts.find(function(x) { return x.id === uid; });
+                      var roleLabel = role === "edit" ? "עריכה מלאה" : role === "own" ? "שלי בלבד" : "צפייה";
+                      return (
+                        <div key={uid} className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl border border-gray-200 bg-gray-50">
+                          <div className="flex-1 min-w-0 text-right">
+                            <div className="text-sm font-medium text-gray-800 truncate">{c ? c.name : uid}</div>
+                            <div className="text-xs text-gray-400 truncate">{[c && c.email, roleLabel].filter(Boolean).join(" · ")}</div>
+                          </div>
+                          <button onClick={function() { removeShare(uid); }} disabled={removingShareUid === uid}
+                            className="text-red-400 hover:text-red-600 text-xs border border-red-200 rounded-full px-2.5 py-1 disabled:opacity-40 flex-shrink-0">
+                            {removingShareUid === uid ? <Spinner /> : "הסר"}
+                          </button>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
               {contacts.length > 0 && (
                 <div className="mb-4">
                   <p className="text-xs text-gray-400 mb-2 text-right">אנשי קשר</p>

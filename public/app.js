@@ -1,6 +1,6 @@
     const { useState, useEffect, useRef } = React;
 
-    const VERSION = "v6.74";
+    const VERSION = "v6.75";
 
     // ── CONFIG ────────────────────────────────────────────────────────────────────
     const FIREBASE_CONFIG = {
@@ -597,7 +597,7 @@
               <span>👁️ תצוגת משתמש רגיל</span><span className="opacity-70">· חזרה למנהל</span>
             </button>
           )}
-          {screen === "home"       && <HomeScreen       user={user} isAdmin={role === "admin" && !simulateRegular} isRealAdmin={role === "admin"} simulating={simulateRegular} onToggleSimulate={toggleSimulate} onOpenList={goList} onCategories={() => go("categories")} showToast={setToast} onAddTask={() => goAdd("tasks_" + user.uid, "tasks")} onCreateShoppingList={(id, name, single) => single ? goList(id, name) : goAdd(id, "shopping", name)} onCreateNotesList={(id, name) => goAdd(id, "notes", name)} autoOpenSettings={autoOpenSettings} onAutoOpenedSettings={() => setAutoOpenSettings(false)} fontScale={fontScale} onSetFontScale={setFontScale} />}
+          {screen === "home"       && <HomeScreen       user={user} isAdmin={role === "admin" && !simulateRegular} isRealAdmin={role === "admin"} simulating={simulateRegular} onToggleSimulate={toggleSimulate} onOpenList={goList} onCategories={() => go("categories")} showToast={setToast} onAddTask={() => goAdd("tasks_" + user.uid, "tasks")} onCreateShoppingList={(id, name) => goAdd(id, "shopping", name)} onCreateNotesList={(id, name) => goAdd(id, "notes", name)} autoOpenSettings={autoOpenSettings} onAutoOpenedSettings={() => setAutoOpenSettings(false)} fontScale={fontScale} onSetFontScale={setFontScale} />}
           {screen === "list"       && <ListScreen       user={user} listId={listId} onBack={goBack} onMenu={goMenu} onHome={goHome} onAdd={(type, name) => goAdd(listId, type, name || listName)} showToast={setToast} />}
           {screen === "add"        && <AddScreen        user={user} listId={listId} listType={listType} listName={listName} onBack={goBack} onMenu={goMenu} showToast={setToast} showStickyToast={setStickyToast} />}
           {screen === "categories" && <CategoriesScreen user={user} onBack={goBack} showToast={setToast} />}
@@ -757,7 +757,6 @@
 
       const [myMenusEnabled, setMyMenusEnabled] = useState(false);
       const [myTasksEnabled, setMyTasksEnabled] = useState(false);
-      const [myAddMode, setMyAddMode] = useState("single"); // "group" | "single"
       const [myKeyboardWarning, setMyKeyboardWarning] = useState(true);
       const [myNickname, setMyNickname] = useState("");
       // Remembers the last tab per user (not just per session) so reopening
@@ -773,18 +772,15 @@
         Promise.all([
           db.ref("users/" + user.uid + "/menusEnabled").once("value"),
           db.ref("users/" + user.uid + "/tasksEnabled").once("value"),
-          db.ref("users/" + user.uid + "/addMode").once("value"),
           db.ref("users/" + user.uid + "/keyboardWarning").once("value"),
           db.ref("users/" + user.uid + "/nickname").once("value"),
         ]).then(function(snaps) {
-          // Defaults for a brand-new user who's never touched these:
-          // menus off, tasks off, add items one at a time, wrong-keyboard-
-          // language beep on.
+          // Defaults for a brand-new user who's never touched these: menus
+          // off, tasks off, wrong-keyboard-language beep on.
           setMyMenusEnabled(snaps[0].val() === true);
           setMyTasksEnabled(snaps[1].val() === true);
-          setMyAddMode(snaps[2].val() === "group" ? "group" : "single");
-          setMyKeyboardWarning(snaps[3].val() !== false);
-          setMyNickname(snaps[4].val() || "");
+          setMyKeyboardWarning(snaps[2].val() !== false);
+          setMyNickname(snaps[3].val() || "");
         });
       }, [user.uid]);
 
@@ -802,7 +798,6 @@
       const [ownerEmail,  setOwnerEmail]  = useState("");
       const [ownerMenusEnabled, setOwnerMenusEnabled] = useState(false);
       const [ownerTasksEnabled, setOwnerTasksEnabled] = useState(false);
-      const [ownerAddMode, setOwnerAddMode] = useState("single");
       const [ownerKeyboardWarning, setOwnerKeyboardWarning] = useState(true);
       const [ownerNickname, setOwnerNickname] = useState("");
       const [ownerLastLogin, setOwnerLastLogin] = useState(null);
@@ -848,7 +843,6 @@
             setOwnerEmail(res.data.owner || "");
             setOwnerMenusEnabled(!!res.data.ownerMenusEnabled);
             setOwnerTasksEnabled(!!res.data.ownerTasksEnabled);
-            setOwnerAddMode(res.data.ownerAddMode === "group" ? "group" : "single");
             setOwnerKeyboardWarning(res.data.ownerKeyboardWarning !== false);
             setOwnerNickname(res.data.ownerNickname || "");
             setOwnerLastLogin(res.data.ownerLastLogin || null);
@@ -893,7 +887,6 @@
           if (email.trim().toLowerCase() === (user.email || "").toLowerCase()) {
             if ("menusEnabled" in patch) setMyMenusEnabled(patch.menusEnabled);
             if ("tasksEnabled" in patch) setMyTasksEnabled(patch.tasksEnabled);
-            if ("addMode" in patch) setMyAddMode(patch.addMode);
             if ("keyboardWarning" in patch) setMyKeyboardWarning(patch.keyboardWarning);
           }
           loadAuthUsers();
@@ -911,7 +904,6 @@
       // special-cased ones), so no callable round-trip is needed here.
       const setMyMenusEnabledPref = function(v) { setMyMenusEnabled(v); db.ref("users/" + user.uid + "/menusEnabled").set(v); };
       const setMyTasksEnabledPref = function(v) { setMyTasksEnabled(v); db.ref("users/" + user.uid + "/tasksEnabled").set(v); };
-      const setMyAddModePref = function(v) { setMyAddMode(v); db.ref("users/" + user.uid + "/addMode").set(v); };
       const setMyKeyboardWarningPref = function(v) { setMyKeyboardWarning(v); db.ref("users/" + user.uid + "/keyboardWarning").set(v); };
 
       // ── Usage & Costs ────────────────────────────────────────────────────────
@@ -1084,10 +1076,7 @@
         db.ref().update({ ["lists/" + newListId]: newList, ["listsByUser/" + user.uid + "/" + newListId]: true }).then(function() {
           updateLists(function(prev) { return [Object.assign({ id: newListId }, newList)].concat(prev || []); });
           creatingListRef.current = false;
-          // In "one at a time" mode, the free-text/group AddScreen isn't
-          // the right destination at all — land straight on the (empty)
-          // list, where the quick-add "+" FAB already matches that mode.
-          onCreateShoppingList(newListId, autoName, myAddMode === "single");
+          onCreateShoppingList(newListId, autoName);
         }, function() { creatingListRef.current = false; showToast("שגיאה ביצירת הרשימה"); });
       };
 
@@ -1907,19 +1896,6 @@
                     </button>
                   </div>
                   <div>
-                    <div className="text-sm text-gray-700 mb-1">🛒 הוספת פריטים לרשימה</div>
-                    <div className="flex bg-white rounded-xl border border-gray-200 p-1">
-                      <button onClick={function() { setMyAddModePref("group"); }}
-                        className={"flex-1 py-1.5 rounded-lg text-xs font-medium transition " + (myAddMode === "group" ? "bg-blue-600 text-white" : "text-gray-500")}>
-                        קבוצה
-                      </button>
-                      <button onClick={function() { setMyAddModePref("single"); }}
-                        className={"flex-1 py-1.5 rounded-lg text-xs font-medium transition " + (myAddMode === "single" ? "bg-blue-600 text-white" : "text-gray-500")}>
-                        אחד בכל פעם
-                      </button>
-                    </div>
-                  </div>
-                  <div>
                     <div className="text-sm text-gray-700 mb-1">🔤 גודל טקסט</div>
                     <div className="flex bg-white rounded-xl border border-gray-200 p-1">
                       {[[100, "רגיל"], [115, "גדול"], [130, "גדול מאוד"]].map(function(opt) {
@@ -2047,10 +2023,6 @@
                               className={"text-xs border rounded-full px-2 py-1 disabled:opacity-40 flex-shrink-0 " + (ownerTasksEnabled ? "text-green-600 border-green-200 bg-green-50" : "text-gray-400 border-gray-200 bg-white")}>
                               ✅{ownerTasksEnabled ? "" : "🚫"}
                             </button>
-                            <button onClick={function() { handleSetUserPref(ownerEmail, { addMode: ownerAddMode === "single" ? "group" : "single" }); }} disabled={userBusy} title="הוספת פריטים לרשימה"
-                              className="text-xs border border-gray-200 rounded-full px-2 py-1 disabled:opacity-40 flex-shrink-0 text-gray-500 bg-white">
-                              {ownerAddMode === "single" ? "1️⃣ אחד בכל פעם" : "📦 קבוצה"}
-                            </button>
                             <button onClick={function() { handleSetUserPref(ownerEmail, { keyboardWarning: !ownerKeyboardWarning }); }} disabled={userBusy} title="ביפ על שם פריט באנגלית"
                               className={"text-xs border rounded-full px-2 py-1 disabled:opacity-40 flex-shrink-0 " + (ownerKeyboardWarning ? "text-green-600 border-green-200 bg-green-50" : "text-gray-400 border-gray-200 bg-white")}>
                               ⌨️{ownerKeyboardWarning ? "" : "🚫"}
@@ -2090,10 +2062,6 @@
                                 <button onClick={function() { handleSetUserPref(u.email, { tasksEnabled: !u.tasksEnabled }); }} disabled={userBusy} title="מטלות"
                                   className={"text-xs border rounded-full px-2 py-1 disabled:opacity-40 flex-shrink-0 " + (u.tasksEnabled ? "text-green-600 border-green-200 bg-green-50" : "text-gray-400 border-gray-200 bg-white")}>
                                   ✅{u.tasksEnabled ? "" : "🚫"}
-                                </button>
-                                <button onClick={function() { handleSetUserPref(u.email, { addMode: u.addMode === "single" ? "group" : "single" }); }} disabled={userBusy} title="הוספת פריטים לרשימה"
-                                  className="text-xs border border-gray-200 rounded-full px-2 py-1 disabled:opacity-40 flex-shrink-0 text-gray-500 bg-white">
-                                  {u.addMode === "single" ? "1️⃣ אחד בכל פעם" : "📦 קבוצה"}
                                 </button>
                                 <button onClick={function() { handleSetUserPref(u.email, { keyboardWarning: !u.keyboardWarning }); }} disabled={userBusy} title="ביפ על שם פריט באנגלית"
                                   className={"text-xs border rounded-full px-2 py-1 disabled:opacity-40 flex-shrink-0 " + (u.keyboardWarning ? "text-green-600 border-green-200 bg-green-50" : "text-gray-400 border-gray-200 bg-white")}>

@@ -1,6 +1,6 @@
     const { useState, useEffect, useRef } = React;
 
-    const VERSION = "v6.83";
+    const VERSION = "v6.84";
 
     // ── CONFIG ────────────────────────────────────────────────────────────────────
     const FIREBASE_CONFIG = {
@@ -757,6 +757,12 @@
 
       const [myMenusEnabled, setMyMenusEnabled] = useState(false);
       const [myTasksEnabled, setMyTasksEnabled] = useState(false);
+      // Guards the stale-tab correction below from firing on myMenusEnabled/
+      // myTasksEnabled's default (false) before their real value has loaded —
+      // without this, going back to Home from inside "תפריטים" bounced
+      // straight to "קניות" every time, since a fresh mount always starts
+      // at the default before the real preference arrives a moment later.
+      const [prefsLoaded, setPrefsLoaded] = useState(false);
       const [myKeyboardWarning, setMyKeyboardWarning] = useState(true);
       const [myNickname, setMyNickname] = useState("");
       // Remembers the last tab per user (not just per session) so reopening
@@ -781,6 +787,7 @@
           setMyTasksEnabled(snaps[1].val() === true);
           setMyKeyboardWarning(snaps[2].val() !== false);
           setMyNickname(snaps[3].val() || "");
+          setPrefsLoaded(true);
         });
       }, [user.uid]);
 
@@ -970,11 +977,14 @@
       const setTab = function(t) { setActiveTab(t); localStorage.setItem("buli_active_tab", t); };
       // If the tab the user was last on got disabled (from a previous
       // session, another device, or just now in settings), fall back to
-      // shopping rather than rendering a dead tab.
+      // shopping rather than rendering a dead tab. Waits for prefsLoaded so
+      // this only ever judges the real value, never myMenusEnabled/
+      // myTasksEnabled's pre-fetch default.
       useEffect(function() {
+        if (!prefsLoaded) return;
         if (activeTab === "notes" && !myMenusEnabled) setTab("shopping");
         if (activeTab === "tasks" && !myTasksEnabled) setTab("shopping");
-      }, [myMenusEnabled, myTasksEnabled]);
+      }, [prefsLoaded, myMenusEnabled, myTasksEnabled]);
       // AI settings are per-person — each person's own key lives at
       // users/{uid}/ai and is only ever sent to the parseItems Cloud Function, never to a
       // third-party API directly from the browser.

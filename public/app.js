@@ -1,6 +1,6 @@
     const { useState, useEffect, useRef } = React;
 
-    const VERSION = "v6.79";
+    const VERSION = "v6.80";
 
     // ── CONFIG ────────────────────────────────────────────────────────────────────
     const FIREBASE_CONFIG = {
@@ -473,6 +473,10 @@
       // the other screens don't open it directly; they navigate home and set
       // this flag, which HomeScreen picks up on arrival to open Settings itself.
       const [autoOpenSettings, setAutoOpenSettings] = useState(false);
+      // Same bounce pattern, for "העתק פריטים לרשימה אחרת" triggered from
+      // inside a list — that flow's item/destination pickers still live on
+      // Home, so this carries which list to copy from across the navigation.
+      const [autoOpenCopyItemsFor, setAutoOpenCopyItemsFor] = useState(null);
       // Text size is a personal accessibility preference, applied globally
       // by scaling the root element's font-size — every Tailwind text-*
       // class here is defined in rem, so this one line scales the whole
@@ -588,6 +592,7 @@
       // (declared up top with the other useState calls — see below), which
       // HomeScreen picks up on arrival to open Settings itself.
       const goMenu = () => { setAutoOpenSettings(true); goHome(); };
+      const goCopyItems = (id) => { setAutoOpenCopyItemsFor(id); goHome(); };
 
       return (
         <div className="max-w-md sm:max-w-xl md:max-w-2xl lg:max-w-3xl xl:max-w-4xl mx-auto min-h-screen relative">
@@ -597,8 +602,8 @@
               <span>👁️ תצוגת משתמש רגיל</span><span className="opacity-70">· חזרה למנהל</span>
             </button>
           )}
-          {screen === "home"       && <HomeScreen       user={user} isAdmin={role === "admin" && !simulateRegular} isRealAdmin={role === "admin"} simulating={simulateRegular} onToggleSimulate={toggleSimulate} onOpenList={goList} onCategories={() => go("categories")} showToast={setToast} onAddTask={() => goAdd("tasks_" + user.uid, "tasks")} onCreateShoppingList={(id, name) => goAdd(id, "shopping", name)} onCreateNotesList={(id, name) => goAdd(id, "notes", name)} autoOpenSettings={autoOpenSettings} onAutoOpenedSettings={() => setAutoOpenSettings(false)} fontScale={fontScale} onSetFontScale={setFontScale} />}
-          {screen === "list"       && <ListScreen       user={user} listId={listId} onBack={goBack} onMenu={goMenu} onHome={goHome} onAdd={(type, name) => goAdd(listId, type, name || listName)} showToast={setToast} />}
+          {screen === "home"       && <HomeScreen       user={user} isAdmin={role === "admin" && !simulateRegular} isRealAdmin={role === "admin"} simulating={simulateRegular} onToggleSimulate={toggleSimulate} onOpenList={goList} onCategories={() => go("categories")} showToast={setToast} onAddTask={() => goAdd("tasks_" + user.uid, "tasks")} onCreateShoppingList={(id, name) => goAdd(id, "shopping", name)} onCreateNotesList={(id, name) => goAdd(id, "notes", name)} autoOpenSettings={autoOpenSettings} onAutoOpenedSettings={() => setAutoOpenSettings(false)} autoOpenCopyItemsFor={autoOpenCopyItemsFor} onAutoOpenedCopyItems={() => setAutoOpenCopyItemsFor(null)} fontScale={fontScale} onSetFontScale={setFontScale} />}
+          {screen === "list"       && <ListScreen       user={user} listId={listId} onBack={goBack} onMenu={goMenu} onHome={goHome} onAdd={(type, name) => goAdd(listId, type, name || listName)} onCopyItems={goCopyItems} showToast={setToast} />}
           {screen === "add"        && <AddScreen        user={user} listId={listId} listType={listType} listName={listName} onBack={goBack} onMenu={goMenu} showToast={setToast} showStickyToast={setStickyToast} />}
           {screen === "categories" && <CategoriesScreen user={user} onBack={goBack} showToast={setToast} />}
           {toast && <Toast msg={toast} onClose={() => setToast("")} />}
@@ -657,7 +662,7 @@
     }
 
     // ── HOME ──────────────────────────────────────────────────────────────────────
-    function HomeScreen({ user, isAdmin, isRealAdmin, simulating, onToggleSimulate, onOpenList, onCategories, showToast, onAddTask, onCreateShoppingList, onCreateNotesList, autoOpenSettings, onAutoOpenedSettings, fontScale, onSetFontScale }) {
+    function HomeScreen({ user, isAdmin, isRealAdmin, simulating, onToggleSimulate, onOpenList, onCategories, showToast, onAddTask, onCreateShoppingList, onCreateNotesList, autoOpenSettings, onAutoOpenedSettings, autoOpenCopyItemsFor, onAutoOpenedCopyItems, fontScale, onSetFontScale }) {
       const tasksListId = "tasks_" + user.uid;
       const creatingListRef = useRef(false);
       const categories = useCategories(user.uid); // for grouping the "copy items" picker by category, same as a list's default view
@@ -685,11 +690,6 @@
       const [editTask,   setEditTask]   = useState(null);
       const [menuId,     setMenuId]     = useState(null);
       const [showDone,   setShowDone]   = useState(false);
-      const [renameId,   setRenameId]   = useState(null);
-      const [renameName, setRenameName] = useState("");
-      const [duplicateId,   setDuplicateId]   = useState(null);
-      const [duplicateName, setDuplicateName] = useState("");
-      const [duplicating, setDuplicating] = useState(false);
       const [copySourceList,   setCopySourceList]   = useState(null);
       const [copyItems,        setCopyItems]        = useState([]);
       const [copyItemsLoading, setCopyItemsLoading] = useState(false);
@@ -948,6 +948,14 @@
         setShowSettings(true);
         onAutoOpenedSettings();
       }, [autoOpenSettings]);
+      // "העתק פריטים לרשימה אחרת" tapped from inside a list (see App()'s
+      // goCopyItems) — open the same item/destination picker this button
+      // already opens when tapped directly from a card's own menu.
+      useEffect(function() {
+        if (!autoOpenCopyItemsFor || lists === null) return; // wait for lists to actually be loaded
+        startCopyItems(autoOpenCopyItemsFor);
+        onAutoOpenedCopyItems();
+      }, [autoOpenCopyItemsFor, lists]);
 
       const [confirmDialog, setConfirmDialog] = useState(null);
       const [userColor,        setUserColor]        = useState(function() { return getUserColor(user.uid); });
@@ -1164,65 +1172,6 @@
         });
       };
 
-      const startRename = (id) => {
-        var list = (lists || []).find(function(l) { return l.id === id; });
-        setRenameId(id); setRenameName(list ? list.name : ""); setMenuId(null);
-      };
-
-      const confirmRename = () => {
-        if (!renameName.trim() || !renameId) return;
-        var newName = renameName.trim();
-        updateLists(function(prev) { return prev ? prev.map(function(l) { return l.id === renameId ? Object.assign({}, l, { name: newName }) : l; }) : []; });
-        db.ref("lists/" + renameId).update({ name: newName });
-        setRenameId(null); showToast("שם הרשימה עודכן");
-      };
-
-      const startDuplicate = (id) => {
-        var list = (lists || []).find(function(l) { return l.id === id; });
-        setDuplicateId(id); setDuplicateName(list ? "עותק של " + list.name : ""); setMenuId(null);
-      };
-
-      const confirmDuplicate = () => {
-        if (!duplicateName.trim() || !duplicateId || duplicating) return;
-        var original = (lists || []).find(function(l) { return l.id === duplicateId; });
-        if (!original) { setDuplicateId(null); return; }
-        setDuplicating(true);
-        var newName = duplicateName.trim();
-        var newId = db.ref("lists").push().key;
-        // Copy every field from the original except the ones that must be
-        // fresh for a new, unshared list: id (client-side only, never stored),
-        // sharedWith (a duplicate starts private to whoever made it), name,
-        // ownership/creation time, and completion state.
-        var newListData = Object.assign({}, original);
-        delete newListData.id;
-        delete newListData.sharedWith;
-        newListData.name = newName;
-        newListData.ownerId = user.uid;
-        newListData.createdAt = Date.now();
-        newListData.done = false;
-
-        db.ref("items/" + duplicateId).once("value").then(function(snap) {
-          var items = snap.val() || {};
-          var updates = {};
-          updates["lists/" + newId] = newListData;
-          updates["listsByUser/" + user.uid + "/" + newId] = true;
-          // Items are copied exactly as they are — same name, note, and
-          // checked/unchecked state — just filed under new item keys.
-          Object.keys(items).forEach(function(itemId) {
-            var newItemKey = db.ref("items/" + newId).push().key;
-            updates["items/" + newId + "/" + newItemKey] = items[itemId];
-          });
-          return db.ref().update(updates);
-        }).then(function() {
-          updateLists(function(prev) { return (prev || []).concat([Object.assign({ id: newId }, newListData)]); });
-          setDuplicateId(null); setDuplicating(false);
-          showToast("הרשימה שוכפלה");
-        }, function(err) {
-          setDuplicating(false);
-          showToast("שגיאה בשכפול: " + (err && err.message || "?"));
-        });
-      };
-
       const startCopyItems = (id) => {
         var list = (lists || []).find(function(l) { return l.id === id; });
         if (!list) return;
@@ -1419,17 +1368,13 @@
       var doneTasks      = sortTasksByDue(tasks.filter(function(t) { return  t.done; }));
 
 
+      // All the per-list actions that used to live in this card's own ⋮ menu
+      // (rename, duplicate, copy items, mark done, delete) now live in one
+      // combined "פעולות" menu inside the list itself — this card is just a
+      // way in.
       var cardProps = function(l) { return {
         key: l.id, list: l, userId: user.uid,
-        onOpen: function() { onOpenList(l.id, l.name); },
-        menuOpen: menuId === l.id,
-        onMenuToggle: function(e) { e.stopPropagation(); setMenuId(menuId === l.id ? null : l.id); },
-        onMarkDone:      function() { markListDone(l.id); },
-        onRestore:       function() { restoreList(l.id); },
-        onRename:        function() { startRename(l.id); },
-        onDuplicate:     function() { startDuplicate(l.id); },
-        onCopyItems:     function() { startCopyItems(l.id); },
-        onDelete:        function() { deleteList(l.id); }
+        onOpen: function() { onOpenList(l.id, l.name); }
       }; };
 
       var noteCardProps = function(l) { return {
@@ -1555,34 +1500,6 @@
           </div>
 
           {editTask && <TaskEditModal item={editTask} onChange={setEditTask} onSave={saveTaskEdit} onDelete={deleteTask} onClose={() => setEditTask(null)} />}
-
-          {/* Rename modal */}
-          {renameId && (
-            <Modal onClose={() => setRenameId(null)}>
-              <h3 className="text-lg font-bold text-center mb-4">שינוי שם</h3>
-              <input value={renameName} onChange={e => setRenameName(e.target.value)} autoFocus
-                onKeyDown={e => e.key === "Enter" && confirmRename()}
-                className="w-full border border-gray-200 rounded-xl px-4 py-3 text-right focus:outline-none focus:border-blue-400 mb-4" />
-              <button onClick={confirmRename} disabled={!renameName.trim()}
-                className="w-full bg-blue-600 text-white py-4 rounded-2xl font-semibold text-lg disabled:opacity-40">
-                שמור
-              </button>
-            </Modal>
-          )}
-
-          {/* Duplicate list modal */}
-          {duplicateId && (
-            <Modal onClose={() => { if (!duplicating) setDuplicateId(null); }}>
-              <h3 className="text-lg font-bold text-center mb-4">שכפול רשימה</h3>
-              <input value={duplicateName} onChange={e => setDuplicateName(e.target.value)} autoFocus
-                onKeyDown={e => e.key === "Enter" && confirmDuplicate()}
-                className="w-full border border-gray-200 rounded-xl px-4 py-3 text-right focus:outline-none focus:border-blue-400 mb-4" />
-              <button onClick={confirmDuplicate} disabled={!duplicateName.trim() || duplicating}
-                className="w-full bg-blue-600 text-white py-4 rounded-2xl font-semibold text-lg disabled:opacity-40">
-                {duplicating ? "משכפל..." : "שכפל"}
-              </button>
-            </Modal>
-          )}
 
           {/* Copy items to another list — step 1: pick items */}
           {showCopyPicker && (
@@ -2305,8 +2222,7 @@
       );
     }
 
-    function ListCard({ list, userId, onOpen, menuOpen, onMenuToggle, onMarkDone, onRestore, onRename, onDuplicate, onCopyItems, onDelete, isDone, onEdit }) {
-      const isOwner = list.ownerId === userId;
+    function ListCard({ list, onOpen, menuOpen, onMenuToggle, onMarkDone, onRestore, onDelete, isDone, onEdit }) {
       var dateStr = list.dinnerDate
         ? formatDinnerDate(list.dinnerDate)
         : (list.createdAt ? (function(){ var d = new Date(list.createdAt); return d.getDate()+"/"+(d.getMonth()+1)+"/"+d.getFullYear(); })() : "");
@@ -2365,9 +2281,11 @@
                 </div>
               )}
             </div>
-            <button ref={menuBtnRef} onClick={handleMenuToggle} className="text-gray-400 text-xl px-1 hover:text-gray-600 flex-shrink-0">⋮</button>
+            {onMenuToggle && (
+              <button ref={menuBtnRef} onClick={handleMenuToggle} className="text-gray-400 text-xl px-1 hover:text-gray-600 flex-shrink-0">⋮</button>
+            )}
           </div>
-          {menuOpen && menuLayout && (
+          {onMenuToggle && menuOpen && menuLayout && (
             <div className="fixed bg-white rounded-xl shadow-xl border border-gray-100 z-20 overflow-y-auto min-w-44"
               style={{
                 left: menuLayout.left,
@@ -2376,21 +2294,6 @@
                 maxHeight: menuLayout.maxHeight + "px",
               }}
               onClick={e => e.stopPropagation()}>
-              {isOwner && onRename && (
-                <button onClick={onRename} className="w-full text-right px-4 py-3 text-sm text-gray-700 hover:bg-gray-50 flex items-center gap-2">
-                  <span>✏️</span><span>שנה שם</span>
-                </button>
-              )}
-              {onDuplicate && (
-                <button onClick={onDuplicate} className="w-full text-right px-4 py-3 text-sm text-gray-700 hover:bg-gray-50 flex items-center gap-2">
-                  <span>📋</span><span>שכפל רשימה</span>
-                </button>
-              )}
-              {onCopyItems && (
-                <button onClick={onCopyItems} className="w-full text-right px-4 py-3 text-sm text-gray-700 hover:bg-gray-50 flex items-center gap-2">
-                  <span>📤</span><span>העתק פריטים לרשימה אחרת</span>
-                </button>
-              )}
               {onEdit && (
                 <button onClick={onEdit} className="w-full text-right px-4 py-3 text-sm text-gray-700 hover:bg-gray-50 flex items-center gap-2">
                   <span>✏️</span><span>עריכה</span>
@@ -2874,7 +2777,7 @@
     }
 
     // ── LIST SCREEN ───────────────────────────────────────────────────────────────
-    function ListScreen({ user, listId, onBack, onMenu, onHome, onAdd, showToast }) {
+    function ListScreen({ user, listId, onBack, onMenu, onHome, onAdd, onCopyItems, showToast }) {
       const [categories, setCategories] = useState([]);
       const [list,       setList]       = useState(null);
       const [items,      setItems]      = useState([]);
@@ -2905,6 +2808,11 @@
       const [showCategorizeChoice, setShowCategorizeChoice] = useState(false);
       const [categorizing, setCategorizing] = useState(false);
       const [keyboardWarningEnabled, setKeyboardWarningEnabled] = useState(true);
+      const [showRename, setShowRename] = useState(false);
+      const [renameNameInput, setRenameNameInput] = useState("");
+      const [showDuplicate, setShowDuplicate] = useState(false);
+      const [duplicateNameInput, setDuplicateNameInput] = useState("");
+      const [duplicating, setDuplicating] = useState(false);
       const itemsListenerRef = useRef(null); // { ref, cb } for the live items subscription below
 
 
@@ -3195,6 +3103,90 @@
       };
 
 
+      // ── List-level actions (the combined "פעולות" menu below) ───────────
+      const toggleListDone = () => {
+        var now = Date.now();
+        var nowDone = !list.done;
+        db.ref("lists/" + listId).update({ done: nowDone, doneAt: nowDone ? now : null }).then(function() {
+          setList(function(prev) { return prev ? Object.assign({}, prev, { done: nowDone, doneAt: nowDone ? now : null }) : prev; });
+          homeDataCache = null; // Home's own list needs to reflect this next time it's shown
+          showToast(nowDone ? "הרשימה סומנה כהושלמה" : "הרשימה הוחזרה לפעילה");
+          if (nowDone) onHome();
+        }, function(err) { showToast("שגיאה: " + (err && err.message || "?")); });
+      };
+
+      const openRename = () => { setRenameNameInput(list.name || ""); setShowRename(true); };
+      const confirmRename = () => {
+        var newName = renameNameInput.trim();
+        if (!newName) return;
+        db.ref("lists/" + listId).update({ name: newName }).then(function() {
+          setList(function(prev) { return prev ? Object.assign({}, prev, { name: newName }) : prev; });
+          homeDataCache = null;
+          setShowRename(false);
+          showToast("שם הרשימה עודכן");
+        }, function(err) { showToast("שגיאה: " + (err && err.message || "?")); });
+      };
+
+      const openDuplicate = () => { setDuplicateNameInput("עותק של " + (list.name || "")); setShowDuplicate(true); };
+      const confirmDuplicate = () => {
+        var newName = duplicateNameInput.trim();
+        if (!newName || duplicating) return;
+        setDuplicating(true);
+        var newId = db.ref("lists").push().key;
+        // Copy every field except the ones that must be fresh for a new,
+        // unshared list: id (client-side only), sharedWith, name,
+        // ownership/creation time, and completion state.
+        var newListData = Object.assign({}, list);
+        delete newListData.id;
+        delete newListData.sharedWith;
+        newListData.name = newName;
+        newListData.ownerId = user.uid;
+        newListData.ownerName = user.displayName;
+        newListData.createdAt = Date.now();
+        newListData.done = false;
+        db.ref("items/" + listId).once("value").then(function(snap) {
+          var srcItems = snap.val() || {};
+          var updates = {};
+          updates["lists/" + newId] = newListData;
+          updates["listsByUser/" + user.uid + "/" + newId] = true;
+          Object.keys(srcItems).forEach(function(itemId) {
+            var newItemKey = db.ref("items/" + newId).push().key;
+            updates["items/" + newId + "/" + newItemKey] = srcItems[itemId];
+          });
+          return db.ref().update(updates);
+        }).then(function() {
+          setDuplicating(false);
+          setShowDuplicate(false);
+          homeDataCache = null;
+          showToast("הרשימה שוכפלה");
+          onHome();
+        }, function(err) {
+          setDuplicating(false);
+          showToast("שגיאה בשכפול: " + (err && err.message || "?"));
+        });
+      };
+
+      const deleteThisList = () => {
+        setConfirmDialog({
+          message: "למחוק את הרשימה וכל הפריטים שלה?",
+          confirmLabel: "מחק",
+          onConfirm: function() {
+            var updates = {};
+            updates["lists/" + listId] = null;
+            updates["items/" + listId] = null;
+            updates["listsByUser/" + user.uid + "/" + listId] = null;
+            if (list.sharedWith) {
+              Object.keys(list.sharedWith).forEach(function(uid) { updates["listsByUser/" + uid + "/" + listId] = null; });
+            }
+            db.ref().update(updates).then(function() {
+              homeDataCache = null;
+              showToast("הרשימה נמחקה");
+              onHome();
+            }, function(err) { showToast("שגיאה: " + (err && err.message || "?")); });
+          }
+        });
+      };
+
       const openShare = () => {
         var preSelected = contacts.filter(function(c) { return c.alwaysShare; }).map(function(c) { return c.id; });
         setSelectedContacts(preSelected);
@@ -3340,16 +3332,11 @@
             <Modal onClose={function() { setShowHeaderMenu(false); }}>
               <h3 className="text-lg font-bold text-center mb-4">פעולות</h3>
               <div className="space-y-2">
-                {!isNotes && !isTasks && (
-                  <button onClick={function() { setShowHeaderMenu(false); window.print(); }}
+                {/* — Status & cleanup — */}
+                {!isNotes && !isTasks && canEditAll && (
+                  <button onClick={function() { setShowHeaderMenu(false); toggleListDone(); }}
                     className="w-full text-right flex items-center gap-3 px-4 py-3 rounded-xl bg-gray-50 hover:bg-gray-100">
-                    <span className="text-lg">🖨️</span><span className="text-sm font-medium text-gray-700">הדפס / ייצוא ל-PDF</span>
-                  </button>
-                )}
-                {isOwner && !isNotes && (
-                  <button onClick={function() { setShowHeaderMenu(false); openShare(); }}
-                    className="w-full text-right flex items-center gap-3 px-4 py-3 rounded-xl bg-gray-50 hover:bg-gray-100">
-                    <span className="text-lg">🔗</span><span className="text-sm font-medium text-gray-700">שתף רשימה</span>
+                    <span className="text-lg">{list.done ? "↩️" : "✅"}</span><span className="text-sm font-medium text-gray-700">{list.done ? "החזר לפעיל" : "סמן כהושלם"}</span>
                   </button>
                 )}
                 {!isNotes && doneCount > 0 && canEditAll && !isFiltered && (
@@ -3358,17 +3345,87 @@
                     <span className="text-lg">🗑️</span><span className="text-sm font-medium text-gray-700">{isTasks ? "מחק מטלות שהושלמו" : "מחק פריטים מהסל"}</span>
                   </button>
                 )}
+
+                {/* — Organize — */}
+                {!isNotes && !isTasks && isOwner && (
+                  <button onClick={function() { setShowHeaderMenu(false); openRename(); }}
+                    className="w-full text-right flex items-center gap-3 px-4 py-3 rounded-xl bg-gray-50 hover:bg-gray-100 border-t border-gray-100">
+                    <span className="text-lg">✏️</span><span className="text-sm font-medium text-gray-700">שנה שם</span>
+                  </button>
+                )}
+                {!isNotes && !isTasks && isOwner && (
+                  <button onClick={function() { setShowHeaderMenu(false); openDuplicate(); }}
+                    className="w-full text-right flex items-center gap-3 px-4 py-3 rounded-xl bg-gray-50 hover:bg-gray-100">
+                    <span className="text-lg">📋</span><span className="text-sm font-medium text-gray-700">שכפל רשימה</span>
+                  </button>
+                )}
+                {!isNotes && !isTasks && canEditAll && (
+                  <button onClick={function() { setShowHeaderMenu(false); onCopyItems(listId); }}
+                    className="w-full text-right flex items-center gap-3 px-4 py-3 rounded-xl bg-gray-50 hover:bg-gray-100">
+                    <span className="text-lg">📤</span><span className="text-sm font-medium text-gray-700">העתק פריטים לרשימה אחרת</span>
+                  </button>
+                )}
                 {!isNotes && !isTasks && canEditAll && (
                   <button onClick={function() { setShowHeaderMenu(false); setShowCategorizeChoice(true); }}
                     className="w-full text-right flex items-center gap-3 px-4 py-3 rounded-xl bg-gray-50 hover:bg-gray-100">
                     <span className="text-lg">✨</span><span className="text-sm font-medium text-gray-700">השלם קטגוריות</span>
                   </button>
                 )}
+
+                {/* — Share & export — */}
+                {isOwner && !isNotes && (
+                  <button onClick={function() { setShowHeaderMenu(false); openShare(); }}
+                    className="w-full text-right flex items-center gap-3 px-4 py-3 rounded-xl bg-gray-50 hover:bg-gray-100 border-t border-gray-100">
+                    <span className="text-lg">🔗</span><span className="text-sm font-medium text-gray-700">שתף רשימה</span>
+                  </button>
+                )}
+                {!isNotes && !isTasks && (
+                  <button onClick={function() { setShowHeaderMenu(false); window.print(); }}
+                    className="w-full text-right flex items-center gap-3 px-4 py-3 rounded-xl bg-gray-50 hover:bg-gray-100">
+                    <span className="text-lg">🖨️</span><span className="text-sm font-medium text-gray-700">הדפס / ייצוא ל-PDF</span>
+                  </button>
+                )}
+
+                {/* — App — */}
                 <button onClick={function() { setShowHeaderMenu(false); onMenu(); }}
-                  className="w-full text-right flex items-center gap-3 px-4 py-3 rounded-xl bg-gray-50 hover:bg-gray-100">
+                  className="w-full text-right flex items-center gap-3 px-4 py-3 rounded-xl bg-gray-50 hover:bg-gray-100 border-t border-gray-100">
                   <span className="text-lg">⚙️</span><span className="text-sm font-medium text-gray-700">הגדרות</span>
                 </button>
+
+                {/* — Destructive — */}
+                {!isNotes && !isTasks && isOwner && (
+                  <button onClick={function() { setShowHeaderMenu(false); deleteThisList(); }}
+                    className="w-full text-right flex items-center gap-3 px-4 py-3 rounded-xl text-red-500 hover:bg-red-50 border-t border-gray-100">
+                    <span className="text-lg">🗑️</span><span className="text-sm font-medium">מחק רשימה</span>
+                  </button>
+                )}
               </div>
+            </Modal>
+          )}
+
+          {showRename && (
+            <Modal onClose={function() { setShowRename(false); }}>
+              <h3 className="text-lg font-bold text-center mb-4">שינוי שם</h3>
+              <input value={renameNameInput} onChange={e => setRenameNameInput(e.target.value)} autoFocus
+                onKeyDown={e => e.key === "Enter" && confirmRename()}
+                className="w-full border border-gray-200 rounded-xl px-4 py-3 text-right focus:outline-none focus:border-blue-400 mb-4" />
+              <button onClick={confirmRename} disabled={!renameNameInput.trim()}
+                className="w-full bg-blue-600 text-white py-4 rounded-2xl font-semibold text-lg disabled:opacity-40">
+                שמור
+              </button>
+            </Modal>
+          )}
+
+          {showDuplicate && (
+            <Modal onClose={function() { if (!duplicating) setShowDuplicate(false); }}>
+              <h3 className="text-lg font-bold text-center mb-4">שכפול רשימה</h3>
+              <input value={duplicateNameInput} onChange={e => setDuplicateNameInput(e.target.value)} autoFocus
+                onKeyDown={e => e.key === "Enter" && confirmDuplicate()}
+                className="w-full border border-gray-200 rounded-xl px-4 py-3 text-right focus:outline-none focus:border-blue-400 mb-4" />
+              <button onClick={confirmDuplicate} disabled={!duplicateNameInput.trim() || duplicating}
+                className="w-full bg-blue-600 text-white py-4 rounded-2xl font-semibold text-lg disabled:opacity-40">
+                {duplicating ? "משכפל..." : "שכפל"}
+              </button>
             </Modal>
           )}
 

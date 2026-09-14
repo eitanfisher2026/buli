@@ -1,6 +1,6 @@
     const { useState, useEffect, useRef } = React;
 
-    const VERSION = "v6.81";
+    const VERSION = "v6.82";
 
     // ── CONFIG ────────────────────────────────────────────────────────────────────
     const FIREBASE_CONFIG = {
@@ -709,7 +709,7 @@
       const [showInstallGuide, setShowInstallGuide] = useState(false);
 
       const [showSettings, setShowSettings] = useState(false);
-      const [showProfileCard, setShowProfileCard] = useState(false);
+      const [showGearMenu, setShowGearMenu] = useState(false);
       const [showAISettings, setShowAISettings] = useState(false);
       const [notesSeparator, setNotesSeparator] = useState(function() { return localStorage.getItem("buli_notes_separator") || "הבא"; });
       const [editingNoteInstance, setEditingNoteInstance] = useState(null);
@@ -1392,10 +1392,7 @@
         <div className="bg-gray-50 flex flex-col" style={{height:"100dvh"}} onClick={() => setMenuId(null)}>
           <div className="bg-blue-600 text-white px-4 pt-6 pb-4 flex-shrink-0">
             <div className="flex items-center justify-between gap-2">
-              <button onClick={e => { e.stopPropagation(); setShowProfileCard(true); }} title={user.displayName}
-                className="w-9 h-9 rounded-full bg-white/20 flex items-center justify-center flex-shrink-0 overflow-hidden">
-                {user.photoURL ? <img src={user.photoURL} alt="" className="w-full h-full object-cover" /> : <span className="text-base">👤</span>}
-              </button>
+              <div className="w-9 h-9 flex-shrink-0" />
               <div className="text-center flex-1 min-w-0">
                 <div className="flex items-center justify-center gap-1.5">
                   <span className="text-xl">🛒</span>
@@ -1404,7 +1401,7 @@
                 </div>
                 <p className="text-white/50 text-[11px] mt-0.5">אפליקציה לקניות משפחתית</p>
               </div>
-              <button onClick={e => { e.stopPropagation(); switchSettingsTab(settingsTab); setShowSettings(true); }} title="הגדרות"
+              <button onClick={e => { e.stopPropagation(); setShowGearMenu(true); }} title="הגדרות"
                 className="text-white text-lg w-9 h-9 flex items-center justify-center bg-white/20 rounded-full flex-shrink-0">⚙️</button>
             </div>
           </div>
@@ -2136,22 +2133,18 @@
             </Modal>
           )}
 
-          {/* A lightweight profile card — separate from ⚙️ Settings, which
-              was a duplicate way to reach the exact same place. This one
-              just identifies who's signed in and offers to sign out. */}
-          {showProfileCard && (
-            <Modal onClose={() => setShowProfileCard(false)}>
-              <div className="flex flex-col items-center gap-3 pb-2">
-                <div className="w-16 h-16 rounded-full overflow-hidden bg-gray-100 flex items-center justify-center flex-shrink-0">
-                  {user.photoURL ? <img src={user.photoURL} alt="" className="w-full h-full object-cover" /> : <span className="text-3xl">👤</span>}
-                </div>
-                <div className="text-center">
-                  <div className="font-bold text-gray-800">{user.displayName}</div>
-                  <div className="text-xs text-gray-400">{user.email}</div>
-                </div>
+          {/* Quick menu behind ⚙️ — a choice of full Settings or signing
+              out directly, without digging to the bottom of Settings for it. */}
+          {showGearMenu && (
+            <Modal onClose={() => setShowGearMenu(false)}>
+              <div className="space-y-2">
+                <button onClick={() => { setShowGearMenu(false); switchSettingsTab(settingsTab); setShowSettings(true); }}
+                  className="w-full text-right px-4 py-3 text-sm text-gray-700 hover:bg-gray-50 rounded-xl flex items-center gap-3">
+                  <span className="text-lg">⚙️</span><span>הגדרות</span>
+                </button>
                 <button onClick={() => auth.signOut()}
-                  className="w-full mt-2 py-3 rounded-2xl border border-red-200 text-red-500 font-medium">
-                  🚪 התנתק
+                  className="w-full text-right px-4 py-3 text-sm text-red-500 hover:bg-red-50 rounded-xl flex items-center gap-3">
+                  <span className="text-lg">🚪</span><span>התנתק</span>
                 </button>
               </div>
             </Modal>

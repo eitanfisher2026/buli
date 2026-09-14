@@ -1,6 +1,6 @@
     const { useState, useEffect, useRef } = React;
 
-    const VERSION = "v6.78";
+    const VERSION = "v6.79";
 
     // ── CONFIG ────────────────────────────────────────────────────────────────────
     const FIREBASE_CONFIG = {
@@ -1053,6 +1053,23 @@
       };
       useEffect(function() { loadHome(); }, []);
 
+      // Contacts marked "תמיד" (Settings → אנשי קשר) are shared with
+      // automatically the moment a new shopping list is created — no need
+      // to open "שתף רשימה" and add them by hand every time.
+      const applyShareDefaults = (newListId) => {
+        db.ref("shareDefaults").once("value").then(function(snap) {
+          var val = snap.val() || {};
+          var updates = {};
+          Object.keys(val).forEach(function(uid) {
+            if (val[uid] && uid !== user.uid) {
+              updates["lists/" + newListId + "/sharedWith/" + uid] = "edit";
+              updates["listsByUser/" + uid + "/" + newListId] = true;
+            }
+          });
+          if (Object.keys(updates).length > 0) db.ref().update(updates);
+        });
+      };
+
       const quickCreate = () => {
         // Guards against double-tap/double-click creating two lists at
         // once — quickCreate reads `lists` (React state) synchronously to
@@ -1071,11 +1088,12 @@
         });
         var autoName = prefix + (maxNum + 1);
         var now = Date.now();
-        var newList = { name: autoName, type: "shopping", isPrivate: false, done: false, ownerId: user.uid, ownerName: user.displayName, sharedWith: {}, createdAt: now };
+        var newList = { name: autoName, type: "shopping", done: false, ownerId: user.uid, ownerName: user.displayName, sharedWith: {}, createdAt: now };
         var newListId = db.ref("lists").push().key;
         db.ref().update({ ["lists/" + newListId]: newList, ["listsByUser/" + user.uid + "/" + newListId]: true }).then(function() {
           updateLists(function(prev) { return [Object.assign({ id: newListId }, newList)].concat(prev || []); });
           creatingListRef.current = false;
+          applyShareDefaults(newListId);
           onCreateShoppingList(newListId, autoName);
         }, function() { creatingListRef.current = false; showToast("שגיאה ביצירת הרשימה"); });
       };
@@ -1094,7 +1112,7 @@
         var autoName = prefix + (maxNum + 1);
         var now = Date.now();
         var lastDiners = parseInt(localStorage.getItem("buli_last_diners_count"), 10) || 12;
-        var newList = { name: autoName, type: "notes", isPrivate: true, done: false, ownerId: user.uid, ownerName: user.displayName, sharedWith: {}, createdAt: now, dinnerDate: nextFriday(now), dinersCount: lastDiners };
+        var newList = { name: autoName, type: "notes", done: false, ownerId: user.uid, ownerName: user.displayName, sharedWith: {}, createdAt: now, dinnerDate: nextFriday(now), dinersCount: lastDiners };
         var newListId = db.ref("lists").push().key;
         db.ref().update({ ["lists/" + newListId]: newList, ["listsByUser/" + user.uid + "/" + newListId]: true }).then(function() {
           updateLists(function(prev) { return [Object.assign({ id: newListId }, newList)].concat(prev || []); });
@@ -1292,7 +1310,7 @@
         if (!name || copyBusy) return;
         setCopyBusy(true);
         var now = Date.now();
-        var newList = { name: name, type: "shopping", isPrivate: false, done: false, ownerId: user.uid, ownerName: user.displayName, sharedWith: {}, createdAt: now };
+        var newList = { name: name, type: "shopping", done: false, ownerId: user.uid, ownerName: user.displayName, sharedWith: {}, createdAt: now };
         var newListId = db.ref("lists").push().key;
         var updates = {};
         updates["lists/" + newListId] = newList;
@@ -1312,30 +1330,12 @@
           setCopySelectedIds([]);
           setCopyItems([]);
           updateLists(function(prev) { return (prev || []).concat([Object.assign({ id: newListId }, newList)]); });
+          applyShareDefaults(newListId);
           showToast(copySelectedIds.length + ' פריטים הועתקו אל "' + name + '"');
         }, function(err) {
           setCopyBusy(false);
           showToast("שגיאה ביצירת הרשימה: " + (err && err.message || "?"));
         });
-      };
-
-      const togglePrivacy = (id) => {
-        var list = (lists || []).find(function(l) { return l.id === id; });
-        var nowPrivate = list ? !list.isPrivate : true;
-        updateLists(function(prev) { return prev ? prev.map(function(l) { return l.id === id ? Object.assign({}, l, { isPrivate: nowPrivate }) : l; }) : []; });
-        setMenuId(null);
-        db.ref("lists/" + id).update({ isPrivate: nowPrivate });
-        showToast(nowPrivate ? "הרשימה עכשיו פרטית 🔒" : "הרשימה עכשיו שיתופית 👥");
-        if (!nowPrivate) {
-          db.ref("shareDefaults").once("value").then(function(snap) {
-            var val = snap.val() || {};
-            Object.keys(val).forEach(function(uid) {
-              if (val[uid] && uid !== user.uid) {
-                db.ref().update({ ["lists/" + id + "/sharedWith/" + uid]: "edit", ["listsByUser/" + uid + "/" + id]: true });
-              }
-            });
-          });
-        }
       };
 
       const toggleTask = (task) => {
@@ -1426,7 +1426,6 @@
         onMenuToggle: function(e) { e.stopPropagation(); setMenuId(menuId === l.id ? null : l.id); },
         onMarkDone:      function() { markListDone(l.id); },
         onRestore:       function() { restoreList(l.id); },
-        onTogglePrivacy: function() { togglePrivacy(l.id); },
         onRename:        function() { startRename(l.id); },
         onDuplicate:     function() { startDuplicate(l.id); },
         onCopyItems:     function() { startCopyItems(l.id); },
@@ -2306,7 +2305,7 @@
       );
     }
 
-    function ListCard({ list, userId, onOpen, menuOpen, onMenuToggle, onMarkDone, onRestore, onTogglePrivacy, onRename, onDuplicate, onCopyItems, onDelete, isDone, onEdit }) {
+    function ListCard({ list, userId, onOpen, menuOpen, onMenuToggle, onMarkDone, onRestore, onRename, onDuplicate, onCopyItems, onDelete, isDone, onEdit }) {
       const isOwner = list.ownerId === userId;
       var dateStr = list.dinnerDate
         ? formatDinnerDate(list.dinnerDate)
@@ -2405,12 +2404,6 @@
               {isDone && onRestore && (
                 <button onClick={onRestore} className="w-full text-right px-4 py-3 text-sm text-gray-700 hover:bg-gray-50 flex items-center gap-2">
                   <span>↩️</span><span>החזר לפעיל</span>
-                </button>
-              )}
-              {isOwner && onTogglePrivacy && (
-                <button onClick={onTogglePrivacy} className="w-full text-right px-4 py-3 text-sm text-gray-700 hover:bg-gray-50 flex items-center gap-2">
-                  <span>{list.isPrivate ? "👥" : "🔒"}</span>
-                  <span>{list.isPrivate ? "הפוך לשיתופי" : "הפוך לפרטי"}</span>
                 </button>
               )}
               <button onClick={onDelete} className="w-full text-right px-4 py-3 text-sm text-red-500 hover:bg-red-50 flex items-center gap-2 border-t border-gray-100">
@@ -3353,7 +3346,7 @@
                     <span className="text-lg">🖨️</span><span className="text-sm font-medium text-gray-700">הדפס / ייצוא ל-PDF</span>
                   </button>
                 )}
-                {isOwner && !list.isPrivate && !isNotes && (
+                {isOwner && !isNotes && (
                   <button onClick={function() { setShowHeaderMenu(false); openShare(); }}
                     className="w-full text-right flex items-center gap-3 px-4 py-3 rounded-xl bg-gray-50 hover:bg-gray-100">
                     <span className="text-lg">🔗</span><span className="text-sm font-medium text-gray-700">שתף רשימה</span>

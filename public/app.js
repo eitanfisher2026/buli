@@ -1,6 +1,6 @@
     const { useState, useEffect, useRef } = React;
 
-    const VERSION = "v6.73";
+    const VERSION = "v6.74";
 
     // ── CONFIG ────────────────────────────────────────────────────────────────────
     const FIREBASE_CONFIG = {
@@ -143,15 +143,11 @@
       return d.toISOString().split("T")[0];
     }
 
-    // Alphabetical (Hebrew-aware), with the starred/major list always
-    // pinned first regardless of name — shared by the home screen's own
-    // list order and the "copy items" destination picker, so a list never
+    // Alphabetical (Hebrew-aware) — shared by the home screen's own list
+    // order and the "copy items" destination picker, so a list never
     // appears in a different order in one place than the other.
-    function sortListsByNameMajorFirst(lists, majorListId) {
+    function sortListsByName(lists) {
       return lists.slice().sort(function(a, b) {
-        var aMajor = a.id === majorListId, bMajor = b.id === majorListId;
-        if (aMajor && !bMajor) return -1;
-        if (bMajor && !aMajor) return 1;
         return (a.name || "").localeCompare(b.name || "", "he");
       });
     }
@@ -539,7 +535,6 @@
       }, []);
 
       useEffect(() => {
-        var openMajor = new URLSearchParams(window.location.search).get('open') === 'major';
         auth.onAuthStateChanged(u => {
           setUser(u);
           setLoading(false);
@@ -574,29 +569,6 @@
                 localStorage.setItem("buli_font_scale", v);
               }
             });
-            if (openMajor) {
-              var major = null;
-              try { major = JSON.parse(localStorage.getItem("buli_major_list")); } catch(e) {}
-              if (major && major.id) {
-                window.history.replaceState({ d: 0 }, '', window.location.pathname);
-                navHistoryRef.current.push({ screen: "add", listId: major.id, listType: "shopping", listName: major.name || "" });
-                histDepthRef.current++; window.history.pushState({ d: histDepthRef.current }, '', '/');
-                setListId(major.id); setListType("shopping"); setListName(major.name || ""); setScreen("add");
-              }
-            } else {
-              var autoOpen = localStorage.getItem("buli_auto_open_major") === "true";
-              var alreadyDone = sessionStorage.getItem("buli_auto_redirected") === "1";
-              if (autoOpen && !alreadyDone) {
-                var majorAuto = null;
-                try { majorAuto = JSON.parse(localStorage.getItem("buli_major_list")); } catch(e) {}
-                if (majorAuto && majorAuto.id) {
-                  sessionStorage.setItem("buli_auto_redirected", "1");
-                  navHistoryRef.current.push({ screen: "add", listId: majorAuto.id, listType: "shopping", listName: majorAuto.name || "" });
-                  histDepthRef.current++; window.history.pushState({ d: histDepthRef.current }, '', '/');
-                  setListId(majorAuto.id); setListType("shopping"); setListName(majorAuto.name || ""); setScreen("add");
-                }
-              }
-            }
           }
         });
       }, []);
@@ -736,9 +708,6 @@
       const [canInstall, setCanInstall] = useState(!_isInstalled);
       const [showInstallGuide, setShowInstallGuide] = useState(false);
 
-      const [majorListId, setMajorListIdState] = useState(function() {
-        try { var m = JSON.parse(localStorage.getItem("buli_major_list")); return m ? m.id : null; } catch(e) { return null; }
-      });
       const [showSettings, setShowSettings] = useState(false);
       const [showProfileCard, setShowProfileCard] = useState(false);
       const [showAISettings, setShowAISettings] = useState(false);
@@ -989,7 +958,6 @@
       }, [autoOpenSettings]);
 
       const [confirmDialog, setConfirmDialog] = useState(null);
-      const [autoOpenMajor, setAutoOpenMajorState] = useState(localStorage.getItem("buli_auto_open_major") === "true");
       const [userColor,        setUserColor]        = useState(function() { return getUserColor(user.uid); });
       const [showColorPicker,  setShowColorPicker]  = useState(false);
       const changeUserColor = function(color) {
@@ -1007,13 +975,6 @@
         if (activeTab === "notes" && !myMenusEnabled) setTab("shopping");
         if (activeTab === "tasks" && !myTasksEnabled) setTab("shopping");
       }, [myMenusEnabled, myTasksEnabled]);
-      const toggleAutoOpen = () => {
-        var next = !autoOpenMajor;
-        localStorage.setItem("buli_auto_open_major", next ? "true" : "false");
-        setAutoOpenMajorState(next);
-        showToast(next ? "הרשימה הראשית תיפתח אוטומטית 🚀" : "הפעלה אוטומטית כבויה");
-      };
-
       // AI settings are per-person — each person's own key lives at
       // users/{uid}/ai and is only ever sent to the parseItems Cloud Function, never to a
       // third-party API directly from the browser.
@@ -1055,13 +1016,6 @@
         });
       }, [user.uid]);
 
-      const setMajor = (id, name) => {
-        localStorage.setItem("buli_major_list", JSON.stringify({ id: id, name: name }));
-        setMajorListIdState(id);
-        setMenuId(null);
-        showToast("רשימה ראשית הוגדרה ⭐");
-      };
-
       useEffect(function() {
         function onReady() { setCanInstall(true); }
         function onDone()  { setCanInstall(false); }
@@ -1095,14 +1049,6 @@
         withTimeout(prewarmHomeData(user.uid), 12000, "תם הזמן הקצוב לחיבור").then(function(data) {
           setLists(data.lists);
           setTasks(data.tasks);
-          // Auto-set major if there's only one active shopping list and none is set
-          var active = data.lists.filter(function(l) { return !l.done && l.type !== "notes"; });
-          if (active.length === 1) {
-            try {
-              var existing = JSON.parse(localStorage.getItem("buli_major_list"));
-              if (!existing) { localStorage.setItem("buli_major_list", JSON.stringify({ id: active[0].id, name: active[0].name })); setMajorListIdState(active[0].id); }
-            } catch(e) { localStorage.setItem("buli_major_list", JSON.stringify({ id: active[0].id, name: active[0].name })); setMajorListIdState(active[0].id); }
-          }
         }, function(err) {
           // Without this, a dropped connection (far more common on flaky mobile
           // networks than on wired desktop) left lists/tasks at null forever —
@@ -1168,25 +1114,10 @@
         }, function() { creatingListRef.current = false; showToast("שגיאה ביצירת התפריט"); });
       };
 
-      const reassignMajorIfNeeded = (newLists) => {
-        var active = (newLists || []).filter(function(l) { return !l.done && l.type !== "notes"; });
-        var currentMajorId = null;
-        try { var m = JSON.parse(localStorage.getItem("buli_major_list")); currentMajorId = m ? m.id : null; } catch(e) {}
-        if (active.some(function(l) { return l.id === currentMajorId; })) return;
-        if (active.length > 0) {
-          localStorage.setItem("buli_major_list", JSON.stringify({ id: active[0].id, name: active[0].name }));
-          setMajorListIdState(active[0].id);
-        } else {
-          localStorage.removeItem("buli_major_list");
-          setMajorListIdState(null);
-        }
-      };
-
       const markListDone = (id) => {
         var now = Date.now();
         var newLists = (lists || []).map(function(l) { return l.id === id ? Object.assign({}, l, { done: true, doneAt: now }) : l; });
         updateLists(newLists);
-        reassignMajorIfNeeded(newLists);
         setMenuId(null); showToast("הרשימה סומנה כהושלמה");
         db.ref("lists/" + id).update({ done: true, doneAt: now });
       };
@@ -1213,7 +1144,6 @@
           onConfirm: function() {
             var newLists = (lists || []).filter(function(l) { return l.id !== id; });
             updateLists(newLists);
-            reassignMajorIfNeeded(newLists);
             showToast("הרשימה נמחקה");
             var updates = {};
             updates["lists/" + id] = null;
@@ -1342,7 +1272,7 @@
           return copySourceList && l.id !== copySourceList.id && l.type !== "notes" && !l.done &&
             (l.ownerId === user.uid || (l.sharedWith && (l.sharedWith[user.uid] === "edit" || l.sharedWith[user.uid] === "own")));
         });
-        return sortListsByNameMajorFirst(filtered, majorListId);
+        return sortListsByName(filtered);
       };
       const copyItemsToDest = (destId) => {
         if (copyBusy) return;
@@ -1483,8 +1413,8 @@
         }
       };
 
-      var activeShopping = sortListsByNameMajorFirst(lists.filter(function(l) { return !l.done && l.type !== "notes"; }), majorListId);
-      var doneLists      = sortListsByNameMajorFirst(lists.filter(function(l) { return  l.done && l.type !== "notes"; }), majorListId);
+      var activeShopping = sortListsByName(lists.filter(function(l) { return !l.done && l.type !== "notes"; }));
+      var doneLists      = sortListsByName(lists.filter(function(l) { return  l.done && l.type !== "notes"; }));
       var byDinnerDate   = function(a, b) { return (b.dinnerDate || "").localeCompare(a.dinnerDate || ""); };
       var activeNotes    = lists.filter(function(l) { return !l.done && l.type === "notes"; }).sort(byDinnerDate);
       var doneNotes      = lists.filter(function(l) { return  l.done && l.type === "notes"; }).sort(byDinnerDate);
@@ -1511,9 +1441,7 @@
         onRename:        function() { startRename(l.id); },
         onDuplicate:     function() { startDuplicate(l.id); },
         onCopyItems:     function() { startCopyItems(l.id); },
-        onDelete:        function() { deleteList(l.id); },
-        isMajor:         majorListId === l.id,
-        onSetMajor:      function() { setMajor(l.id, l.name); }
+        onDelete:        function() { deleteList(l.id); }
       }; };
 
       var noteCardProps = function(l) { return {
@@ -1928,13 +1856,6 @@
                 )}
                 <button onClick={function() { setShowSettings(false); shareApp(); }} className="w-full text-right px-3 py-3 text-sm text-gray-700 hover:bg-gray-50 rounded-xl flex items-center gap-3">
                   <span className="text-lg w-7 text-center">🔗</span><span>שתף את בולי</span>
-                </button>
-                <button onClick={toggleAutoOpen} className="w-full text-right px-3 py-3 text-sm text-gray-700 hover:bg-gray-50 rounded-xl flex items-center gap-3">
-                  <span className="text-lg w-7 text-center">🚀</span>
-                  <span className="flex-1">פתח רשימה ראשית בהפעלה</span>
-                  <span className={`w-11 h-6 rounded-full transition-colors flex-shrink-0 flex items-center px-0.5 ${autoOpenMajor ? "bg-blue-500" : "bg-gray-300"}`}>
-                    <span className={`w-5 h-5 bg-white rounded-full shadow transition-transform ${autoOpenMajor ? "translate-x-5" : "translate-x-0"}`} />
-                  </span>
                 </button>
                 <div className="px-3 py-2.5 flex items-center gap-3">
                   <span className="text-lg w-7 text-center">📝</span>
@@ -2417,7 +2338,7 @@
       );
     }
 
-    function ListCard({ list, userId, onOpen, menuOpen, onMenuToggle, onMarkDone, onRestore, onTogglePrivacy, onRename, onDuplicate, onCopyItems, onDelete, isDone, isMajor, onSetMajor, onEdit }) {
+    function ListCard({ list, userId, onOpen, menuOpen, onMenuToggle, onMarkDone, onRestore, onTogglePrivacy, onRename, onDuplicate, onCopyItems, onDelete, isDone, onEdit }) {
       const isOwner = list.ownerId === userId;
       var dateStr = list.dinnerDate
         ? formatDinnerDate(list.dinnerDate)
@@ -2458,10 +2379,7 @@
 
       return (
         <div className="relative">
-          <div className={`w-full bg-white rounded-2xl p-4 flex items-center gap-3 shadow-sm border transition cursor-pointer ${isMajor ? "border-yellow-300 bg-yellow-50/30" : "border-gray-100 hover:border-blue-200"}`} onClick={onOpen}>
-            {isMajor && (
-              <span className="text-lg flex-shrink-0 leading-none" title="רשימה ראשית">⭐</span>
-            )}
+          <div className="w-full bg-white rounded-2xl p-4 flex items-center gap-3 shadow-sm border border-gray-100 hover:border-blue-200 transition cursor-pointer" onClick={onOpen}>
             <div className="flex-1 min-w-0 text-right">
               <div className={`font-semibold truncate ${isDone ? "line-through text-gray-400" : "text-gray-800"}`}>{list.name}</div>
               {list.dinnerDate ? (
@@ -2491,11 +2409,6 @@
                 maxHeight: menuLayout.maxHeight + "px",
               }}
               onClick={e => e.stopPropagation()}>
-              {!isDone && !isMajor && onSetMajor && (
-                <button onClick={onSetMajor} className="w-full text-right px-4 py-3 text-sm text-gray-700 hover:bg-gray-50 flex items-center gap-2">
-                  <span>⭐</span><span>הגדר כראשי</span>
-                </button>
-              )}
               {isOwner && onRename && (
                 <button onClick={onRename} className="w-full text-right px-4 py-3 text-sm text-gray-700 hover:bg-gray-50 flex items-center gap-2">
                   <span>✏️</span><span>שנה שם</span>

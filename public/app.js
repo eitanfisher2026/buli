@@ -1,6 +1,6 @@
     const { useState, useEffect, useRef } = React;
 
-    const VERSION = "v6.82";
+    const VERSION = "v6.83";
 
     // ── CONFIG ────────────────────────────────────────────────────────────────────
     const FIREBASE_CONFIG = {
@@ -419,7 +419,7 @@
           <div className="flex items-center gap-3" dir="ltr">
             {onBack && (
               <button onClick={onBack} className="flex items-center gap-1 text-white font-semibold text-sm bg-white/20 px-3 py-1.5 rounded-full flex-shrink-0">
-                <span className="text-lg leading-none">‹</span><span>חזרה</span>
+                <span className="text-lg leading-none">›</span><span>חזרה</span>
               </button>
             )}
             {onMenu && (
@@ -604,7 +604,7 @@
           )}
           {screen === "home"       && <HomeScreen       user={user} isAdmin={role === "admin" && !simulateRegular} isRealAdmin={role === "admin"} simulating={simulateRegular} onToggleSimulate={toggleSimulate} onOpenList={goList} onCategories={() => go("categories")} showToast={setToast} onAddTask={() => goAdd("tasks_" + user.uid, "tasks")} onCreateShoppingList={(id, name) => goAdd(id, "shopping", name)} onCreateNotesList={(id, name) => goAdd(id, "notes", name)} autoOpenSettings={autoOpenSettings} onAutoOpenedSettings={() => setAutoOpenSettings(false)} autoOpenCopyItemsFor={autoOpenCopyItemsFor} onAutoOpenedCopyItems={() => setAutoOpenCopyItemsFor(null)} fontScale={fontScale} onSetFontScale={setFontScale} />}
           {screen === "list"       && <ListScreen       user={user} listId={listId} onBack={goBack} onMenu={goMenu} onHome={goHome} onAdd={(type, name) => goAdd(listId, type, name || listName)} onCopyItems={goCopyItems} showToast={setToast} />}
-          {screen === "add"        && <AddScreen        user={user} listId={listId} listType={listType} listName={listName} onBack={goBack} onMenu={goMenu} showToast={setToast} showStickyToast={setStickyToast} />}
+          {screen === "add"        && <AddScreen        user={user} listId={listId} listType={listType} listName={listName} onBack={goBack} showToast={setToast} showStickyToast={setStickyToast} />}
           {screen === "categories" && <CategoriesScreen user={user} onBack={goBack} showToast={setToast} />}
           {toast && <Toast msg={toast} onClose={() => setToast("")} />}
           {stickyToast.length > 0 && (
@@ -3295,9 +3295,9 @@
                 that print/share/settings all live in ☰, so there's room),
                 a single icon toolbar below for everything list-related. */}
             <div className="flex items-center gap-2" dir="ltr">
-              <button onClick={onBack} title="חזרה"
-                className="flex items-center justify-center text-white bg-white/20 w-8 h-8 rounded-full flex-shrink-0">
-                <span className="text-lg leading-none">‹</span>
+              <button onClick={onBack}
+                className="flex items-center gap-1 text-white bg-white/20 px-3 h-8 rounded-full flex-shrink-0">
+                <span className="text-lg leading-none">›</span><span className="text-sm font-semibold">חזרה</span>
               </button>
               <h1 className="flex-1 min-w-0 text-lg font-bold truncate text-right">{list.name}</h1>
               <button onClick={function() { setShowHeaderMenu(true); }} className="text-white text-lg w-8 h-8 flex items-center justify-center bg-white/20 rounded-full flex-shrink-0">☰</button>
@@ -4011,7 +4011,7 @@
     }
 
     // ── ADD SCREEN ────────────────────────────────────────────────────────────────
-    function AddScreen({ user, listId, listType, listName, onBack, onMenu, showToast, showStickyToast }) {
+    function AddScreen({ user, listId, listType, listName, onBack, showToast, showStickyToast }) {
       const isTasks = listType === "tasks";
       const isNotes = listType === "notes";
       const categories = useCategories(user.uid);
@@ -4240,7 +4240,7 @@
       if (isNotes) {
         return (
           <div className="bg-gray-50 flex flex-col" style={{height:"100dvh"}}>
-            <Header onBack={onBack} onMenu={onMenu} title={"הוסף מנות ל" + (listName || "")} />
+            <Header onBack={onBack} title={"הוסף מנות ל" + (listName || "")} />
             <div className="flex-shrink-0 px-4 pt-3 pb-2">
               <div className="grid grid-cols-2 gap-2">
                 {[["text","✍️ כתיבה"],["voice","🎤 קול"]].map(function(pair) {
@@ -4301,7 +4301,7 @@
 
       if (isTasks) return (
         <div className="bg-gray-50 flex flex-col" style={{height:"100dvh"}}>
-          <Header onBack={onBack} onMenu={onMenu} title="הוסף מטלה" />
+          <Header onBack={onBack} title="הוסף מטלה" />
           <div className="flex-1 overflow-y-auto p-4 pb-32">
             <div className="space-y-4">
               <div>
@@ -4333,7 +4333,7 @@
       // ── Input ──
       return (
         <div className="bg-gray-50 flex flex-col" style={{height:"100dvh"}}>
-          <Header onBack={onBack} onMenu={onMenu} title={isTasks ? "הוסף מטלה" : ("הוסף ל" + listDisplayName)} />
+          <Header onBack={onBack} title={isTasks ? "הוסף מטלה" : ("הוסף ל" + listDisplayName)} />
           <div className="flex-shrink-0 px-4 pt-3 pb-2">
             <div className="grid grid-cols-2 gap-2">
               {[["text","✍️ כתיבה"],["voice","🎤 קול"]].map(([v,l]) => (

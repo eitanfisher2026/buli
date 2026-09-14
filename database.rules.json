@@ -11,34 +11,6 @@
       ".read": false,
       ".write": false
     },
-    "vendorBranches": {
-      ".read": false,
-      ".write": false
-    },
-    "vendorCatalog": {
-      ".read": false,
-      ".write": false
-    },
-    "vendorCatalogIndex": {
-      ".read": false,
-      ".write": false
-    },
-    "itemBarcodes": {
-      ".read": false,
-      ".write": false
-    },
-    "pricingUsage": {
-      ".read": false,
-      ".write": false
-    },
-    "pricingConfig": {
-      ".read": "auth != null && (root.child('userAccess').child(auth.uid).child('authorized').val() === true || auth.token.email === 'eitanfisher100@gmail.com')",
-      ".write": false
-    },
-    "vendorRequests": {
-      ".read": "auth != null && (root.child('userAccess').child(auth.uid).child('authorized').val() === true || auth.token.email === 'eitanfisher100@gmail.com')",
-      ".write": false
-    },
     "userAccess": {
       "$uid": {
         ".read": "auth != null && auth.uid === $uid",
@@ -48,7 +20,6 @@
     "users": {
       "$uid": {
         ".read": "auth != null && auth.uid === $uid",
-        "pricingEnabled": { ".write": false },
         "nickname": { ".write": false },
         "$other": {
           ".write": "auth != null && auth.uid === $uid"

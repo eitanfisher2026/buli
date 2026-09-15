@@ -1,6 +1,6 @@
     const { useState, useEffect, useRef } = React;
 
-    const VERSION = "v6.88";
+    const VERSION = "v6.89";
 
     // ── CONFIG ────────────────────────────────────────────────────────────────────
     const FIREBASE_CONFIG = {
@@ -55,6 +55,10 @@
     const auth = firebase.auth();
     const db   = firebase.database();
     const fns  = firebase.app().functions("europe-west1"); // must match functions region in functions/index.js
+    // Recipe search/fetch specifically run in me-west1 (Tel Aviv), not
+    // europe-west1 — the Hebrew recipe sites' bot-protection appears to block
+    // or challenge requests from non-Israel cloud IP ranges.
+    const fnsIL = firebase.app().functions("me-west1");
 
     // ── CATEGORIES HOOK ───────────────────────────────────────────────────────────
     function useCategories(userId) {
@@ -3245,7 +3249,7 @@
         setRecipeSearching(true);
         setRecipeResults(null);
         setRecipeError("");
-        fns.httpsCallable("searchRecipes")({ query: query, source: source }).then(function(res) {
+        fnsIL.httpsCallable("searchRecipes")({ query: query, source: source }).then(function(res) {
           setRecipeSearching(false);
           setRecipeResults((res.data && res.data.results) || []);
         }, function(err) {
@@ -3279,7 +3283,7 @@
       const pickRecipeResult = (result) => {
         setRecipeFetching(true);
         setRecipeError("");
-        fns.httpsCallable("fetchRecipe")({ url: result.url }).then(function(res) {
+        fnsIL.httpsCallable("fetchRecipe")({ url: result.url }).then(function(res) {
           setRecipeFetching(false);
           var data = res.data;
           if (!data.servings) {

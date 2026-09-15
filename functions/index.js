@@ -591,7 +591,10 @@ function normalizeInstructions(raw) {
 async function searchSourceRecipes(source, query) {
   const cfg = RECIPE_SOURCES[source];
   const res = await fetch(cfg.searchUrl(query), { headers: RECIPE_FETCH_HEADERS });
-  if (!res.ok) throw new HttpsError('unavailable', 'האתר לא הגיב, נסה שוב מאוחר יותר');
+  if (!res.ok) {
+    console.error(`searchSourceRecipes(${source}): HTTP ${res.status} ${res.statusText}`);
+    throw new HttpsError('unavailable', 'האתר לא הגיב, נסה שוב מאוחר יותר');
+  }
   const html = await res.text();
 
   if (source === '10dakot') {
@@ -634,7 +637,7 @@ async function searchSourceRecipes(source, query) {
 }
 
 exports.searchRecipes = onCall(
-  { timeoutSeconds: 20, memory: '256MiB', region: 'europe-west1' },
+  { timeoutSeconds: 20, memory: '256MiB', region: 'me-west1' },
   async (request) => {
     await requireAuthorized(request);
     const { source, query: rawQuery } = request.data || {};
@@ -647,6 +650,7 @@ exports.searchRecipes = onCall(
       results = await searchSourceRecipes(source, query);
     } catch (err) {
       if (err instanceof HttpsError) throw err;
+      console.error(`searchRecipes(${source}) failed:`, err && err.message, err && err.stack);
       throw new HttpsError('unavailable', 'החיפוש נכשל, נסה שוב');
     }
 
@@ -662,7 +666,7 @@ exports.searchRecipes = onCall(
 );
 
 exports.fetchRecipe = onCall(
-  { timeoutSeconds: 20, memory: '256MiB', region: 'europe-west1' },
+  { timeoutSeconds: 20, memory: '256MiB', region: 'me-west1' },
   async (request) => {
     await requireAuthorized(request);
     const rawUrl = request.data && request.data.url;
@@ -673,8 +677,17 @@ exports.fetchRecipe = onCall(
     const allowed = Object.values(RECIPE_SOURCES).some((cfg) => host === cfg.domain || host.endsWith('.' + cfg.domain));
     if (!allowed) throw new HttpsError('invalid-argument', 'מקור לא נתמך');
 
-    const res = await fetch(parsed.toString(), { headers: RECIPE_FETCH_HEADERS });
-    if (!res.ok) throw new HttpsError('unavailable', 'הדף לא נטען, נסה שוב');
+    let res;
+    try {
+      res = await fetch(parsed.toString(), { headers: RECIPE_FETCH_HEADERS });
+    } catch (err) {
+      console.error(`fetchRecipe(${host}) network error:`, err && err.message);
+      throw new HttpsError('unavailable', 'הדף לא נטען, נסה שוב');
+    }
+    if (!res.ok) {
+      console.error(`fetchRecipe(${host}): HTTP ${res.status} ${res.statusText}`);
+      throw new HttpsError('unavailable', 'הדף לא נטען, נסה שוב');
+    }
     const html = await res.text();
     const objects = extractJsonLdObjects(html);
     const recipe = findJsonLdType(objects, 'Recipe');

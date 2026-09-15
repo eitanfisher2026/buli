@@ -1,6 +1,6 @@
     const { useState, useEffect, useRef } = React;
 
-    const VERSION = "v6.89";
+    const VERSION = "v6.91";
 
     // ── CONFIG ────────────────────────────────────────────────────────────────────
     const FIREBASE_CONFIG = {
@@ -55,9 +55,11 @@
     const auth = firebase.auth();
     const db   = firebase.database();
     const fns  = firebase.app().functions("europe-west1"); // must match functions region in functions/index.js
-    // Recipe search/fetch specifically run in me-west1 (Tel Aviv), not
-    // europe-west1 — the Hebrew recipe sites' bot-protection appears to block
-    // or challenge requests from non-Israel cloud IP ranges.
+    // Recipe search/fetch run in me-west1 (Tel Aviv), not europe-west1 —
+    // matching the same fix used for SuperZola's equivalent problem with
+    // Israeli sites. Kept even after the Walla 404 turned out to be an
+    // unrelated bug in that one site, since the other two sources were never
+    // actually verified as reachable from europe-west1 specifically.
     const fnsIL = firebase.app().functions("me-west1");
 
     // ── CATEGORIES HOOK ───────────────────────────────────────────────────────────
@@ -174,7 +176,6 @@
     var RECIPE_SOURCES = [
       { id: "10dakot", label: "10 דקות" },
       { id: "foody",   label: "פודי" },
-      { id: "walla",   label: "וואלה אוכל" },
     ];
 
     // Best-effort parse of a free-text Hebrew ingredient line ("2 כוסות קמח",
@@ -3259,15 +3260,21 @@
         });
       };
 
+      // A previously-saved default can point at a source that's since been
+      // dropped (e.g. וואלה אוכל, removed after its search turned out to be
+      // broken for real multi-word dish names) — treat that the same as no
+      // default rather than erroring against the server.
+      const isValidRecipeSource = (id) => RECIPE_SOURCES.some(function(s) { return s.id === id; });
+
       const openRecipeFor = (item) => {
         setRecipeItemId(item.id);
         setRecipeResults(null);
         setRecipeError("");
         if (item.recipe) return; // has a saved recipe already — render straight into view mode
-        if (recipeSourceDefault) { runRecipeSearch(item.name, recipeSourceDefault); return; }
+        if (isValidRecipeSource(recipeSourceDefault)) { runRecipeSearch(item.name, recipeSourceDefault); return; }
         db.ref("recipeSourceDefault").once("value").then(function(snap) {
           var src = snap.val();
-          if (src) { setRecipeSourceDefault(src); runRecipeSearch(item.name, src); }
+          if (isValidRecipeSource(src)) { setRecipeSourceDefault(src); runRecipeSearch(item.name, src); }
           else { setRecipeSourcePicker(true); }
         });
       };

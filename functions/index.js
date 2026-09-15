@@ -513,16 +513,20 @@ exports.setUserPreferences = onCall(
 );
 
 // ─── Recipe search (menus feature) ─────────────────────────────────────────────
-// Three Hebrew recipe sites, chosen and live-verified (2026-09) because each
-// exposes a plain server-rendered search page AND schema.org Recipe JSON-LD on
-// its recipe pages — no headless browser needed, no per-site HTML scraping for
-// the recipe content itself (only the search-results list is site-specific).
+// Hebrew recipe sites, live-verified (2026-09) because each exposes a plain
+// server-rendered search page AND schema.org Recipe JSON-LD on its recipe
+// pages — no headless browser needed, no per-site HTML scraping for the
+// recipe content itself (only the search-results list is site-specific).
 // Other sites considered (mako, mycookbook, bishulim) render search results via
 // client-side JS and were dropped — a plain fetch never sees any results.
+// וואלה אוכל (walla.co.il) was tried and dropped too: its /recipes?q= search
+// only works for a single word — any real multi-word dish name 404s on
+// Walla's own server. Not a bot-block, not a region issue — confirmed with a
+// plain single-word query working and every multi-word variant (space, +,
+// hyphen, comma, concatenated) 404ing the same way.
 const RECIPE_SOURCES = {
   '10dakot': { label: '10 דקות', domain: '10dakot.co.il', searchUrl: (q) => `https://www.10dakot.co.il/?s=${encodeURIComponent(q)}` },
   'foody':   { label: 'פודי',    domain: 'foody.co.il',    searchUrl: (q) => `https://foody.co.il/?s=${encodeURIComponent(q)}` },
-  'walla':   { label: 'וואלה אוכל', domain: 'walla.co.il', searchUrl: (q) => `https://food.walla.co.il/recipes?q=${encodeURIComponent(q)}` },
 };
 
 const RECIPE_FETCH_HEADERS = { 'User-Agent': 'Mozilla/5.0 (compatible; BuliBot/1.0; +https://buli-8fdf9.web.app)' };
@@ -622,15 +626,6 @@ async function searchSourceRecipes(source, query) {
       if (url && title) results.push({ url, title, image });
     });
     return results;
-  }
-
-  if (source === 'walla') {
-    const objects = extractJsonLdObjects(html);
-    const list = findJsonLdType(objects, 'ItemList');
-    if (!list || !Array.isArray(list.itemListElement)) return [];
-    return list.itemListElement
-      .filter((it) => it && it.url && it.name)
-      .map((it) => ({ url: it.url, title: it.name, image: '' }));
   }
 
   return [];

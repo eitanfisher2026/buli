@@ -1,6 +1,6 @@
     const { useState, useEffect, useRef } = React;
 
-    const VERSION = "v6.86";
+    const VERSION = "v6.87";
 
     // ── CONFIG ────────────────────────────────────────────────────────────────────
     const FIREBASE_CONFIG = {
@@ -2780,11 +2780,8 @@
       const [taskEdit,      setTaskEdit]      = useState(null);
       const [noteEdit,      setNoteEdit]      = useState(null);
       const [confirmDialog, setConfirmDialog] = useState(null);
-      const [showShare,        setShowShare]        = useState(false);
       const [contacts,         setContacts]         = useState([]);
-      const [selectedContacts, setSelectedContacts] = useState([]);
-      const [shareEmail,       setShareEmail]       = useState("");
-      const [sharing,          setSharing]          = useState(false);
+      const [sharingUid,       setSharingUid]       = useState(null);
       const [removingShareUid, setRemovingShareUid] = useState(null);
       const [filterStatus, setFilterStatus] = useState(function() { return localStorage.getItem("buli_filter_status") || "all"; });
       const [filterPerson, setFilterPerson] = useState(function() { return localStorage.getItem("buli_filter_person") || "all"; });
@@ -3049,58 +3046,18 @@
 
 
 
-      const shareWithContacts = () => {
-        if (!selectedContacts.length && !shareEmail.trim()) return;
-        // Own email shares nothing (you already have access) — if that's the
-        // only thing submitted, stop before the generic "שותף!" success
-        // toast can fire and paper over the fact that nothing happened.
-        var ownEmail = !!shareEmail.trim() && shareEmail.trim().toLowerCase() === (user.email || "").toLowerCase();
-        if (!selectedContacts.length && ownEmail) {
-          showToast("זה כבר האימייל שלך — הרשימה כבר שלך");
-          return;
-        }
-        var emailToShare = shareEmail.trim() && !ownEmail;
-        setSharing(true);
-        var total = selectedContacts.length + (emailToShare ? 1 : 0);
-        var completed = 0;
-        // list here only ever gets loaded via a one-time read (see loadList),
-        // not a live listener — without patching it in locally, a newly
-        // shared person never showed up in "משותפת עם" until the list was
-        // closed and reopened, even though the write itself had succeeded.
-        var sharedUids = [];
-        function done(uid) {
-          if (uid) sharedUids.push(uid);
-          completed++;
-          if (completed >= total) {
-            if (sharedUids.length > 0) {
-              setList(function(prev) {
-                if (!prev) return prev;
-                var nextShared = Object.assign({}, prev.sharedWith);
-                sharedUids.forEach(function(u) { nextShared[u] = "edit"; });
-                return Object.assign({}, prev, { sharedWith: nextShared });
-              });
-            }
-            setShowShare(false);
-            setSelectedContacts([]);
-            setShareEmail("");
-            showToast("שותף!");
-            setSharing(false);
-          }
-        }
-        selectedContacts.forEach(function(uid) {
-          // contacts[].id is already the target's uid (from listTeamMembers) — no lookup needed
-          db.ref().update({ ["lists/" + listId + "/sharedWith/" + uid]: "edit", ["listsByUser/" + uid + "/" + listId]: true })
-            .then(function() { done(uid); }, function() { done(null); });
-        });
-        if (emailToShare) {
-          db.ref("usersByEmail/" + encodeEmail(shareEmail.trim().toLowerCase())).once("value").then(function(snap) {
-            if (!snap.exists()) { showToast("אימייל לא נמצא"); done(null); return; }
-            var uid = snap.val();
-            if (uid === user.uid) { showToast("זה כבר האימייל שלך — הרשימה כבר שלך"); done(null); return; }
-            db.ref().update({ ["lists/" + listId + "/sharedWith/" + uid]: "edit", ["listsByUser/" + uid + "/" + listId]: true })
-              .then(function() { done(uid); }, function() { done(null); });
-          }, function() { done(null); });
-        }
+      // Checking someone's box in the menu shares with them immediately
+      // (full access, no separate save step); unchecking removes them —
+      // see removeShare below for the other direction.
+      const addShare = (uid) => {
+        setSharingUid(uid);
+        db.ref().update({ ["lists/" + listId + "/sharedWith/" + uid]: "edit", ["listsByUser/" + uid + "/" + listId]: true }).then(function() {
+          setList(function(prev) {
+            if (!prev) return prev;
+            return Object.assign({}, prev, { sharedWith: Object.assign({}, prev.sharedWith, { [uid]: "edit" }) });
+          });
+          setSharingUid(null);
+        }, function(err) { setSharingUid(null); showToast("שגיאה: " + (err && err.message || "?")); });
       };
 
 
@@ -3177,13 +3134,6 @@
         });
       };
 
-      const openShare = () => {
-        var preSelected = contacts.filter(function(c) { return c.alwaysShare; }).map(function(c) { return c.id; });
-        setSelectedContacts(preSelected);
-        setShareEmail("");
-        setShowShare(true);
-      };
-
       const removeShare = (uid) => {
         setRemovingShareUid(uid);
         db.ref().update({ ["lists/" + listId + "/sharedWith/" + uid]: null, ["listsByUser/" + uid + "/" + listId]: null }).then(function() {
@@ -3197,8 +3147,6 @@
           showToast("ההרשאה הוסרה");
         }, function(err) { setRemovingShareUid(null); showToast("שגיאה: " + (err && err.message || "?")); });
       };
-      const isOwnEmail = !!shareEmail.trim() && shareEmail.trim().toLowerCase() === (user.email || "").toLowerCase();
-
       const isTasks = list.type === "tasks";
       const isNotes = list.type === "notes";
 
@@ -3356,27 +3304,10 @@
                   </button>
                 )}
 
-                {/* — Share & export — */}
-                {isOwner && !isNotes && (
-                  <button onClick={function() { setShowHeaderMenu(false); openShare(); }}
-                    className="w-full text-right flex items-center gap-3 px-4 py-3 rounded-xl bg-gray-50 hover:bg-gray-100 border-t border-gray-100">
-                    <span className="text-lg">🔗</span>
-                    <span className="flex-1 min-w-0 text-right">
-                      <span className="block text-sm font-medium text-gray-700">שתף רשימה</span>
-                      {list.sharedWith && Object.keys(list.sharedWith).length > 0 && (
-                        <span className="block text-xs text-gray-400 truncate">
-                          משותפת עם {Object.keys(list.sharedWith).map(function(uid) {
-                            var c = contacts.find(function(x) { return x.id === uid; });
-                            return c ? c.name : uid;
-                          }).join(", ")}
-                        </span>
-                      )}
-                    </span>
-                  </button>
-                )}
+                {/* — Export — */}
                 {!isNotes && !isTasks && (
                   <button onClick={function() { setShowHeaderMenu(false); window.print(); }}
-                    className="w-full text-right flex items-center gap-3 px-4 py-3 rounded-xl bg-gray-50 hover:bg-gray-100">
+                    className="w-full text-right flex items-center gap-3 px-4 py-3 rounded-xl bg-gray-50 hover:bg-gray-100 border-t border-gray-100">
                     <span className="text-lg">🖨️</span><span className="text-sm font-medium text-gray-700">הדפס / ייצוא ל-PDF</span>
                   </button>
                 )}
@@ -3541,6 +3472,25 @@
                       </div>
                     </div>
                   )}
+                  {isOwner && contacts.length > 0 && (
+                    <div>
+                      <div className="text-gray-400 text-xs mb-1">שיתוף</div>
+                      <div className="flex flex-col gap-1">
+                        {contacts.map(function(c) {
+                          var isShared = !!(list.sharedWith && list.sharedWith[c.id]);
+                          var busy = sharingUid === c.id || removingShareUid === c.id;
+                          return (
+                            <label key={c.id} className="flex items-center gap-2 text-sm text-gray-700 bg-white rounded-lg px-2.5 py-1.5 border border-gray-200">
+                              <input type="checkbox" checked={isShared} disabled={busy}
+                                onChange={function() { isShared ? removeShare(c.id) : addShare(c.id); }}
+                                className="w-4 h-4 flex-shrink-0" />
+                              <span className="flex-1 truncate">{c.name}</span>
+                            </label>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  )}
                 </div>
               )}
             </div>
@@ -3654,74 +3604,6 @@
             </Modal>
           )}
 
-
-          {showShare && (
-            <Modal onClose={() => setShowShare(false)}>
-              <h3 className="text-lg font-bold text-center mb-1">שתף רשימה</h3>
-              <p className="text-xs text-gray-400 text-center mb-4">
-                השיתוף נותן גישה בתוך בולי — לא נשלח מייל. האדם צריך כבר להיות רשום לבולי עם המייל הזה, ואז הרשימה תופיע אצלו בפעם הבאה שהוא פותח את האפליקציה.
-              </p>
-              {list.sharedWith && Object.keys(list.sharedWith).length > 0 && (
-                <div className="mb-4">
-                  <p className="text-xs text-gray-400 mb-2 text-right">משותפת עם</p>
-                  <div className="space-y-2">
-                    {Object.entries(list.sharedWith).map(function(entry) {
-                      var uid = entry[0], role = entry[1];
-                      var c = contacts.find(function(x) { return x.id === uid; });
-                      var roleLabel = role === "edit" ? "עריכה מלאה" : role === "own" ? "שלי בלבד" : "צפייה";
-                      return (
-                        <div key={uid} className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl border border-gray-200 bg-gray-50">
-                          <div className="flex-1 min-w-0 text-right">
-                            <div className="text-sm font-medium text-gray-800 truncate">{c ? c.name : uid}</div>
-                            <div className="text-xs text-gray-400 truncate">{[c && c.email, roleLabel].filter(Boolean).join(" · ")}</div>
-                          </div>
-                          <button onClick={function() { removeShare(uid); }} disabled={removingShareUid === uid}
-                            className="text-red-400 hover:text-red-600 text-xs border border-red-200 rounded-full px-2.5 py-1 disabled:opacity-40 flex-shrink-0">
-                            {removingShareUid === uid ? <Spinner /> : "הסר"}
-                          </button>
-                        </div>
-                      );
-                    })}
-                  </div>
-                </div>
-              )}
-              {contacts.length > 0 && (
-                <div className="mb-4">
-                  <p className="text-xs text-gray-400 mb-2 text-right">אנשי קשר</p>
-                  <div className="space-y-2 max-h-48 overflow-y-auto">
-                    {contacts.filter(function(c) { return c.id !== user.uid && (c.email || "").toLowerCase() !== (user.email || "").toLowerCase(); }).map(function(c) {
-                      var sel = selectedContacts.indexOf(c.id) !== -1;
-                      return (
-                        <button key={c.id} onClick={function() {
-                          setSelectedContacts(function(prev) {
-                            return sel ? prev.filter(function(x) { return x !== c.id; }) : prev.concat(c.id);
-                          });
-                        }} className={"w-full flex items-center gap-3 px-3 py-2.5 rounded-xl border text-right transition " + (sel ? "bg-blue-50 border-blue-400" : "bg-white border-gray-200")}>
-                          <div className={"w-5 h-5 rounded-full border-2 flex-shrink-0 flex items-center justify-center text-xs " + (sel ? "bg-blue-600 border-blue-600 text-white" : "border-gray-300")}>
-                            {sel ? "✓" : ""}
-                          </div>
-                          <div className="flex-1 min-w-0">
-                            <div className="text-sm font-medium text-gray-800 truncate">{c.name}</div>
-                            <div className="text-xs text-gray-400 truncate">{c.email}</div>
-                          </div>
-                          {c.alwaysShare && <span className="text-xs text-blue-400 flex-shrink-0">תמיד</span>}
-                        </button>
-                      );
-                    })}
-                  </div>
-                </div>
-              )}
-              <input value={shareEmail} onChange={e => setShareEmail(e.target.value)} type="email" placeholder={contacts.length > 0 ? "או הוסף אימייל" : "אימייל"}
-                className="w-full border border-gray-200 rounded-xl px-4 py-3 text-right focus:outline-none focus:border-blue-400 mb-1" />
-              {isOwnEmail && (
-                <p className="text-xs text-orange-500 text-right mb-2">זה כבר האימייל שלך — הרשימה כבר שלך, אין צורך לשתף</p>
-              )}
-              <button onClick={shareWithContacts} disabled={(!selectedContacts.length && !shareEmail.trim()) || (!selectedContacts.length && isOwnEmail) || sharing}
-                className="w-full bg-blue-600 text-white py-4 rounded-2xl font-semibold disabled:opacity-40 flex items-center justify-center gap-2">
-                {sharing ? <Spinner /> : "שתף"}
-              </button>
-            </Modal>
-          )}
 
         </div>
       );

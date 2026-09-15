@@ -1,6 +1,6 @@
     const { useState, useEffect, useRef } = React;
 
-    const VERSION = "v6.91";
+    const VERSION = "v6.92";
 
     // ── CONFIG ────────────────────────────────────────────────────────────────────
     const FIREBASE_CONFIG = {
@@ -174,8 +174,8 @@
     // Recipe search sources for the menus feature — must match the keys in
     // functions/index.js RECIPE_SOURCES exactly.
     var RECIPE_SOURCES = [
-      { id: "10dakot", label: "10 דקות" },
-      { id: "foody",   label: "פודי" },
+      { id: "foody",      label: "פודי" },
+      { id: "foodisgood", label: "פוד איז גוד" },
     ];
 
     // Best-effort parse of a free-text Hebrew ingredient line ("2 כוסות קמח",

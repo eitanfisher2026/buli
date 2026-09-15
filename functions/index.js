@@ -513,20 +513,41 @@ exports.setUserPreferences = onCall(
 );
 
 // ─── Recipe search (menus feature) ─────────────────────────────────────────────
-// Hebrew recipe sites, live-verified (2026-09) because each exposes a plain
-// server-rendered search page AND schema.org Recipe JSON-LD on its recipe
-// pages — no headless browser needed, no per-site HTML scraping for the
-// recipe content itself (only the search-results list is site-specific).
-// Other sites considered (mako, mycookbook, bishulim) render search results via
-// client-side JS and were dropped — a plain fetch never sees any results.
-// וואלה אוכל (walla.co.il) was tried and dropped too: its /recipes?q= search
-// only works for a single word — any real multi-word dish name 404s on
-// Walla's own server. Not a bot-block, not a region issue — confirmed with a
-// plain single-word query working and every multi-word variant (space, +,
-// hyphen, comma, concatenated) 404ing the same way.
+// Hebrew recipe sites, live-verified (2026-09) with an actual multi-word dish
+// query (not just a single word — that was the mistake the first time around,
+// see below) and by checking the RESULT TITLES are genuinely relevant, not
+// just that *something* well-formed came back.
+//
+// Sites tried and dropped, each for a different reason:
+// - mako, mycookbook, bishulim: search results are rendered client-side via
+//   JS — a plain fetch never sees any results at all.
+// - וואלה אוכל (walla.co.il): /recipes?q= only works for a single word — any
+//   real multi-word dish name 404s on Walla's own server. Not a bot-block,
+//   not a region issue — confirmed identically from an unrelated IP too.
+// - 10 דקות (10dakot.co.il): the page section that looked like search
+//   results (.jet-engine-listing-overlay-wrap) is actually a static
+//   "recommended posts" widget — byte-identical regardless of query,
+//   confirmed by comparing "עוף" vs pure gibberish. The one genuinely
+//   query-relevant thing on the page is a single orphaned Recipe JSON-LD
+//   snippet with no attached URL — not something that can be reliably
+//   turned into a clickable result.
+// - קרוטית (krutit.co.il): search itself works, but ingredients/instructions
+//   are one prose paragraph, not a list — too unreliable to parse.
+//
+// Sites kept:
+// - פודי (foody.co.il): real search, real schema.org Recipe JSON-LD on
+//   recipe pages. One quirk: a query with zero real matches still renders a
+//   "recommended for you" feed using the identical result markup instead of
+//   an empty state — distinguished by the page's body class flipping to
+//   "search-no-results" only in that case.
+// - Foodisgood (foodisgood.co.il): real search, genuinely relevant results,
+//   clean empty state on no match — but recipe pages have no structured
+//   data at all, just a real <ul>/<ol> for ingredients/steps inside the
+//   article body (after stripping its table-of-contents block, which is
+//   also a <ul> and would otherwise be mistaken for the ingredient list).
 const RECIPE_SOURCES = {
-  '10dakot': { label: '10 דקות', domain: '10dakot.co.il', searchUrl: (q) => `https://www.10dakot.co.il/?s=${encodeURIComponent(q)}` },
-  'foody':   { label: 'פודי',    domain: 'foody.co.il',    searchUrl: (q) => `https://foody.co.il/?s=${encodeURIComponent(q)}` },
+  'foody':      { label: 'פודי',        domain: 'foody.co.il',      searchUrl: (q) => `https://foody.co.il/?s=${encodeURIComponent(q)}` },
+  'foodisgood': { label: 'פוד איז גוד', domain: 'foodisgood.co.il', searchUrl: (q) => `https://www.foodisgood.co.il/?s=${encodeURIComponent(q)}`, parser: 'foodisgood' },
 };
 
 const RECIPE_FETCH_HEADERS = { 'User-Agent': 'Mozilla/5.0 (compatible; BuliBot/1.0; +https://buli-8fdf9.web.app)' };
@@ -601,21 +622,13 @@ async function searchSourceRecipes(source, query) {
   }
   const html = await res.text();
 
-  if (source === '10dakot') {
-    const $ = cheerio.load(html);
-    const results = [];
-    $('.jet-engine-listing-overlay-wrap[data-url]').each((_, el) => {
-      const url = $(el).attr('data-url');
-      const img = $(el).find('img').first();
-      const title = (img.attr('alt') || '').trim();
-      const image = img.attr('src') || '';
-      if (url && title) results.push({ url, title, image });
-    });
-    return results;
-  }
-
   if (source === 'foody') {
     const $ = cheerio.load(html);
+    // On zero real matches, Foody's page still renders a "recommended for
+    // you" feed using the identical .recipe-item-container markup instead of
+    // an empty state — indistinguishable from real results except for this
+    // body class, which flips to search-no-results only in that case.
+    if ($('body').hasClass('search-no-results')) return [];
     const results = [];
     $('.recipe-item-container').each((_, el) => {
       const a = $(el).find('a[href]').first();
@@ -623,6 +636,21 @@ async function searchSourceRecipes(source, query) {
       const title = $(el).find('.grid-item-title').text().trim();
       const img = $(el).find('img').first();
       const image = img.attr('data-foody-src') || img.attr('src') || '';
+      if (url && title) results.push({ url, title, image });
+    });
+    return results;
+  }
+
+  if (source === 'foodisgood') {
+    const $ = cheerio.load(html);
+    if ($('body').hasClass('search-no-results')) return [];
+    const results = [];
+    $('.default-post-list-item').each((_, el) => {
+      const a = $(el).find('a[href]').first();
+      const url = a.attr('href') || '';
+      const img = $(el).find('img').first();
+      const title = (img.attr('title') || img.attr('alt') || '').trim();
+      const image = img.attr('src') || '';
       if (url && title) results.push({ url, title, image });
     });
     return results;
@@ -660,6 +688,22 @@ exports.searchRecipes = onCall(
   }
 );
 
+// Foodisgood publishes no structured recipe data — ingredients/steps are
+// real <ul>/<ol> lists in the article body, but so is its table-of-contents
+// block (also a <ul>), which sits first and would otherwise be mistaken for
+// the ingredient list. Strip it before taking the first ul/ol.
+function parseFoodisgoodRecipe(html, $) {
+  const article = $('article.single-content').first();
+  if (!article.length) return null;
+  article.find('.rivax-toc-wrap').remove();
+  const ingredients = article.find('ul').first().find('li').map((_, el) => $(el).text().trim()).get().filter(Boolean);
+  const steps = article.find('ol').first().find('li').map((_, el) => $(el).text().trim()).get().filter(Boolean);
+  if (!ingredients.length) return null;
+  const h1 = $('h1').first().text().trim();
+  const ogImage = $('meta[property="og:image"]').attr('content') || '';
+  return { title: h1, image: ogImage, servings: null, ingredients, steps };
+}
+
 exports.fetchRecipe = onCall(
   { timeoutSeconds: 20, memory: '256MiB', region: 'me-west1' },
   async (request) => {
@@ -669,8 +713,8 @@ exports.fetchRecipe = onCall(
     let parsed;
     try { parsed = new URL(rawUrl); } catch (e) { throw new HttpsError('invalid-argument', 'קישור לא תקין'); }
     const host = parsed.hostname.replace(/^www\./, '');
-    const allowed = Object.values(RECIPE_SOURCES).some((cfg) => host === cfg.domain || host.endsWith('.' + cfg.domain));
-    if (!allowed) throw new HttpsError('invalid-argument', 'מקור לא נתמך');
+    const matchedCfg = Object.values(RECIPE_SOURCES).find((cfg) => host === cfg.domain || host.endsWith('.' + cfg.domain));
+    if (!matchedCfg) throw new HttpsError('invalid-argument', 'מקור לא נתמך');
 
     let res;
     try {
@@ -684,19 +728,22 @@ exports.fetchRecipe = onCall(
       throw new HttpsError('unavailable', 'הדף לא נטען, נסה שוב');
     }
     const html = await res.text();
-    const objects = extractJsonLdObjects(html);
-    const recipe = findJsonLdType(objects, 'Recipe');
-    if (!recipe || !Array.isArray(recipe.recipeIngredient) || !recipe.recipeIngredient.length) {
+
+    let recipe;
+    if (matchedCfg.parser === 'foodisgood') {
+      recipe = parseFoodisgoodRecipe(html, cheerio.load(html));
+    } else {
+      const objects = extractJsonLdObjects(html);
+      const found = findJsonLdType(objects, 'Recipe');
+      recipe = found && Array.isArray(found.recipeIngredient) && found.recipeIngredient.length
+        ? { title: (found.name || '').trim(), image: recipeImageUrl(found.image), servings: parseServings(found.recipeYield),
+            ingredients: found.recipeIngredient.map((s) => String(s).trim()).filter(Boolean), steps: normalizeInstructions(found.recipeInstructions) }
+        : null;
+    }
+    if (!recipe || !recipe.ingredients.length) {
       throw new HttpsError('not-found', 'לא נמצא מתכון מפורט בקישור הזה — נסה תוצאה אחרת');
     }
 
-    return {
-      title: (recipe.name || '').trim(),
-      image: recipeImageUrl(recipe.image),
-      servings: parseServings(recipe.recipeYield),
-      ingredients: recipe.recipeIngredient.map((s) => String(s).trim()).filter(Boolean),
-      steps: normalizeInstructions(recipe.recipeInstructions),
-      url: parsed.toString(),
-    };
+    return Object.assign({}, recipe, { url: parsed.toString() });
   }
 );

@@ -1,6 +1,6 @@
     const { useState, useEffect, useRef } = React;
 
-    const VERSION = "v6.87";
+    const VERSION = "v6.88";
 
     // ── CONFIG ────────────────────────────────────────────────────────────────────
     const FIREBASE_CONFIG = {
@@ -163,6 +163,54 @@
       var d = new Date(ts);
       var pad = function(n) { return String(n).padStart(2, "0"); };
       return pad(d.getDate()) + "/" + pad(d.getMonth() + 1) + " " + pad(d.getHours()) + ":" + pad(d.getMinutes());
+    }
+
+    // Recipe search sources for the menus feature — must match the keys in
+    // functions/index.js RECIPE_SOURCES exactly.
+    var RECIPE_SOURCES = [
+      { id: "10dakot", label: "10 דקות" },
+      { id: "foody",   label: "פודי" },
+      { id: "walla",   label: "וואלה אוכל" },
+    ];
+
+    // Best-effort parse of a free-text Hebrew ingredient line ("2 כוסות קמח",
+    // "1/2 כפית מלח", "מלח ופלפל") into {quantity, unit, name}. Singular and
+    // plural unit spellings are folded to one canonical form so "כוס" and
+    // "כוסות" from different recipes can still be merged together. Lines with
+    // no recognizable leading quantity get quantity:null/unit:null and are
+    // never merged with anything — just added to the shopping list as-is.
+    var UNIT_CANON = {
+      "כוסות": "כוס", "כוס": "כוס",
+      "כפות": "כף", "כף": "כף",
+      "כפיות": "כפית", "כפית": "כפית",
+      "גרם": "גרם",
+      "ק\"ג": "ק\"ג", "קילוגרם": "ק\"ג", "קילו": "ק\"ג",
+      "מ\"ל": "מ\"ל", "מיליליטר": "מ\"ל",
+      "ליטר": "ליטר",
+      "יחידות": "יחידה", "יחידה": "יחידה",
+      "חבילות": "חבילה", "חבילה": "חבילה",
+      "קופסאות": "קופסה", "קופסה": "קופסה",
+      "שיני": "שן", "שן": "שן",
+      "פרוסות": "פרוסה", "פרוסה": "פרוסה",
+      "ראשים": "ראש", "ראש": "ראש",
+    };
+    var UNIT_PATTERN = Object.keys(UNIT_CANON).sort(function(a, b) { return b.length - a.length; }).join("|");
+    var INGREDIENT_RE = new RegExp("^(\\d+\\/\\d+|\\d+(?:[.,]\\d+)?(?:\\s*-\\s*\\d+(?:[.,]\\d+)?)?|½|¼|¾)\\s*(" + UNIT_PATTERN + ")?\\s*(.*)$");
+    function parseIngredientLine(raw) {
+      var s = String(raw || "").trim();
+      var m = s.match(INGREDIENT_RE);
+      if (!m || !m[3] || !m[3].trim()) return { quantity: null, unit: null, name: s };
+      var qtyRaw = m[1];
+      var qty;
+      if (qtyRaw === "½") qty = 0.5;
+      else if (qtyRaw === "¼") qty = 0.25;
+      else if (qtyRaw === "¾") qty = 0.75;
+      else if (qtyRaw.indexOf("/") !== -1) { var fr = qtyRaw.split("/"); qty = parseFloat(fr[0]) / parseFloat(fr[1]); }
+      else if (qtyRaw.indexOf("-") !== -1) qty = parseFloat(qtyRaw.split("-")[0]);
+      else qty = parseFloat(qtyRaw.replace(",", "."));
+      if (isNaN(qty)) return { quantity: null, unit: null, name: s };
+      var unit = m[2] ? (UNIT_CANON[m[2]] || m[2]) : null;
+      return { quantity: qty, unit: unit, name: m[3].trim() };
     }
 
     // Same idea for HomeScreen's own list-of-lists — it also unmounts every
@@ -2356,7 +2404,7 @@
       );
     }
 
-    function NoteItemRow({ item, canEdit, onToggle, onDelete, onEdit, onSaveNote, onMoveUp, onMoveDown, isFirst, isLast }) {
+    function NoteItemRow({ item, canEdit, onToggle, onDelete, onEdit, onSaveNote, onMoveUp, onMoveDown, isFirst, isLast, onRecipe }) {
       var [editingNote, setEditingNote] = React.useState(false);
       var [noteVal,     setNoteVal]     = React.useState(item.note || "");
 
@@ -2389,6 +2437,8 @@
                   <button onClick={onMoveDown} disabled={isLast}
                     className="w-5 h-4 flex items-center justify-center text-gray-300 hover:text-blue-500 disabled:opacity-20 text-xs leading-none">▼</button>
                 </div>
+                <button onClick={function() { onRecipe(item); }} title="מתכון"
+                  className={"text-sm px-0.5 " + (item.recipe ? "text-orange-400" : "text-gray-300 hover:text-orange-400")}>🍳</button>
                 <button onClick={function() { onEdit(item); }} className="text-gray-300 hover:text-blue-400 text-sm px-0.5">✏️</button>
                 <button onClick={function() { onDelete(item.id); }} className="text-gray-300 hover:text-red-400 text-base">🗑️</button>
               </div>
@@ -2783,6 +2833,15 @@
       const [contacts,         setContacts]         = useState([]);
       const [sharingUid,       setSharingUid]       = useState(null);
       const [removingShareUid, setRemovingShareUid] = useState(null);
+      const [recipeItemId,        setRecipeItemId]        = useState(null);
+      const [recipeSourceDefault, setRecipeSourceDefault] = useState(null);
+      const [recipeSourcePicker,  setRecipeSourcePicker]  = useState(false);
+      const [recipeSearching,     setRecipeSearching]     = useState(false);
+      const [recipeResults,       setRecipeResults]       = useState(null);
+      const [recipeFetching,      setRecipeFetching]      = useState(false);
+      const [recipePendingServings, setRecipePendingServings] = useState(null);
+      const [recipeError,         setRecipeError]         = useState("");
+      const [buildingShoppingList, setBuildingShoppingList] = useState(false);
       const [filterStatus, setFilterStatus] = useState(function() { return localStorage.getItem("buli_filter_status") || "all"; });
       const [filterPerson, setFilterPerson] = useState(function() { return localStorage.getItem("buli_filter_person") || "all"; });
       const [showFilters, setShowFilters] = useState(false);
@@ -3171,6 +3230,194 @@
       const moveNoteUp   = function(id) { moveNoteItem(id, -1); };
       const moveNoteDown = function(id) { moveNoteItem(id,  1); };
 
+      // ─── Recipes (menus feature) ────────────────────────────────────────
+      // Which site to search is a single household-wide default (see
+      // recipeSourceDefault below) rather than per-user or per-list, so
+      // whoever picks it first sets it for everyone until someone changes it.
+      const closeRecipeFlow = () => {
+        setRecipeItemId(null);
+        setRecipeResults(null);
+        setRecipeError("");
+        setRecipePendingServings(null);
+      };
+
+      const runRecipeSearch = (query, source) => {
+        setRecipeSearching(true);
+        setRecipeResults(null);
+        setRecipeError("");
+        fns.httpsCallable("searchRecipes")({ query: query, source: source }).then(function(res) {
+          setRecipeSearching(false);
+          setRecipeResults((res.data && res.data.results) || []);
+        }, function(err) {
+          setRecipeSearching(false);
+          setRecipeResults([]);
+          setRecipeError("החיפוש נכשל: " + (err && err.message || "?"));
+        });
+      };
+
+      const openRecipeFor = (item) => {
+        setRecipeItemId(item.id);
+        setRecipeResults(null);
+        setRecipeError("");
+        if (item.recipe) return; // has a saved recipe already — render straight into view mode
+        if (recipeSourceDefault) { runRecipeSearch(item.name, recipeSourceDefault); return; }
+        db.ref("recipeSourceDefault").once("value").then(function(snap) {
+          var src = snap.val();
+          if (src) { setRecipeSourceDefault(src); runRecipeSearch(item.name, src); }
+          else { setRecipeSourcePicker(true); }
+        });
+      };
+
+      const pickRecipeSource = (sourceId) => {
+        setRecipeSourceDefault(sourceId);
+        setRecipeSourcePicker(false);
+        db.ref("recipeSourceDefault").set(sourceId);
+        var item = items.find(function(i) { return i.id === recipeItemId; });
+        if (item) runRecipeSearch(item.name, sourceId);
+      };
+
+      const pickRecipeResult = (result) => {
+        setRecipeFetching(true);
+        setRecipeError("");
+        fns.httpsCallable("fetchRecipe")({ url: result.url }).then(function(res) {
+          setRecipeFetching(false);
+          var data = res.data;
+          if (!data.servings) {
+            setRecipePendingServings({ recipe: data, servingsInput: "" });
+          } else {
+            saveRecipeToItem(data);
+          }
+        }, function(err) {
+          setRecipeFetching(false);
+          setRecipeError((err && err.message) || "לא ניתן היה לטעון את המתכון");
+        });
+      };
+
+      const confirmPendingServings = () => {
+        if (!recipePendingServings) return;
+        var n = parseInt(recipePendingServings.servingsInput, 10);
+        if (!n || n < 1) return;
+        saveRecipeToItem(Object.assign({}, recipePendingServings.recipe, { servings: n }));
+      };
+
+      const saveRecipeToItem = (recipeData) => {
+        if (!recipeItemId) return;
+        var toSave = {
+          source: recipeSourceDefault,
+          url: recipeData.url,
+          title: recipeData.title || "",
+          image: recipeData.image || "",
+          servings: recipeData.servings,
+          ingredients: recipeData.ingredients || [],
+          steps: recipeData.steps || [],
+        };
+        db.ref("items/" + listId + "/" + recipeItemId + "/recipe").set(toSave).then(function() {
+          setItems(function(prev) { return prev.map(function(i) { return i.id === recipeItemId ? Object.assign({}, i, { recipe: toSave }) : i; }); });
+          showToast("המתכון נשמר");
+          closeRecipeFlow();
+        }, function(err) { showToast("שגיאה: " + (err && err.message || "?")); });
+      };
+
+      const removeRecipeFromItem = (itemId) => {
+        db.ref("items/" + listId + "/" + itemId + "/recipe").remove().then(function() {
+          setItems(function(prev) { return prev.map(function(i) { return i.id === itemId ? Object.assign({}, i, { recipe: null }) : i; }); });
+          showToast("המתכון הוסר");
+        });
+      };
+
+      // Rebuilds the linked shopping list from scratch every time — simplest
+      // to reason about, but it does mean any manual edits/checkoffs made on
+      // that shopping list since the last build are wiped, not merged.
+      const buildDinnerShoppingList = () => {
+        if (buildingShoppingList) return;
+        var withRecipes = items.filter(function(i) { return i.recipe && i.recipe.ingredients && i.recipe.ingredients.length; });
+        if (!withRecipes.length) { showToast("אין עדיין מנות עם מתכון שמור"); return; }
+        var diners = list.dinersCount || 12;
+        setBuildingShoppingList(true);
+
+        var merged = {};
+        var unmerged = [];
+        withRecipes.forEach(function(dish) {
+          var scale = diners / (dish.recipe.servings || diners);
+          dish.recipe.ingredients.forEach(function(line) {
+            var parsed = parseIngredientLine(line);
+            if (parsed.quantity != null && parsed.unit) {
+              var key = parsed.name.trim() + "|" + parsed.unit;
+              if (!merged[key]) merged[key] = { name: parsed.name, unit: parsed.unit, quantity: 0 };
+              merged[key].quantity += parsed.quantity * scale;
+            } else {
+              unmerged.push({ name: parsed.name, unit: parsed.unit, quantity: parsed.quantity != null ? Math.round(parsed.quantity * scale * 10) / 10 : null });
+            }
+          });
+        });
+
+        var finalItems = Object.keys(merged).map(function(k) {
+          var e = merged[k];
+          return { name: e.name, quantity: Math.round(e.quantity * 10) / 10, unit: e.unit };
+        }).concat(unmerged);
+
+        function createLinkedList() {
+          var newId = db.ref("lists").push().key;
+          var newList = {
+            name: (list.name || "ארוחה") + " - קניות",
+            type: "shopping",
+            ownerId: user.uid,
+            ownerName: user.displayName,
+            sharedWith: list.sharedWith || {},
+            done: false,
+            createdAt: Date.now(),
+          };
+          var updates = {};
+          updates["lists/" + newId] = newList;
+          updates["listsByUser/" + user.uid + "/" + newId] = true;
+          Object.keys(newList.sharedWith).forEach(function(uid) { updates["listsByUser/" + uid + "/" + newId] = true; });
+          updates["lists/" + listId + "/mealShoppingListId"] = newId;
+          return db.ref().update(updates).then(function() {
+            setList(function(prev) { return prev ? Object.assign({}, prev, { mealShoppingListId: newId }) : prev; });
+            return newId;
+          });
+        }
+
+        function writeItems(targetListId) {
+          return db.ref("items/" + targetListId).once("value").then(function(snap) {
+            var updates = {};
+            var existing = snap.val() || {};
+            Object.keys(existing).forEach(function(id) { updates["items/" + targetListId + "/" + id] = null; });
+            var now = Date.now();
+            finalItems.forEach(function(it) {
+              var newId = db.ref("items/" + targetListId).push().key;
+              updates["items/" + targetListId + "/" + newId] = {
+                name: it.name,
+                category: "שונות",
+                categoryEmoji: "🛍️",
+                quantity: it.quantity || 1,
+                unit: it.unit || "יחידות",
+                note: "",
+                done: false,
+                addedBy: user.displayName,
+                addedAt: now,
+              };
+            });
+            return db.ref().update(updates);
+          });
+        }
+
+        var proceed = list.mealShoppingListId
+          ? db.ref("lists/" + list.mealShoppingListId).once("value").then(function(snap) {
+              return snap.exists() ? writeItems(list.mealShoppingListId) : createLinkedList().then(writeItems);
+            })
+          : createLinkedList().then(writeItems);
+
+        proceed.then(function() {
+          setBuildingShoppingList(false);
+          homeDataCache = null;
+          showToast("רשימת הקניות לארוחה מוכנה");
+        }, function(err) {
+          setBuildingShoppingList(false);
+          showToast("שגיאה: " + (err && err.message || "?"));
+        });
+      };
+
       const applyStatusFilter = function(v) { setFilterStatus(v); localStorage.setItem("buli_filter_status", v); };
       const applyPersonFilter = function(v) { setFilterPerson(v); localStorage.setItem("buli_filter_person", v); };
       const clearAllFilters   = function() { applyStatusFilter("all"); applyPersonFilter("all"); };
@@ -3301,6 +3548,12 @@
                   <button onClick={function() { setShowHeaderMenu(false); setShowCategorizeChoice(true); }}
                     className="w-full text-right flex items-center gap-3 px-4 py-3 rounded-xl bg-gray-50 hover:bg-gray-100">
                     <span className="text-lg">✨</span><span className="text-sm font-medium text-gray-700">השלם קטגוריות</span>
+                  </button>
+                )}
+                {isNotes && canEditAll && (
+                  <button onClick={function() { setShowHeaderMenu(false); buildDinnerShoppingList(); }}
+                    className="w-full text-right flex items-center gap-3 px-4 py-3 rounded-xl bg-gray-50 hover:bg-gray-100 border-t border-gray-100">
+                    <span className="text-lg">🛒</span><span className="text-sm font-medium text-gray-700">{buildingShoppingList ? "בונה רשימת קניות..." : "בנה רשימת קניות לארוחה"}</span>
                   </button>
                 )}
 
@@ -3514,7 +3767,7 @@
               ) : (
                 <div className="space-y-2">
                   {notesSorted.map(function(item, idx) {
-                    return <NoteItemRow key={item.id} item={item} canEdit={canEditAll} onToggle={toggle} onDelete={remove} onEdit={function(it) { setNoteEdit(it); }} onSaveNote={updateNote} onMoveUp={function() { moveNoteUp(item.id); }} onMoveDown={function() { moveNoteDown(item.id); }} isFirst={idx===0} isLast={idx===notesSorted.length-1} />;
+                    return <NoteItemRow key={item.id} item={item} canEdit={canEditAll} onToggle={toggle} onDelete={remove} onEdit={function(it) { setNoteEdit(it); }} onSaveNote={updateNote} onMoveUp={function() { moveNoteUp(item.id); }} onMoveDown={function() { moveNoteDown(item.id); }} isFirst={idx===0} isLast={idx===notesSorted.length-1} onRecipe={openRecipeFor} />;
                   })}
                 </div>
               )
@@ -3604,6 +3857,96 @@
             </Modal>
           )}
 
+          {recipeSourcePicker && (
+            <Modal onClose={function() { setRecipeSourcePicker(false); if (!recipeSourceDefault) setRecipeItemId(null); }}>
+              <h3 className="text-lg font-bold text-center mb-1">בחירת מקור מתכונים</h3>
+              <p className="text-xs text-gray-400 text-center mb-4">הבחירה נשמרת לכל המשפחה, וניתן לשנות אותה בכל עת.</p>
+              <div className="space-y-2">
+                {RECIPE_SOURCES.map(function(s) {
+                  return (
+                    <button key={s.id} onClick={function() { pickRecipeSource(s.id); }}
+                      className={"w-full text-right px-4 py-3 rounded-xl font-medium " + (recipeSourceDefault === s.id ? "bg-blue-50 border border-blue-400 text-blue-700" : "bg-gray-50 hover:bg-gray-100 text-gray-700")}>
+                      {s.label}
+                    </button>
+                  );
+                })}
+              </div>
+            </Modal>
+          )}
+
+          {recipeItemId && !recipeSourcePicker && (function() {
+            var recItem = items.find(function(i) { return i.id === recipeItemId; });
+            if (!recItem) return null;
+            var viewingSaved = recItem.recipe && recipeResults === null && !recipeSearching && !recipeFetching && !recipePendingServings;
+            if (viewingSaved) {
+              var r = recItem.recipe;
+              return (
+                <Modal onClose={closeRecipeFlow}>
+                  <h3 className="text-lg font-bold text-center mb-1">{r.title || recItem.name}</h3>
+                  <p className="text-xs text-gray-400 text-center mb-4">{r.servings ? r.servings + " מנות" : ""}</p>
+                  {r.image && <img src={r.image} className="w-full h-40 object-cover rounded-xl mb-3" />}
+                  <div className="mb-4">
+                    <p className="text-xs text-gray-400 mb-1 text-right font-semibold">מרכיבים</p>
+                    <ul className="text-sm text-gray-700 space-y-1 text-right list-disc list-inside">
+                      {r.ingredients.map(function(ing, i) { return <li key={i}>{ing}</li>; })}
+                    </ul>
+                  </div>
+                  <div className="mb-4">
+                    <p className="text-xs text-gray-400 mb-1 text-right font-semibold">אופן ההכנה</p>
+                    <ol className="text-sm text-gray-700 space-y-1.5 text-right list-decimal list-inside">
+                      {r.steps.map(function(s, i) { return <li key={i}>{s}</li>; })}
+                    </ol>
+                  </div>
+                  <div className="flex gap-2">
+                    <button onClick={function() { var src = recipeSourceDefault || r.source; setRecipeSourceDefault(src); runRecipeSearch(recItem.name, src); }}
+                      className="flex-1 bg-gray-100 text-gray-700 py-3 rounded-xl font-medium text-sm">בחר מתכון אחר</button>
+                    <button onClick={function() { removeRecipeFromItem(recItem.id); closeRecipeFlow(); }}
+                      className="flex-1 bg-red-50 text-red-500 py-3 rounded-xl font-medium text-sm">הסר מתכון</button>
+                  </div>
+                </Modal>
+              );
+            }
+            return (
+              <Modal onClose={closeRecipeFlow}>
+                <h3 className="text-lg font-bold text-center mb-1">מתכון ל{recItem.name}</h3>
+                {recipeSourceDefault && !recipePendingServings && (
+                  <p className="text-xs text-gray-400 text-center mb-3">
+                    מקור: {(RECIPE_SOURCES.find(function(s) { return s.id === recipeSourceDefault; }) || {}).label}
+                    {" "}
+                    <button onClick={function() { setRecipeSourcePicker(true); }} className="text-blue-500">(שנה)</button>
+                  </p>
+                )}
+                {recipePendingServings ? (
+                  <div>
+                    <p className="text-sm text-gray-600 text-center mb-3">כמה מנות המתכון הזה מכין?</p>
+                    <input type="number" min="1" value={recipePendingServings.servingsInput} autoFocus
+                      onChange={function(e) { setRecipePendingServings(function(p) { return Object.assign({}, p, { servingsInput: e.target.value }); }); }}
+                      className="w-full border border-gray-200 rounded-xl px-4 py-3 text-center text-lg mb-3" />
+                    <button onClick={confirmPendingServings} disabled={!recipePendingServings.servingsInput}
+                      className="w-full bg-blue-600 text-white py-3 rounded-xl font-semibold disabled:opacity-40">שמור מתכון</button>
+                  </div>
+                ) : recipeFetching || recipeSearching ? (
+                  <div className="flex justify-center py-8"><Spinner large /></div>
+                ) : recipeError ? (
+                  <p className="text-sm text-red-500 text-center py-6">{recipeError}</p>
+                ) : recipeResults && recipeResults.length === 0 ? (
+                  <p className="text-sm text-gray-400 text-center py-6">לא נמצאו מתכונים, נסה מקור אחר</p>
+                ) : (
+                  <div className="space-y-2 max-h-96 overflow-y-auto">
+                    {(recipeResults || []).map(function(res, i) {
+                      return (
+                        <button key={i} onClick={function() { pickRecipeResult(res); }}
+                          className="w-full flex items-center gap-3 px-3 py-2 rounded-xl border border-gray-200 hover:bg-gray-50 text-right">
+                          {res.image ? <img src={res.image} className="w-14 h-14 rounded-lg object-cover flex-shrink-0" /> : <div className="w-14 h-14 rounded-lg bg-gray-100 flex-shrink-0" />}
+                          <span className="text-sm font-medium text-gray-700 flex-1 min-w-0">{res.title}</span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+              </Modal>
+            );
+          })()}
 
         </div>
       );

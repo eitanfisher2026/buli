@@ -3,6 +3,7 @@ const admin = require('firebase-admin');
 const Anthropic = require('@anthropic-ai/sdk');
 const { GoogleGenerativeAI } = require('@google/generative-ai');
 const OpenAI = require('openai');
+const cheerio = require('cheerio');
 
 admin.initializeApp();
 const db = admin.database();
@@ -508,5 +509,186 @@ exports.setUserPreferences = onCall(
     if (Object.keys(updates).length === 0) throw new HttpsError('invalid-argument', 'nothing to update');
     await db.ref(`users/${uid}`).update(updates);
     return { ok: true };
+  }
+);
+
+// ─── Recipe search (menus feature) ─────────────────────────────────────────────
+// Three Hebrew recipe sites, chosen and live-verified (2026-09) because each
+// exposes a plain server-rendered search page AND schema.org Recipe JSON-LD on
+// its recipe pages — no headless browser needed, no per-site HTML scraping for
+// the recipe content itself (only the search-results list is site-specific).
+// Other sites considered (mako, mycookbook, bishulim) render search results via
+// client-side JS and were dropped — a plain fetch never sees any results.
+const RECIPE_SOURCES = {
+  '10dakot': { label: '10 דקות', domain: '10dakot.co.il', searchUrl: (q) => `https://www.10dakot.co.il/?s=${encodeURIComponent(q)}` },
+  'foody':   { label: 'פודי',    domain: 'foody.co.il',    searchUrl: (q) => `https://foody.co.il/?s=${encodeURIComponent(q)}` },
+  'walla':   { label: 'וואלה אוכל', domain: 'walla.co.il', searchUrl: (q) => `https://food.walla.co.il/recipes?q=${encodeURIComponent(q)}` },
+};
+
+const RECIPE_FETCH_HEADERS = { 'User-Agent': 'Mozilla/5.0 (compatible; BuliBot/1.0; +https://buli-8fdf9.web.app)' };
+
+function extractJsonLdObjects(html) {
+  const objects = [];
+  const re = /<script[^>]*type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi;
+  let m;
+  while ((m = re.exec(html))) {
+    let data;
+    try { data = JSON.parse(m[1]); } catch (e) { continue; }
+    const items = Array.isArray(data) ? data : (Array.isArray(data['@graph']) ? data['@graph'] : [data]);
+    items.forEach((it) => { if (it && typeof it === 'object') objects.push(it); });
+  }
+  return objects;
+}
+
+function findJsonLdType(objects, type) {
+  return objects.find((o) => {
+    const t = o['@type'];
+    return t === type || (Array.isArray(t) && t.includes(type));
+  }) || null;
+}
+
+function recipeImageUrl(image) {
+  if (!image) return '';
+  if (typeof image === 'string') return image;
+  if (Array.isArray(image)) return recipeImageUrl(image[0]);
+  if (image.url) return image.url;
+  return '';
+}
+
+function parseServings(recipeYield) {
+  if (!recipeYield) return null;
+  const str = Array.isArray(recipeYield) ? String(recipeYield[0]) : String(recipeYield);
+  const match = str.match(/\d+/);
+  return match ? parseInt(match[0], 10) : null;
+}
+
+// recipeInstructions is either an array (of strings, HowToStep objects, or
+// HowToSection objects with nested itemListElement) or, on some sites, one
+// long string with the steps run together as "1. ...2. ...３. ...". Both
+// shapes get normalized into a flat array of step strings.
+function normalizeInstructions(raw) {
+  if (!raw) return [];
+  if (Array.isArray(raw)) {
+    const steps = [];
+    raw.forEach((step) => {
+      if (typeof step === 'string') { steps.push(step.trim()); return; }
+      if (!step || typeof step !== 'object') return;
+      if (step['@type'] === 'HowToSection' && Array.isArray(step.itemListElement)) {
+        step.itemListElement.forEach((s) => { if (s && (s.text || s.name)) steps.push(String(s.text || s.name).trim()); });
+        return;
+      }
+      if (step.text || step.name) steps.push(String(step.text || step.name).trim());
+    });
+    return steps.filter(Boolean);
+  }
+  if (typeof raw === 'string') {
+    const parts = raw.split(/(?=\d+[.)]\s)/).map((s) => s.trim()).filter(Boolean);
+    return parts.length > 1 ? parts : [raw.trim()];
+  }
+  return [];
+}
+
+async function searchSourceRecipes(source, query) {
+  const cfg = RECIPE_SOURCES[source];
+  const res = await fetch(cfg.searchUrl(query), { headers: RECIPE_FETCH_HEADERS });
+  if (!res.ok) throw new HttpsError('unavailable', 'האתר לא הגיב, נסה שוב מאוחר יותר');
+  const html = await res.text();
+
+  if (source === '10dakot') {
+    const $ = cheerio.load(html);
+    const results = [];
+    $('.jet-engine-listing-overlay-wrap[data-url]').each((_, el) => {
+      const url = $(el).attr('data-url');
+      const img = $(el).find('img').first();
+      const title = (img.attr('alt') || '').trim();
+      const image = img.attr('src') || '';
+      if (url && title) results.push({ url, title, image });
+    });
+    return results;
+  }
+
+  if (source === 'foody') {
+    const $ = cheerio.load(html);
+    const results = [];
+    $('.recipe-item-container').each((_, el) => {
+      const a = $(el).find('a[href]').first();
+      const url = a.attr('href') || '';
+      const title = $(el).find('.grid-item-title').text().trim();
+      const img = $(el).find('img').first();
+      const image = img.attr('data-foody-src') || img.attr('src') || '';
+      if (url && title) results.push({ url, title, image });
+    });
+    return results;
+  }
+
+  if (source === 'walla') {
+    const objects = extractJsonLdObjects(html);
+    const list = findJsonLdType(objects, 'ItemList');
+    if (!list || !Array.isArray(list.itemListElement)) return [];
+    return list.itemListElement
+      .filter((it) => it && it.url && it.name)
+      .map((it) => ({ url: it.url, title: it.name, image: '' }));
+  }
+
+  return [];
+}
+
+exports.searchRecipes = onCall(
+  { timeoutSeconds: 20, memory: '256MiB', region: 'europe-west1' },
+  async (request) => {
+    await requireAuthorized(request);
+    const { source, query: rawQuery } = request.data || {};
+    const query = (rawQuery || '').trim();
+    if (!RECIPE_SOURCES[source]) throw new HttpsError('invalid-argument', 'מקור מתכונים לא מוכר');
+    if (!query) throw new HttpsError('invalid-argument', 'חסר שם מנה לחיפוש');
+
+    let results;
+    try {
+      results = await searchSourceRecipes(source, query);
+    } catch (err) {
+      if (err instanceof HttpsError) throw err;
+      throw new HttpsError('unavailable', 'החיפוש נכשל, נסה שוב');
+    }
+
+    const seen = new Set();
+    const deduped = results.filter((r) => {
+      if (seen.has(r.url)) return false;
+      seen.add(r.url);
+      return true;
+    }).slice(0, 20);
+
+    return { results: deduped };
+  }
+);
+
+exports.fetchRecipe = onCall(
+  { timeoutSeconds: 20, memory: '256MiB', region: 'europe-west1' },
+  async (request) => {
+    await requireAuthorized(request);
+    const rawUrl = request.data && request.data.url;
+    if (!rawUrl) throw new HttpsError('invalid-argument', 'חסר קישור למתכון');
+    let parsed;
+    try { parsed = new URL(rawUrl); } catch (e) { throw new HttpsError('invalid-argument', 'קישור לא תקין'); }
+    const host = parsed.hostname.replace(/^www\./, '');
+    const allowed = Object.values(RECIPE_SOURCES).some((cfg) => host === cfg.domain || host.endsWith('.' + cfg.domain));
+    if (!allowed) throw new HttpsError('invalid-argument', 'מקור לא נתמך');
+
+    const res = await fetch(parsed.toString(), { headers: RECIPE_FETCH_HEADERS });
+    if (!res.ok) throw new HttpsError('unavailable', 'הדף לא נטען, נסה שוב');
+    const html = await res.text();
+    const objects = extractJsonLdObjects(html);
+    const recipe = findJsonLdType(objects, 'Recipe');
+    if (!recipe || !Array.isArray(recipe.recipeIngredient) || !recipe.recipeIngredient.length) {
+      throw new HttpsError('not-found', 'לא נמצא מתכון מפורט בקישור הזה — נסה תוצאה אחרת');
+    }
+
+    return {
+      title: (recipe.name || '').trim(),
+      image: recipeImageUrl(recipe.image),
+      servings: parseServings(recipe.recipeYield),
+      ingredients: recipe.recipeIngredient.map((s) => String(s).trim()).filter(Boolean),
+      steps: normalizeInstructions(recipe.recipeInstructions),
+      url: parsed.toString(),
+    };
   }
 );

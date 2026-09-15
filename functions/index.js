@@ -4,6 +4,8 @@ const Anthropic = require('@anthropic-ai/sdk');
 const { GoogleGenerativeAI } = require('@google/generative-ai');
 const OpenAI = require('openai');
 const cheerio = require('cheerio');
+const dns = require('dns').promises;
+const net = require('net');
 
 admin.initializeApp();
 const db = admin.database();
@@ -128,20 +130,28 @@ function makeAI(data) {
   );
 }
 
-async function callAI(ai, prompt, maxTokens) {
+// images (optional): [{ data: base64String, mimeType }] — used only by the
+// recipe-from-photo feature. Every other caller omits it and gets the
+// original plain-text behavior.
+async function callAI(ai, prompt, maxTokens, images) {
   try {
     if (ai.type === 'gemini') {
       const gemModel = ai.client.getGenerativeModel({ model: ai.model });
-      const result = await gemModel.generateContent(prompt);
+      const parts = (images || []).map((img) => ({ inlineData: { mimeType: img.mimeType, data: img.data } }));
+      parts.push({ text: prompt });
+      const result = await gemModel.generateContent(parts);
       const text = result.response.text();
       const meta = result.response.usageMetadata;
       return { text, usage: { input_tokens: meta?.promptTokenCount || 0, output_tokens: meta?.candidatesTokenCount || 0 } };
     }
     if (ai.type === 'openai') {
+      const content = images && images.length
+        ? [{ type: 'text', text: prompt }].concat(images.map((img) => ({ type: 'image_url', image_url: { url: `data:${img.mimeType};base64,${img.data}` } })))
+        : prompt;
       const completion = await ai.client.chat.completions.create({
         model: ai.model,
         max_tokens: maxTokens,
-        messages: [{ role: 'user', content: prompt }]
+        messages: [{ role: 'user', content }]
       });
       return {
         text: completion.choices[0].message.content,
@@ -149,10 +159,13 @@ async function callAI(ai, prompt, maxTokens) {
       };
     }
     // Anthropic
+    const content = images && images.length
+      ? images.map((img) => ({ type: 'image', source: { type: 'base64', media_type: img.mimeType, data: img.data } })).concat([{ type: 'text', text: prompt }])
+      : prompt;
     const resp = await ai.client.messages.create({
       model: ai.model,
       max_tokens: maxTokens,
-      messages: [{ role: 'user', content: prompt }]
+      messages: [{ role: 'user', content }]
     });
     return { text: resp.content[0].text, usage: resp.usage };
   } catch (e) {
@@ -512,45 +525,20 @@ exports.setUserPreferences = onCall(
   }
 );
 
-// ─── Recipe search (menus feature) ─────────────────────────────────────────────
-// Hebrew recipe sites, live-verified (2026-09) with an actual multi-word dish
-// query (not just a single word — that was the mistake the first time around,
-// see below) and by checking the RESULT TITLES are genuinely relevant, not
-// just that *something* well-formed came back.
-//
-// Sites tried and dropped, each for a different reason:
-// - mako, mycookbook, bishulim: search results are rendered client-side via
-//   JS — a plain fetch never sees any results at all.
-// - וואלה אוכל (walla.co.il): /recipes?q= only works for a single word — any
-//   real multi-word dish name 404s on Walla's own server. Not a bot-block,
-//   not a region issue — confirmed identically from an unrelated IP too.
-// - 10 דקות (10dakot.co.il): the page section that looked like search
-//   results (.jet-engine-listing-overlay-wrap) is actually a static
-//   "recommended posts" widget — byte-identical regardless of query,
-//   confirmed by comparing "עוף" vs pure gibberish. The one genuinely
-//   query-relevant thing on the page is a single orphaned Recipe JSON-LD
-//   snippet with no attached URL — not something that can be reliably
-//   turned into a clickable result.
-// - קרוטית (krutit.co.il): search itself works, but ingredients/instructions
-//   are one prose paragraph, not a list — too unreliable to parse.
-//
-// Sites kept:
-// - פודי (foody.co.il): real search, real schema.org Recipe JSON-LD on
-//   recipe pages. One quirk: a query with zero real matches still renders a
-//   "recommended for you" feed using the identical result markup instead of
-//   an empty state — distinguished by the page's body class flipping to
-//   "search-no-results" only in that case.
-// - Foodisgood (foodisgood.co.il): real search, genuinely relevant results,
-//   clean empty state on no match — but recipe pages have no structured
-//   data at all, just a real <ul>/<ol> for ingredients/steps inside the
-//   article body (after stripping its table-of-contents block, which is
-//   also a <ul> and would otherwise be mistaken for the ingredient list).
-const RECIPE_SOURCES = {
-  'foody':      { label: 'פודי',        domain: 'foody.co.il',      searchUrl: (q) => `https://foody.co.il/?s=${encodeURIComponent(q)}` },
-  'foodisgood': { label: 'פוד איז גוד', domain: 'foodisgood.co.il', searchUrl: (q) => `https://www.foodisgood.co.il/?s=${encodeURIComponent(q)}`, parser: 'foodisgood' },
-};
+// ─── Recipes (menus feature) ────────────────────────────────────────────────────
+// No in-app search anymore — three different Hebrew recipe sites were each
+// tried as an in-app "search this site" source, and each broke in its own
+// undocumented way under real dish-name queries (JS-only results, 404s on
+// any multi-word query, a static "recommended posts" widget masquerading as
+// search results...). The one thing that worked reliably every time, across
+// every site tried, was reading ONE specific page once a URL was in hand.
+// So that's the whole feature now: the user finds a recipe however they
+// normally would (Google, Instagram, a cookbook) and either pastes its link
+// or attaches photo(s) of it; Buli reads that one source and extracts it.
 
 const RECIPE_FETCH_HEADERS = { 'User-Agent': 'Mozilla/5.0 (compatible; BuliBot/1.0; +https://buli-8fdf9.web.app)' };
+const MAX_RECIPE_IMAGES = 5;
+const MAX_IMAGE_BASE64_CHARS = 6_000_000; // ~4.5MB decoded — generous given the client resizes to ~1600px JPEG first
 
 function extractJsonLdObjects(html) {
   const objects = [];
@@ -613,137 +601,152 @@ function normalizeInstructions(raw) {
   return [];
 }
 
-async function searchSourceRecipes(source, query) {
-  const cfg = RECIPE_SOURCES[source];
-  const res = await fetch(cfg.searchUrl(query), { headers: RECIPE_FETCH_HEADERS });
-  if (!res.ok) {
-    console.error(`searchSourceRecipes(${source}): HTTP ${res.status} ${res.statusText}`);
-    throw new HttpsError('unavailable', 'האתר לא הגיב, נסה שוב מאוחר יותר');
+// ─── SSRF guard for extractRecipeFromUrl ────────────────────────────────────────
+// The old fetchRecipe only ever fetched one of 2-3 hardcoded domains. This one
+// fetches whatever URL the user pastes, so it needs its own defense against
+// being pointed at internal infrastructure (localhost, cloud metadata
+// endpoints, private IP ranges) — resolve the hostname first and check the
+// actual resolved address, not just the hostname string, since a hostname can
+// look external while resolving internally.
+function isBlockedIp(ip) {
+  if (net.isIPv4(ip)) {
+    const p = ip.split('.').map(Number);
+    if (p[0] === 10 || p[0] === 127 || p[0] === 0) return true;
+    if (p[0] === 169 && p[1] === 254) return true;
+    if (p[0] === 172 && p[1] >= 16 && p[1] <= 31) return true;
+    if (p[0] === 192 && p[1] === 168) return true;
+    if (p[0] >= 224) return true; // multicast/reserved
+    return false;
   }
-  const html = await res.text();
-
-  if (source === 'foody') {
-    const $ = cheerio.load(html);
-    // On zero real matches, Foody's page still renders a "recommended for
-    // you" feed using the identical .recipe-item-container markup instead of
-    // an empty state — indistinguishable from real results except for this
-    // body class, which flips to search-no-results only in that case.
-    if ($('body').hasClass('search-no-results')) return [];
-    const results = [];
-    $('.recipe-item-container').each((_, el) => {
-      const a = $(el).find('a[href]').first();
-      const url = a.attr('href') || '';
-      const title = $(el).find('.grid-item-title').text().trim();
-      const img = $(el).find('img').first();
-      const image = img.attr('data-foody-src') || img.attr('src') || '';
-      if (url && title) results.push({ url, title, image });
-    });
-    return results;
-  }
-
-  if (source === 'foodisgood') {
-    const $ = cheerio.load(html);
-    if ($('body').hasClass('search-no-results')) return [];
-    const results = [];
-    $('.default-post-list-item').each((_, el) => {
-      const a = $(el).find('a[href]').first();
-      const url = a.attr('href') || '';
-      const img = $(el).find('img').first();
-      const title = (img.attr('title') || img.attr('alt') || '').trim();
-      const image = img.attr('src') || '';
-      if (url && title) results.push({ url, title, image });
-    });
-    return results;
-  }
-
-  return [];
+  const lower = ip.toLowerCase();
+  if (lower === '::1') return true;
+  if (lower.startsWith('fe80:')) return true; // link-local
+  if (lower.startsWith('fc') || lower.startsWith('fd')) return true; // unique local
+  if (lower.startsWith('::ffff:')) return isBlockedIp(lower.slice(7));
+  return false;
 }
 
-exports.searchRecipes = onCall(
-  { timeoutSeconds: 20, memory: '256MiB', region: 'me-west1' },
-  async (request) => {
-    await requireAuthorized(request);
-    const { source, query: rawQuery } = request.data || {};
-    const query = (rawQuery || '').trim();
-    if (!RECIPE_SOURCES[source]) throw new HttpsError('invalid-argument', 'מקור מתכונים לא מוכר');
-    if (!query) throw new HttpsError('invalid-argument', 'חסר שם מנה לחיפוש');
-
-    let results;
-    try {
-      results = await searchSourceRecipes(source, query);
-    } catch (err) {
-      if (err instanceof HttpsError) throw err;
-      console.error(`searchRecipes(${source}) failed:`, err && err.message, err && err.stack);
-      throw new HttpsError('unavailable', 'החיפוש נכשל, נסה שוב');
-    }
-
-    const seen = new Set();
-    const deduped = results.filter((r) => {
-      if (seen.has(r.url)) return false;
-      seen.add(r.url);
-      return true;
-    }).slice(0, 20);
-
-    return { results: deduped };
+async function assertPublicHttpUrl(rawUrl) {
+  let parsed;
+  try { parsed = new URL(rawUrl); } catch (e) { throw new HttpsError('invalid-argument', 'קישור לא תקין'); }
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') throw new HttpsError('invalid-argument', 'קישור לא תקין');
+  if (parsed.hostname === 'localhost') throw new HttpsError('invalid-argument', 'קישור לא נתמך');
+  let addresses;
+  try { addresses = await dns.lookup(parsed.hostname, { all: true }); }
+  catch (e) { throw new HttpsError('invalid-argument', 'לא ניתן לפענח את הכתובת'); }
+  if (!addresses.length || addresses.some((a) => isBlockedIp(a.address))) {
+    throw new HttpsError('invalid-argument', 'קישור לא נתמך');
   }
-);
-
-// Foodisgood publishes no structured recipe data — ingredients/steps are
-// real <ul>/<ol> lists in the article body, but so is its table-of-contents
-// block (also a <ul>), which sits first and would otherwise be mistaken for
-// the ingredient list. Strip it before taking the first ul/ol.
-function parseFoodisgoodRecipe(html, $) {
-  const article = $('article.single-content').first();
-  if (!article.length) return null;
-  article.find('.rivax-toc-wrap').remove();
-  const ingredients = article.find('ul').first().find('li').map((_, el) => $(el).text().trim()).get().filter(Boolean);
-  const steps = article.find('ol').first().find('li').map((_, el) => $(el).text().trim()).get().filter(Boolean);
-  if (!ingredients.length) return null;
-  const h1 = $('h1').first().text().trim();
-  const ogImage = $('meta[property="og:image"]').attr('content') || '';
-  return { title: h1, image: ogImage, servings: null, ingredients, steps };
+  return parsed;
 }
 
-exports.fetchRecipe = onCall(
-  { timeoutSeconds: 20, memory: '256MiB', region: 'me-west1' },
+// ─── AI extraction (shared by the URL and photo paths) ──────────────────────────
+function recipeExtractionPrompt(sourceDescription) {
+  return `להלן ${sourceDescription}. חלץ ממנו מתכון בישול, אם יש כזה.
+
+החזר אך ורק JSON תקין (ללא markdown, ללא הסברים, ללא טקסט נוסף) בפורמט הבא:
+{"title": "שם המנה", "servings": מספר או null, "ingredients": ["מרכיב 1", "מרכיב 2"], "steps": ["שלב 1", "שלב 2"]}
+
+כללים:
+- "title" — שם המנה, כפי שמופיע במקור.
+- "servings" — מספר הסועדים/מנות שהמתכון מכין, רק אם צוין באופן מפורש. אם לא צוין, החזר null. אל תנחש.
+- "ingredients" — כל שורת מרכיב בדיוק כפי שהיא כתובה במקור (כמות, יחידה ותיאור יחד, כמחרוזת אחת לכל מרכיב).
+- "steps" — שלבי ההכנה, שלב אחד לכל איבר במערך.
+- אם אין מתכון אמיתי (עם מרכיבים ואופן הכנה) במקור, החזר: {"error": "not_a_recipe"}`;
+}
+
+function parseRecipeAiResponse(text) {
+  const cleaned = String(text || '').trim().replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/, '').trim();
+  let data;
+  try { data = JSON.parse(cleaned); }
+  catch (e) {
+    const match = cleaned.match(/\{[\s\S]*\}/);
+    if (!match) throw new HttpsError('not-found', 'לא זוהה מתכון בתוכן שסופק');
+    try { data = JSON.parse(match[0]); } catch (e2) { throw new HttpsError('not-found', 'לא זוהה מתכון בתוכן שסופק'); }
+  }
+  if (data.error) throw new HttpsError('not-found', 'לא זוהה מתכון בתוכן שסופק — נסה קישור או תמונה אחרת');
+  const ingredients = Array.isArray(data.ingredients) ? data.ingredients.map((s) => String(s).trim()).filter(Boolean) : [];
+  if (!ingredients.length) throw new HttpsError('not-found', 'לא זוהה מתכון בתוכן שסופק — נסה קישור או תמונה אחרת');
+  const steps = Array.isArray(data.steps) ? data.steps.map((s) => String(s).trim()).filter(Boolean) : [];
+  const servings = (typeof data.servings === 'number' && data.servings > 0) ? Math.round(data.servings) : null;
+  return { title: (data.title || '').trim(), servings, ingredients, steps };
+}
+
+exports.extractRecipeFromUrl = onCall(
+  { timeoutSeconds: 30, memory: '256MiB', region: 'me-west1' },
   async (request) => {
     await requireAuthorized(request);
     const rawUrl = request.data && request.data.url;
     if (!rawUrl) throw new HttpsError('invalid-argument', 'חסר קישור למתכון');
-    let parsed;
-    try { parsed = new URL(rawUrl); } catch (e) { throw new HttpsError('invalid-argument', 'קישור לא תקין'); }
-    const host = parsed.hostname.replace(/^www\./, '');
-    const matchedCfg = Object.values(RECIPE_SOURCES).find((cfg) => host === cfg.domain || host.endsWith('.' + cfg.domain));
-    if (!matchedCfg) throw new HttpsError('invalid-argument', 'מקור לא נתמך');
+    const parsed = await assertPublicHttpUrl(rawUrl);
 
     let res;
     try {
-      res = await fetch(parsed.toString(), { headers: RECIPE_FETCH_HEADERS });
+      res = await fetch(parsed.toString(), { headers: RECIPE_FETCH_HEADERS, redirect: 'follow' });
     } catch (err) {
-      console.error(`fetchRecipe(${host}) network error:`, err && err.message);
+      console.error(`extractRecipeFromUrl(${parsed.hostname}) network error:`, err && err.message);
       throw new HttpsError('unavailable', 'הדף לא נטען, נסה שוב');
     }
     if (!res.ok) {
-      console.error(`fetchRecipe(${host}): HTTP ${res.status} ${res.statusText}`);
+      console.error(`extractRecipeFromUrl(${parsed.hostname}): HTTP ${res.status} ${res.statusText}`);
       throw new HttpsError('unavailable', 'הדף לא נטען, נסה שוב');
     }
     const html = await res.text();
 
-    let recipe;
-    if (matchedCfg.parser === 'foodisgood') {
-      recipe = parseFoodisgoodRecipe(html, cheerio.load(html));
-    } else {
-      const objects = extractJsonLdObjects(html);
-      const found = findJsonLdType(objects, 'Recipe');
-      recipe = found && Array.isArray(found.recipeIngredient) && found.recipeIngredient.length
-        ? { title: (found.name || '').trim(), image: recipeImageUrl(found.image), servings: parseServings(found.recipeYield),
-            ingredients: found.recipeIngredient.map((s) => String(s).trim()).filter(Boolean), steps: normalizeInstructions(found.recipeInstructions) }
-        : null;
-    }
-    if (!recipe || !recipe.ingredients.length) {
-      throw new HttpsError('not-found', 'לא נמצא מתכון מפורט בקישור הזה — נסה תוצאה אחרת');
+    // Free path first: most recipe sites already publish structured data for
+    // search engines — use it directly if present, no AI call needed.
+    const objects = extractJsonLdObjects(html);
+    const found = findJsonLdType(objects, 'Recipe');
+    if (found && Array.isArray(found.recipeIngredient) && found.recipeIngredient.length) {
+      return {
+        title: (found.name || '').trim(),
+        image: recipeImageUrl(found.image),
+        servings: parseServings(found.recipeYield),
+        ingredients: found.recipeIngredient.map((s) => String(s).trim()).filter(Boolean),
+        steps: normalizeInstructions(found.recipeInstructions),
+        url: parsed.toString(),
+      };
     }
 
-    return Object.assign({}, recipe, { url: parsed.toString() });
+    // Fallback: no structured data on this page — ask AI to read its text.
+    // This is what makes "any recipe site", not just a few curated ones,
+    // actually work: no per-site scraper to write and maintain.
+    const $ = cheerio.load(html);
+    $('script, style, nav, footer, header, noscript, svg').remove();
+    const pageText = $('body').text().replace(/\s+/g, ' ').trim().slice(0, 8000);
+    if (!pageText) throw new HttpsError('not-found', 'לא נמצא תוכן בקישור הזה');
+
+    const ai = makeAI(request.data);
+    const { text, usage } = await callAI(ai, recipeExtractionPrompt('תוכן דף אינטרנט:\n\n' + pageText), 1500);
+    await recordCost(request, ai, usage.input_tokens, usage.output_tokens);
+    const recipe = parseRecipeAiResponse(text);
+    const ogImage = $('meta[property="og:image"]').attr('content') || '';
+    return Object.assign({}, recipe, { image: ogImage, url: parsed.toString() });
+  }
+);
+
+exports.extractRecipeFromImages = onCall(
+  { timeoutSeconds: 45, memory: '256MiB', region: 'me-west1' },
+  async (request) => {
+    await requireAuthorized(request);
+    const images = request.data && request.data.images;
+    if (!Array.isArray(images) || !images.length) throw new HttpsError('invalid-argument', 'לא צורפו תמונות');
+    if (images.length > MAX_RECIPE_IMAGES) throw new HttpsError('invalid-argument', `עד ${MAX_RECIPE_IMAGES} תמונות בכל פעם`);
+    const cleanImages = images.map((img) => {
+      const data = img && img.data;
+      const mimeType = img && img.mimeType;
+      if (!data || typeof data !== 'string' || data.length > MAX_IMAGE_BASE64_CHARS) throw new HttpsError('invalid-argument', 'תמונה לא תקינה או גדולה מדי');
+      if (!['image/jpeg', 'image/png', 'image/webp'].includes(mimeType)) throw new HttpsError('invalid-argument', 'סוג תמונה לא נתמך');
+      return { data, mimeType };
+    });
+
+    const ai = makeAI(request.data);
+    const prompt = recipeExtractionPrompt(
+      cleanImages.length > 1 ? `${cleanImages.length} תמונות של אותו מתכון (ייתכן שהן עמודים/חלקים שונים)` : 'תמונה של מתכון'
+    );
+    const { text, usage } = await callAI(ai, prompt, 1500, cleanImages);
+    await recordCost(request, ai, usage.input_tokens, usage.output_tokens);
+    const recipe = parseRecipeAiResponse(text);
+    return Object.assign({}, recipe, { image: '', url: null });
   }
 );

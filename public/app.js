@@ -1,6 +1,6 @@
     const { useState, useEffect, useRef } = React;
 
-    const VERSION = "v6.92";
+    const VERSION = "v6.93";
 
     // ── CONFIG ────────────────────────────────────────────────────────────────────
     const FIREBASE_CONFIG = {
@@ -170,13 +170,6 @@
       var pad = function(n) { return String(n).padStart(2, "0"); };
       return pad(d.getDate()) + "/" + pad(d.getMonth() + 1) + " " + pad(d.getHours()) + ":" + pad(d.getMinutes());
     }
-
-    // Recipe search sources for the menus feature — must match the keys in
-    // functions/index.js RECIPE_SOURCES exactly.
-    var RECIPE_SOURCES = [
-      { id: "foody",      label: "פודי" },
-      { id: "foodisgood", label: "פוד איז גוד" },
-    ];
 
     // Best-effort parse of a free-text Hebrew ingredient line ("2 כוסות קמח",
     // "1/2 כפית מלח", "מלח ופלפל") into {quantity, unit, name}. Singular and
@@ -2839,11 +2832,10 @@
       const [sharingUid,       setSharingUid]       = useState(null);
       const [removingShareUid, setRemovingShareUid] = useState(null);
       const [recipeItemId,        setRecipeItemId]        = useState(null);
-      const [recipeSourceDefault, setRecipeSourceDefault] = useState(null);
-      const [recipeSourcePicker,  setRecipeSourcePicker]  = useState(false);
-      const [recipeSearching,     setRecipeSearching]     = useState(false);
-      const [recipeResults,       setRecipeResults]       = useState(null);
-      const [recipeFetching,      setRecipeFetching]      = useState(false);
+      const [recipeForceEntry,    setRecipeForceEntry]    = useState(false);
+      const [recipeUrlInput,      setRecipeUrlInput]      = useState("");
+      const [recipeImages,        setRecipeImages]        = useState([]);
+      const [recipeExtracting,    setRecipeExtracting]    = useState(false);
       const [recipePendingServings, setRecipePendingServings] = useState(null);
       const [recipeError,         setRecipeError]         = useState("");
       const [buildingShoppingList, setBuildingShoppingList] = useState(false);
@@ -2860,6 +2852,8 @@
       const [duplicateNameInput, setDuplicateNameInput] = useState("");
       const [duplicating, setDuplicating] = useState(false);
       const itemsListenerRef = useRef(null); // { ref, cb } for the live items subscription below
+      const recipeGalleryInputRef = useRef(null);
+      const recipeCameraInputRef  = useRef(null);
 
 
       const loadList = function() {
@@ -3236,71 +3230,68 @@
       const moveNoteDown = function(id) { moveNoteItem(id,  1); };
 
       // ─── Recipes (menus feature) ────────────────────────────────────────
-      // Which site to search is a single household-wide default (see
-      // recipeSourceDefault below) rather than per-user or per-list, so
-      // whoever picks it first sets it for everyone until someone changes it.
+      // No in-app search — every site's own search box turned out to have
+      // some undocumented way of silently breaking (JS-only results, 404s on
+      // real multi-word queries, a "recommended posts" widget masquerading as
+      // results...). Reading ONE page the user already found themselves
+      // (by pasting its link, or a photo of it) proved reliable every time,
+      // so that's the whole feature now: paste a link, or attach photo(s).
       const closeRecipeFlow = () => {
         setRecipeItemId(null);
-        setRecipeResults(null);
+        setRecipeForceEntry(false);
+        setRecipeUrlInput("");
+        setRecipeImages([]);
         setRecipeError("");
         setRecipePendingServings(null);
       };
 
-      const runRecipeSearch = (query, source) => {
-        setRecipeSearching(true);
-        setRecipeResults(null);
-        setRecipeError("");
-        fnsIL.httpsCallable("searchRecipes")({ query: query, source: source }).then(function(res) {
-          setRecipeSearching(false);
-          setRecipeResults((res.data && res.data.results) || []);
-        }, function(err) {
-          setRecipeSearching(false);
-          setRecipeResults([]);
-          setRecipeError("החיפוש נכשל: " + (err && err.message || "?"));
-        });
-      };
-
-      // A previously-saved default can point at a source that's since been
-      // dropped (e.g. וואלה אוכל, removed after its search turned out to be
-      // broken for real multi-word dish names) — treat that the same as no
-      // default rather than erroring against the server.
-      const isValidRecipeSource = (id) => RECIPE_SOURCES.some(function(s) { return s.id === id; });
-
       const openRecipeFor = (item) => {
         setRecipeItemId(item.id);
-        setRecipeResults(null);
+        setRecipeForceEntry(false);
+        setRecipeUrlInput("");
+        setRecipeImages([]);
         setRecipeError("");
-        if (item.recipe) return; // has a saved recipe already — render straight into view mode
-        if (isValidRecipeSource(recipeSourceDefault)) { runRecipeSearch(item.name, recipeSourceDefault); return; }
-        db.ref("recipeSourceDefault").once("value").then(function(snap) {
-          var src = snap.val();
-          if (isValidRecipeSource(src)) { setRecipeSourceDefault(src); runRecipeSearch(item.name, src); }
-          else { setRecipeSourcePicker(true); }
+      };
+
+      const getAiSettings = () => db.ref("users/" + user.uid + "/ai").once("value").then(function(snap) { return snap.val() || {}; });
+
+      const handleExtractedRecipe = (data) => {
+        if (!data.servings) {
+          setRecipePendingServings({ recipe: data, servingsInput: "" });
+        } else {
+          saveRecipeToItem(data);
+        }
+      };
+
+      const extractFromUrl = () => {
+        var url = recipeUrlInput.trim();
+        if (!url || recipeExtracting) return;
+        setRecipeExtracting(true);
+        setRecipeError("");
+        getAiSettings().then(function(ai) {
+          return fnsIL.httpsCallable("extractRecipeFromUrl")(Object.assign({ url: url }, ai));
+        }).then(function(res) {
+          setRecipeExtracting(false);
+          handleExtractedRecipe(res.data);
+        }, function(err) {
+          setRecipeExtracting(false);
+          setRecipeError((err && err.message) || "החילוץ נכשל");
         });
       };
 
-      const pickRecipeSource = (sourceId) => {
-        setRecipeSourceDefault(sourceId);
-        setRecipeSourcePicker(false);
-        db.ref("recipeSourceDefault").set(sourceId);
-        var item = items.find(function(i) { return i.id === recipeItemId; });
-        if (item) runRecipeSearch(item.name, sourceId);
-      };
-
-      const pickRecipeResult = (result) => {
-        setRecipeFetching(true);
+      const extractFromImages = () => {
+        if (!recipeImages.length || recipeExtracting) return;
+        setRecipeExtracting(true);
         setRecipeError("");
-        fnsIL.httpsCallable("fetchRecipe")({ url: result.url }).then(function(res) {
-          setRecipeFetching(false);
-          var data = res.data;
-          if (!data.servings) {
-            setRecipePendingServings({ recipe: data, servingsInput: "" });
-          } else {
-            saveRecipeToItem(data);
-          }
+        var images = recipeImages.map(function(i) { return { data: i.base64, mimeType: i.mimeType }; });
+        getAiSettings().then(function(ai) {
+          return fnsIL.httpsCallable("extractRecipeFromImages")(Object.assign({ images: images }, ai));
+        }).then(function(res) {
+          setRecipeExtracting(false);
+          handleExtractedRecipe(res.data);
         }, function(err) {
-          setRecipeFetching(false);
-          setRecipeError((err && err.message) || "לא ניתן היה לטעון את המתכון");
+          setRecipeExtracting(false);
+          setRecipeError((err && err.message) || "החילוץ נכשל");
         });
       };
 
@@ -3314,8 +3305,8 @@
       const saveRecipeToItem = (recipeData) => {
         if (!recipeItemId) return;
         var toSave = {
-          source: recipeSourceDefault,
-          url: recipeData.url,
+          source: recipeData.url ? "link" : "image",
+          url: recipeData.url || null,
           title: recipeData.title || "",
           image: recipeData.image || "",
           servings: recipeData.servings,
@@ -3334,6 +3325,47 @@
           setItems(function(prev) { return prev.map(function(i) { return i.id === itemId ? Object.assign({}, i, { recipe: null }) : i; }); });
           showToast("המתכון הוסר");
         });
+      };
+
+      // Every picked/shot photo is downscaled to at most 1600px on its long
+      // edge and re-encoded as JPEG before it ever leaves the device — a
+      // full-resolution phone photo would be several MB and cost real money
+      // for no benefit, since that much detail buys nothing extra for the AI
+      // reading a printed recipe.
+      const RECIPE_IMAGE_MAX_DIM = 1600;
+      function resizeImageFile(file) {
+        return new Promise(function(resolve, reject) {
+          var reader = new FileReader();
+          reader.onload = function() {
+            var img = new Image();
+            img.onload = function() {
+              var scale = Math.min(1, RECIPE_IMAGE_MAX_DIM / Math.max(img.width, img.height));
+              var w = Math.max(1, Math.round(img.width * scale));
+              var h = Math.max(1, Math.round(img.height * scale));
+              var canvas = document.createElement("canvas");
+              canvas.width = w; canvas.height = h;
+              canvas.getContext("2d").drawImage(img, 0, 0, w, h);
+              var dataUrl = canvas.toDataURL("image/jpeg", 0.82);
+              resolve({ preview: dataUrl, base64: dataUrl.split(",")[1], mimeType: "image/jpeg" });
+            };
+            img.onerror = function() { reject(new Error("תמונה לא תקינה")); };
+            img.src = reader.result;
+          };
+          reader.onerror = function() { reject(new Error("קריאת הקובץ נכשלה")); };
+          reader.readAsDataURL(file);
+        });
+      }
+
+      const MAX_RECIPE_IMAGES = 5;
+      const addRecipeImages = (fileList) => {
+        var files = Array.prototype.slice.call(fileList || []);
+        if (!files.length) return;
+        Promise.all(files.map(resizeImageFile)).then(function(results) {
+          setRecipeImages(function(prev) { return prev.concat(results).slice(0, MAX_RECIPE_IMAGES); });
+        }, function(err) { showToast("שגיאה בטעינת תמונה: " + (err && err.message || "?")); });
+      };
+      const removeRecipeImage = (idx) => {
+        setRecipeImages(function(prev) { return prev.filter(function(_, i) { return i !== idx; }); });
       };
 
       // Rebuilds the linked shopping list from scratch every time — simplest
@@ -3868,33 +3900,17 @@
             </Modal>
           )}
 
-          {recipeSourcePicker && (
-            <Modal onClose={function() { setRecipeSourcePicker(false); if (!recipeSourceDefault) setRecipeItemId(null); }}>
-              <h3 className="text-lg font-bold text-center mb-1">בחירת מקור מתכונים</h3>
-              <p className="text-xs text-gray-400 text-center mb-4">הבחירה נשמרת לכל המשפחה, וניתן לשנות אותה בכל עת.</p>
-              <div className="space-y-2">
-                {RECIPE_SOURCES.map(function(s) {
-                  return (
-                    <button key={s.id} onClick={function() { pickRecipeSource(s.id); }}
-                      className={"w-full text-right px-4 py-3 rounded-xl font-medium " + (recipeSourceDefault === s.id ? "bg-blue-50 border border-blue-400 text-blue-700" : "bg-gray-50 hover:bg-gray-100 text-gray-700")}>
-                      {s.label}
-                    </button>
-                  );
-                })}
-              </div>
-            </Modal>
-          )}
-
-          {recipeItemId && !recipeSourcePicker && (function() {
+          {recipeItemId && (function() {
             var recItem = items.find(function(i) { return i.id === recipeItemId; });
             if (!recItem) return null;
-            var viewingSaved = recItem.recipe && recipeResults === null && !recipeSearching && !recipeFetching && !recipePendingServings;
+            var viewingSaved = recItem.recipe && !recipeForceEntry && !recipePendingServings;
             if (viewingSaved) {
               var r = recItem.recipe;
               return (
                 <Modal onClose={closeRecipeFlow}>
                   <h3 className="text-lg font-bold text-center mb-1">{r.title || recItem.name}</h3>
-                  <p className="text-xs text-gray-400 text-center mb-4">{r.servings ? r.servings + " מנות" : ""}</p>
+                  <p className="text-xs text-gray-400 text-center mb-1">{r.servings ? r.servings + " מנות" : ""}</p>
+                  {r.url && <a href={r.url} target="_blank" rel="noopener noreferrer" className="block text-xs text-blue-500 text-center mb-3 truncate" dir="ltr">{r.url}</a>}
                   {r.image && <img src={r.image} className="w-full h-40 object-cover rounded-xl mb-3" />}
                   <div className="mb-4">
                     <p className="text-xs text-gray-400 mb-1 text-right font-semibold">מרכיבים</p>
@@ -3909,7 +3925,7 @@
                     </ol>
                   </div>
                   <div className="flex gap-2">
-                    <button onClick={function() { var src = recipeSourceDefault || r.source; setRecipeSourceDefault(src); runRecipeSearch(recItem.name, src); }}
+                    <button onClick={function() { setRecipeForceEntry(true); setRecipeUrlInput(""); setRecipeImages([]); setRecipeError(""); }}
                       className="flex-1 bg-gray-100 text-gray-700 py-3 rounded-xl font-medium text-sm">בחר מתכון אחר</button>
                     <button onClick={function() { removeRecipeFromItem(recItem.id); closeRecipeFlow(); }}
                       className="flex-1 bg-red-50 text-red-500 py-3 rounded-xl font-medium text-sm">הסר מתכון</button>
@@ -3919,14 +3935,7 @@
             }
             return (
               <Modal onClose={closeRecipeFlow}>
-                <h3 className="text-lg font-bold text-center mb-1">מתכון ל{recItem.name}</h3>
-                {recipeSourceDefault && !recipePendingServings && (
-                  <p className="text-xs text-gray-400 text-center mb-3">
-                    מקור: {(RECIPE_SOURCES.find(function(s) { return s.id === recipeSourceDefault; }) || {}).label}
-                    {" "}
-                    <button onClick={function() { setRecipeSourcePicker(true); }} className="text-blue-500">(שנה)</button>
-                  </p>
-                )}
+                <h3 className="text-lg font-bold text-center mb-4">מתכון ל{recItem.name}</h3>
                 {recipePendingServings ? (
                   <div>
                     <p className="text-sm text-gray-600 text-center mb-3">כמה מנות המתכון הזה מכין?</p>
@@ -3936,23 +3945,60 @@
                     <button onClick={confirmPendingServings} disabled={!recipePendingServings.servingsInput}
                       className="w-full bg-blue-600 text-white py-3 rounded-xl font-semibold disabled:opacity-40">שמור מתכון</button>
                   </div>
-                ) : recipeFetching || recipeSearching ? (
-                  <div className="flex justify-center py-8"><Spinner large /></div>
-                ) : recipeError ? (
-                  <p className="text-sm text-red-500 text-center py-6">{recipeError}</p>
-                ) : recipeResults && recipeResults.length === 0 ? (
-                  <p className="text-sm text-gray-400 text-center py-6">לא נמצאו מתכונים, נסה מקור אחר</p>
+                ) : recipeExtracting ? (
+                  <div className="flex flex-col items-center gap-3 py-6">
+                    <Spinner large />
+                    <p className="text-sm text-gray-500">קורא את המתכון...</p>
+                  </div>
                 ) : (
-                  <div className="space-y-2 max-h-96 overflow-y-auto">
-                    {(recipeResults || []).map(function(res, i) {
-                      return (
-                        <button key={i} onClick={function() { pickRecipeResult(res); }}
-                          className="w-full flex items-center gap-3 px-3 py-2 rounded-xl border border-gray-200 hover:bg-gray-50 text-right">
-                          {res.image ? <img src={res.image} className="w-14 h-14 rounded-lg object-cover flex-shrink-0" /> : <div className="w-14 h-14 rounded-lg bg-gray-100 flex-shrink-0" />}
-                          <span className="text-sm font-medium text-gray-700 flex-1 min-w-0">{res.title}</span>
-                        </button>
-                      );
-                    })}
+                  <div>
+                    {recipeError && <p className="text-sm text-red-500 text-center mb-3">{recipeError}</p>}
+
+                    <input value={recipeUrlInput} onChange={function(e) { setRecipeUrlInput(e.target.value); }}
+                      onKeyDown={function(e) { if (e.key === "Enter") extractFromUrl(); }}
+                      placeholder="הדבק קישור למתכון" dir="ltr"
+                      className="w-full border border-gray-200 rounded-xl px-4 py-3 text-left focus:outline-none focus:border-blue-400 mb-2" />
+                    <button onClick={extractFromUrl} disabled={!recipeUrlInput.trim()}
+                      className="w-full bg-blue-600 text-white py-3 rounded-xl font-semibold disabled:opacity-40">שלוף מתכון מהקישור</button>
+
+                    <div className="flex items-center gap-2 my-4">
+                      <div className="flex-1 h-px bg-gray-200" /><span className="text-xs text-gray-400">או צלם / העלה את המתכון</span><div className="flex-1 h-px bg-gray-200" />
+                    </div>
+
+                    {recipeImages.length > 0 && (
+                      <div className="flex flex-wrap gap-2 mb-3">
+                        {recipeImages.map(function(img, i) {
+                          return (
+                            <div key={i} className="relative w-16 h-16 flex-shrink-0">
+                              <img src={img.preview} className="w-16 h-16 object-cover rounded-lg border border-gray-200" />
+                              <button onClick={function() { removeRecipeImage(i); }}
+                                className="absolute -top-1.5 -left-1.5 w-5 h-5 bg-white border border-gray-300 rounded-full text-xs text-gray-500 flex items-center justify-center">✕</button>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+
+                    <div className="flex gap-2">
+                      <button onClick={function() { recipeGalleryInputRef.current && recipeGalleryInputRef.current.click(); }}
+                        className="flex-1 bg-gray-50 border border-gray-200 text-gray-700 py-3 rounded-xl font-medium text-sm flex items-center justify-center gap-1.5">
+                        <span>🖼️</span><span>העלה תמונה</span>
+                      </button>
+                      <button onClick={function() { recipeCameraInputRef.current && recipeCameraInputRef.current.click(); }}
+                        className="flex-1 bg-gray-50 border border-gray-200 text-gray-700 py-3 rounded-xl font-medium text-sm flex items-center justify-center gap-1.5">
+                        <span>📷</span><span>צלם תמונה</span>
+                      </button>
+                    </div>
+                    {recipeImages.length > 0 && (
+                      <button onClick={extractFromImages} className="w-full bg-blue-600 text-white py-3 rounded-xl font-semibold mt-2">
+                        שלוף מתכון מהתמונות ({recipeImages.length})
+                      </button>
+                    )}
+
+                    <input ref={recipeGalleryInputRef} type="file" accept="image/*" multiple style={{display:"none"}}
+                      onChange={function(e) { addRecipeImages(e.target.files); e.target.value = ""; }} />
+                    <input ref={recipeCameraInputRef} type="file" accept="image/*" capture="environment" style={{display:"none"}}
+                      onChange={function(e) { addRecipeImages(e.target.files); e.target.value = ""; }} />
                   </div>
                 )}
               </Modal>

@@ -660,6 +660,21 @@ function recipeExtractionPrompt(sourceDescription) {
 - אם אין מתכון אמיתי (עם מרכיבים ואופן הכנה) במקור, החזר: {"error": "not_a_recipe"}`;
 }
 
+// Some sites' structured data still carries raw HTML leftovers (a literal
+// "&nbsp;" as text, a stray tag) straight through the JSON-LD field — decode
+// the common ones and strip any tags rather than showing that verbatim.
+function decodeHtmlEntities(str) {
+  return String(str || '')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/&amp;/gi, '&')
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;|&apos;/gi, "'")
+    .replace(/&deg;/gi, '°')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
 function parseRecipeAiResponse(text) {
   const cleaned = String(text || '').trim().replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/, '').trim();
   let data;
@@ -670,11 +685,42 @@ function parseRecipeAiResponse(text) {
     try { data = JSON.parse(match[0]); } catch (e2) { throw new HttpsError('not-found', 'לא זוהה מתכון בתוכן שסופק'); }
   }
   if (data.error) throw new HttpsError('not-found', 'לא זוהה מתכון בתוכן שסופק — נסה קישור או תמונה אחרת');
-  const ingredients = Array.isArray(data.ingredients) ? data.ingredients.map((s) => String(s).trim()).filter(Boolean) : [];
+  const ingredients = Array.isArray(data.ingredients) ? data.ingredients.map((s) => decodeHtmlEntities(s)).filter(Boolean) : [];
   if (!ingredients.length) throw new HttpsError('not-found', 'לא זוהה מתכון בתוכן שסופק — נסה קישור או תמונה אחרת');
-  const steps = Array.isArray(data.steps) ? data.steps.map((s) => String(s).trim()).filter(Boolean) : [];
+  const steps = Array.isArray(data.steps) ? data.steps.map((s) => decodeHtmlEntities(s)).filter(Boolean) : [];
   const servings = (typeof data.servings === 'number' && data.servings > 0) ? Math.round(data.servings) : null;
-  return { title: (data.title || '').trim(), servings, ingredients, steps };
+  return { title: decodeHtmlEntities(data.title || ''), servings, ingredients, steps };
+}
+
+// If a site's own structured data dumps the whole method as one unbroken
+// paragraph (no per-step markup to begin with — normalizeInstructions has
+// nothing to split on), the only way to make it "step 1, step 2, ..." is to
+// have AI re-break it. Only used for that one case, not the common one
+// (most sites already provide a real step array).
+function stepsReformatPrompt(text) {
+  return `להלן טקסט אופן הכנה גולמי של מתכון, כפי שמופיע במקור (עשוי לכלול שאריות עיצוב כמו &nbsp; או קישורי HTML):
+
+${text}
+
+פצל אותו לשלבי הכנה ברורים ונפרדים. החזר אך ורק JSON תקין (ללא markdown, ללא הסברים) בפורמט:
+{"steps": ["שלב 1", "שלב 2"]}
+
+כללים:
+- כל שלב הוא פעולה אחת או קבוצת פעולות רציפות קשורות.
+- נקה שאריות HTML וקידודים כמו &nbsp;.
+- אל תוסיף מידע שלא היה במקור — רק ארגן וחלק לשלבים קריאים.`;
+}
+
+function parseStepsAiResponse(text) {
+  const cleaned = String(text || '').trim().replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/, '').trim();
+  try {
+    const data = JSON.parse(cleaned);
+    if (Array.isArray(data.steps)) {
+      const steps = data.steps.map((s) => decodeHtmlEntities(s)).filter(Boolean);
+      if (steps.length) return steps;
+    }
+  } catch (e) { /* fall through to null — caller keeps the original unsplit text */ }
+  return null;
 }
 
 exports.extractRecipeFromUrl = onCall(
@@ -703,12 +749,25 @@ exports.extractRecipeFromUrl = onCall(
     const objects = extractJsonLdObjects(html);
     const found = findJsonLdType(objects, 'Recipe');
     if (found && Array.isArray(found.recipeIngredient) && found.recipeIngredient.length) {
+      let steps = normalizeInstructions(found.recipeInstructions).map((s) => decodeHtmlEntities(s)).filter(Boolean);
+      // Some sites' own data has no per-step structure at all — one long
+      // paragraph with nothing to split on. Only worth an AI call for that
+      // specific case (single very long "step"), not the common one.
+      if (steps.length === 1 && steps[0].length > 220) {
+        try {
+          const ai = makeAI(request.data);
+          const { text, usage } = await callAI(ai, stepsReformatPrompt(steps[0]), 1200);
+          await recordCost(request, ai, usage.input_tokens, usage.output_tokens);
+          const reformatted = parseStepsAiResponse(text);
+          if (reformatted) steps = reformatted;
+        } catch (e) { /* keep the single unsplit paragraph rather than fail the whole extraction */ }
+      }
       return {
-        title: (found.name || '').trim(),
+        title: decodeHtmlEntities(found.name || ''),
         image: recipeImageUrl(found.image),
         servings: parseServings(found.recipeYield),
-        ingredients: found.recipeIngredient.map((s) => String(s).trim()).filter(Boolean),
-        steps: normalizeInstructions(found.recipeInstructions),
+        ingredients: found.recipeIngredient.map((s) => decodeHtmlEntities(s)).filter(Boolean),
+        steps,
         url: parsed.toString(),
       };
     }

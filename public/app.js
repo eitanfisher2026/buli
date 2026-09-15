@@ -1,6 +1,6 @@
     const { useState, useEffect, useRef } = React;
 
-    const VERSION = "v6.96";
+    const VERSION = "v6.98";
 
     // ── CONFIG ────────────────────────────────────────────────────────────────────
     const FIREBASE_CONFIG = {
@@ -193,14 +193,21 @@
       "ראשים": "ראש", "ראש": "ראש",
     };
     var UNIT_PATTERN = Object.keys(UNIT_CANON).sort(function(a, b) { return b.length - a.length; }).join("|");
-    var INGREDIENT_RE = new RegExp("^(\\d+\\/\\d+|\\d+(?:[.,]\\d+)?(?:\\s*-\\s*\\d+(?:[.,]\\d+)?)?|½|¼|¾)\\s*(" + UNIT_PATTERN + ")?\\s*(.*)$");
+    // Hebrew recipes very often spell fractions out as words ("חצי כוס" —
+    // half a cup) rather than "1/2" or "½" — without these, a line like this
+    // fell through unparsed entirely (quantity:null), which both blocked
+    // scaling AND blocked merging with the same ingredient in another recipe.
+    var WORD_FRACTIONS = { "שלושת רבעי": 0.75, "שלושה רבעים": 0.75, "חצי": 0.5, "רבע": 0.25, "שליש": 1/3 };
+    var WORD_FRACTION_PATTERN = Object.keys(WORD_FRACTIONS).sort(function(a, b) { return b.length - a.length; }).join("|");
+    var INGREDIENT_RE = new RegExp("^(" + WORD_FRACTION_PATTERN + "|\\d+\\/\\d+|\\d+(?:[.,]\\d+)?(?:\\s*-\\s*\\d+(?:[.,]\\d+)?)?|½|¼|¾)\\s*(" + UNIT_PATTERN + ")?\\s*(.*)$");
     function parseIngredientLine(raw) {
       var s = String(raw || "").trim();
       var m = s.match(INGREDIENT_RE);
       if (!m || !m[3] || !m[3].trim()) return { quantity: null, unit: null, name: s };
       var qtyRaw = m[1];
       var qty;
-      if (qtyRaw === "½") qty = 0.5;
+      if (WORD_FRACTIONS.hasOwnProperty(qtyRaw)) qty = WORD_FRACTIONS[qtyRaw];
+      else if (qtyRaw === "½") qty = 0.5;
       else if (qtyRaw === "¼") qty = 0.25;
       else if (qtyRaw === "¾") qty = 0.75;
       else if (qtyRaw.indexOf("/") !== -1) { var fr = qtyRaw.split("/"); qty = parseFloat(fr[0]) / parseFloat(fr[1]); }
@@ -209,6 +216,30 @@
       if (isNaN(qty)) return { quantity: null, unit: null, name: s };
       var unit = m[2] ? (UNIT_CANON[m[2]] || m[2]) : null;
       return { quantity: qty, unit: unit, name: m[3].trim() };
+    }
+
+    // Two recipes rarely describe the same ingredient identically — "שום,
+    // כתושות" vs "שום כתושות או שלמות" are both just garlic, but differ in
+    // prep-state wording that a shopping list doesn't need anyway (you buy
+    // garlic, not "crushed garlic"). Stripping common descriptor words before
+    // merging lets these collapse into one line instead of staying separate.
+    var INGREDIENT_DESCRIPTOR_WORDS = {
+      "כתושות":1,"כתושה":1,"כתוש":1,"כתושים":1,
+      "שלמות":1,"שלמה":1,"שלם":1,"שלמים":1,
+      "קצוצה":1,"קצוץ":1,"קצוצות":1,"קצוצים":1,
+      "פרוסה":1,"פרוס":1,"פרוסות":1,"פרוסים":1,
+      "גרוסה":1,"גרוס":1,"גרוסות":1,"גרוסים":1,
+      "מגוררת":1,"מגורר":1,"מגוררות":1,"מגוררים":1,
+      "טרייה":1,"טרי":1,"טריות":1,"טריים":1,
+      "גדולה":1,"גדול":1,"גדולות":1,"גדולים":1,
+      "בינונית":1,"בינוני":1,"בינוניות":1,"בינוניים":1,
+      "קטנה":1,"קטן":1,"קטנות":1,"קטנים":1,
+      "או":1,
+    };
+    function coreIngredientName(name) {
+      var words = String(name || "").replace(/,/g, " ").split(/\s+/).filter(Boolean);
+      var core = words.filter(function(w) { return !INGREDIENT_DESCRIPTOR_WORDS[w]; });
+      return (core.length ? core.join(" ") : name).trim() || name;
     }
 
     // Same idea for HomeScreen's own list-of-lists — it also unmounts every
@@ -3392,18 +3423,25 @@
         var withRecipes = items.filter(function(i) { return i.done && i.recipe && i.recipe.ingredients && i.recipe.ingredients.length; });
         var diners = list.dinersCount || 12;
         var merged = {};
+        var unmergedSeen = {};
         var unmerged = [];
         withRecipes.forEach(function(dish) {
           var target = dish.recipe.targetServings || diners;
           var scale = target / (dish.recipe.servings || target);
           dish.recipe.ingredients.forEach(function(line) {
             var parsed = parseIngredientLine(line);
+            var coreName = coreIngredientName(parsed.name);
             if (parsed.quantity != null && parsed.unit) {
-              var key = parsed.name.trim() + "|" + parsed.unit;
-              if (!merged[key]) merged[key] = { name: parsed.name, unit: parsed.unit, quantity: 0 };
+              var key = coreName + "|" + parsed.unit;
+              if (!merged[key]) merged[key] = { name: coreName, unit: parsed.unit, quantity: 0 };
               merged[key].quantity += parsed.quantity * scale;
             } else {
-              unmerged.push({ name: parsed.name, unit: parsed.unit, quantity: parsed.quantity != null ? Math.round(parsed.quantity * scale * 10) / 10 : null });
+              // No quantity to sum, but the same "salt" or "pepper to taste"
+              // line still shouldn't repeat once per dish that mentions it.
+              var uKey = coreName + "|" + (parsed.unit || "");
+              if (unmergedSeen[uKey]) return;
+              unmergedSeen[uKey] = true;
+              unmerged.push({ name: coreName, unit: parsed.unit, quantity: parsed.quantity != null ? Math.round(parsed.quantity * scale * 10) / 10 : null });
             }
           });
         });

@@ -1,6 +1,6 @@
     const { useState, useEffect, useRef } = React;
 
-    const VERSION = "v7.00";
+    const VERSION = "v7.01";
 
     // ── CONFIG ────────────────────────────────────────────────────────────────────
     const FIREBASE_CONFIG = {
@@ -156,15 +156,33 @@
     var TAB_INFO = {
       shopping: {
         title: "קניות",
-        body: "כאן מנהלים את רשימות הקניות של המשפחה. אפשר להוסיף פריטים בהקלדה חופשית או בהקלטת קול, והאפליקציה מסדרת אותם לפי קטגוריות כדי שיהיה קל למצוא אותם בסופר. אפשר לשתף כל רשימה עם בני המשפחה כדי שכולם יראו אותה ויוכלו לעדכן אותה יחד.",
+        bullets: [
+          ["+ רשימה חדשה", "פותח רשימת קניות נפרדת. אפשר לנהל כמה רשימות במקביל — למשל אחת לסופר ואחת לירקן."],
+          ["הוספת פריטים", "בהקלדה חופשית או בהקלטת קול, כמה פריטים בבת אחת באותו משפט. האפליקציה מפרקת את זה לפריטים נפרדים וממיינת כל אחד לקטגוריה המתאימה."],
+          ["סימון בעגלה", "לחיצה על התיבה ליד פריט מסמנת שהוא כבר בעגלה, בלי למחוק אותו מהרשימה — נוח לסמן תוך כדי הקנייה עצמה."],
+          ["מסננים (🎚️)", "להציג רק מה שעוד פתוח או רק מה שכבר בעגלה, רק את מה שהוספתי בעצמי, או לסדר את הרשימה לפי סדר המדפים בחנות מסוימת."],
+          ["שיתוף רשימה", "מאותו מסך מסננים, סימון בן משפחה נותן לו גישה מיידית לאותה רשימה — הוא רואה אותה ויכול לעדכן אותה בעצמו."],
+          ["תפריט הפעולות (☰)", "שינוי שם לרשימה, שכפול שלה, העתקת פריטים לרשימה אחרת, ומחיקה."],
+        ],
       },
       notes: {
         title: "תפריטים",
-        body: "כאן מתכננים ארוחות וארועים. לכל תפריט אפשר להוסיף מנות, לצרף לכל מנה מתכון (מקישור, מתמונה שצולמה או שהועלתה), ולסמן אילו מנות מכינים הפעם. בסיום, אפשר לבקש רשימת קניות מרוכזת עם כל המרכיבים הדרושים, מותאמת אוטומטית למספר הסועדים.",
+        bullets: [
+          ["+ תפריט חדש", "יוצר תפריט לארוחה או לאירוע, עם תאריך ומספר הסועדים המשוער."],
+          ["הוספת מנות", "כל מנה היא שורה בתפריט, עם אפשרות להוסיף לה הערה חופשית."],
+          ["צירוף מתכון (🍳)", "שלוש דרכים לצרף מתכון למנה: הדבקת קישור, העלאת תמונה, או צילום ישיר במצלמה. האפליקציה קוראת את זה ומוציאה משם את המרכיבים ואת אופן ההכנה, כולל כמה מנות המתכון מכין."],
+          ["עריכת מתכון", "אחרי שהמתכון צורף (📖), אפשר לתקן כמה מנות הוא מכין בפועל, ובנפרד — לכמה אנשים מכינים אותו הפעם (בברירת מחדל, מספר הסועדים של התפריט)."],
+          ["סימון מנה", "התיבה ליד כל מנה מסמנת שהיא אכן מבושלת הפעם — רק מנות מסומנות עם מתכון נכנסות לרשימת הקניות."],
+          ["בנה רשימת קניות", "מרכז את המרכיבים מכל המנות המסומנות, מתאים את הכמויות למספר האנשים שהוגדר לכל מנה, ומאחד מרכיבים זהים בין מנות שונות. אפשר לעדכן רשימה קיימת מארוחה קודמת או להתחיל רשימה חדשה."],
+        ],
       },
       tasks: {
         title: "מטלות",
-        body: "כאן שומרים על סדר בדברים שצריך לטפל בהם בבית — לא קשור לקניות. כל אחד במשפחה יכול להוסיף מטלה, לסמן שהיא בוצעה, ולראות מה עוד פתוח.",
+        bullets: [
+          ["+ מטלה חדשה", "מוסיף מטלה אישית עם שם, הערה חופשית, ותאריך יעד אם יש."],
+          ["סימון בוצע", "לחיצה על התיבה ליד המטלה מסמנת שהיא הושלמה, בלי למחוק אותה."],
+          ["עריכה", "לחיצה על מטלה פותחת אותה לעריכת השם, ההערה או התאריך, ומאפשרת גם למחוק אותה."],
+        ],
       },
     };
 
@@ -1235,14 +1253,6 @@
         }, function() { creatingListRef.current = false; showToast("שגיאה ביצירת התפריט"); });
       };
 
-      const markListDone = (id) => {
-        var now = Date.now();
-        var newLists = (lists || []).map(function(l) { return l.id === id ? Object.assign({}, l, { done: true, doneAt: now }) : l; });
-        updateLists(newLists);
-        setMenuId(null); showToast("הרשימה סומנה כהושלמה");
-        db.ref("lists/" + id).update({ done: true, doneAt: now });
-      };
-
       const restoreList = (id) => {
         updateLists(function(prev) { return prev ? prev.map(function(l) { return l.id === id ? Object.assign({}, l, { done: false, doneAt: null }) : l; }) : []; });
         setMenuId(null);
@@ -1488,7 +1498,6 @@
         onOpen: function() { onOpenList(l.id, l.name); },
         menuOpen: menuId === l.id,
         onMenuToggle: function(e) { e.stopPropagation(); setMenuId(menuId === l.id ? null : l.id); },
-        onMarkDone:  function() { markListDone(l.id); },
         onRestore:   function() { restoreList(l.id); },
         onDelete:    function() { deleteList(l.id); },
         onEdit:      function() { setMenuId(null); setEditingNoteInstance({ id: l.id, name: l.name || "", date: l.dinnerDate || nextFriday(l.createdAt || Date.now()), dinersCount: l.dinersCount || parseInt(localStorage.getItem("buli_last_diners_count"), 10) || 12, note: l.note || "" }); }
@@ -1536,7 +1545,7 @@
                 <div className="flex items-center justify-between gap-2">
                   <button onClick={e => { e.stopPropagation(); quickCreate(); }} className="bg-blue-600 text-white text-sm font-medium px-4 py-2 rounded-full shadow">+ רשימה חדשה</button>
                   <button onClick={e => { e.stopPropagation(); setShowTabInfo("shopping"); }} title="מה זה הטאב הזה?"
-                    className="w-7 h-7 flex items-center justify-center rounded-full text-gray-400 border border-gray-200 text-sm flex-shrink-0">ⓘ</button>
+                    className="w-7 h-7 flex items-center justify-center rounded-full text-gray-600 border-2 border-gray-400 text-base font-bold flex-shrink-0">ⓘ</button>
                 </div>
                 {activeShopping.length === 0
                   ? <p className="text-center text-gray-300 text-sm py-8">אין רשימות קניות — לחץ "+ רשימה חדשה"</p>
@@ -1559,7 +1568,7 @@
                 <div className="flex items-center justify-between">
                   <button onClick={e => { e.stopPropagation(); quickCreateNote(); }} className="bg-blue-600 text-white text-sm font-medium px-4 py-2 rounded-full shadow">+ תפריט חדש</button>
                   <button onClick={e => { e.stopPropagation(); setShowTabInfo("notes"); }} title="מה זה הטאב הזה?"
-                    className="w-7 h-7 flex items-center justify-center rounded-full text-gray-400 border border-gray-200 text-sm flex-shrink-0">ⓘ</button>
+                    className="w-7 h-7 flex items-center justify-center rounded-full text-gray-600 border-2 border-gray-400 text-base font-bold flex-shrink-0">ⓘ</button>
                 </div>
                 {activeNotes.length === 0
                   ? <p className="text-center text-gray-300 text-sm py-8">אין תפריטים — לחץ "+ תפריט חדש"</p>
@@ -1582,7 +1591,7 @@
                 <div className="flex items-center justify-between mb-3">
                   <button onClick={e => { e.stopPropagation(); onAddTask(); }} className="bg-blue-600 text-white text-sm font-medium px-4 py-2 rounded-full shadow">+ מטלה חדשה</button>
                   <button onClick={e => { e.stopPropagation(); setShowTabInfo("tasks"); }} title="מה זה הטאב הזה?"
-                    className="w-7 h-7 flex items-center justify-center rounded-full text-gray-400 border border-gray-200 text-sm flex-shrink-0">ⓘ</button>
+                    className="w-7 h-7 flex items-center justify-center rounded-full text-gray-600 border-2 border-gray-400 text-base font-bold flex-shrink-0">ⓘ</button>
                 </div>
                 <div className="bg-white rounded-2xl border border-gray-100 shadow-sm px-4 py-1">
                   {pendingTasks.length === 0 && doneTasks.length === 0 ? (
@@ -1612,8 +1621,17 @@
 
           {showTabInfo && (
             <Modal onClose={() => setShowTabInfo(null)}>
-              <h3 className="text-lg font-bold text-center mb-3">{TAB_INFO[showTabInfo].title}</h3>
-              <p className="text-sm text-gray-600 leading-relaxed text-right">{TAB_INFO[showTabInfo].body}</p>
+              <h3 className="text-lg font-bold text-center mb-4">{TAB_INFO[showTabInfo].title}</h3>
+              <ul className="space-y-3">
+                {TAB_INFO[showTabInfo].bullets.map(function(b, i) {
+                  return (
+                    <li key={i} className="text-right">
+                      <span className="text-sm font-semibold text-gray-800 block">{b[0]}</span>
+                      <span className="text-sm text-gray-600 leading-relaxed">{b[1]}</span>
+                    </li>
+                  );
+                })}
+              </ul>
             </Modal>
           )}
 
@@ -2317,7 +2335,7 @@
       );
     }
 
-    function ListCard({ list, onOpen, menuOpen, onMenuToggle, onMarkDone, onRestore, onDelete, isDone, onEdit }) {
+    function ListCard({ list, onOpen, menuOpen, onMenuToggle, onRestore, onDelete, isDone, onEdit }) {
       var dateStr = list.dinnerDate
         ? formatDinnerDate(list.dinnerDate)
         : (list.createdAt ? (function(){ var d = new Date(list.createdAt); return d.getDate()+"/"+(d.getMonth()+1)+"/"+d.getFullYear(); })() : "");
@@ -2393,11 +2411,6 @@
               {onEdit && (
                 <button onClick={onEdit} className="w-full text-right px-4 py-3 text-sm text-gray-700 hover:bg-gray-50 flex items-center gap-2">
                   <span>✏️</span><span>עריכה</span>
-                </button>
-              )}
-              {!isDone && onMarkDone && (
-                <button onClick={onMarkDone} className="w-full text-right px-4 py-3 text-sm text-gray-700 hover:bg-gray-50 flex items-center gap-2">
-                  <span>✅</span><span>סמן כהושלם</span>
                 </button>
               )}
               {isDone && onRestore && (

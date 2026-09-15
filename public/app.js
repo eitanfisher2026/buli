@@ -1,6 +1,6 @@
     const { useState, useEffect, useRef } = React;
 
-    const VERSION = "v6.95";
+    const VERSION = "v6.96";
 
     // ── CONFIG ────────────────────────────────────────────────────────────────────
     const FIREBASE_CONFIG = {
@@ -3576,7 +3576,11 @@
                 <span className="text-lg leading-none">›</span><span className="text-sm font-semibold">חזרה</span>
               </button>
               <h1 className="flex-1 min-w-0 text-lg font-bold truncate text-right">{list.name}</h1>
-              <button onClick={function() { setShowHeaderMenu(true); }} className="text-white text-lg w-8 h-8 flex items-center justify-center bg-white/20 rounded-full flex-shrink-0">☰</button>
+              {isNotes ? (
+                <button onClick={onMenu} title="הגדרות" className="text-white text-lg w-8 h-8 flex items-center justify-center bg-white/20 rounded-full flex-shrink-0">⚙️</button>
+              ) : (
+                <button onClick={function() { setShowHeaderMenu(true); }} className="text-white text-lg w-8 h-8 flex items-center justify-center bg-white/20 rounded-full flex-shrink-0">☰</button>
+              )}
             </div>
             {/* Notes lists skip the toolbar entirely below, so the counter
                 has nowhere else to live — kept here only for that case. */}

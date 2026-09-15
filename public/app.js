@@ -1,6 +1,6 @@
     const { useState, useEffect, useRef } = React;
 
-    const VERSION = "v6.85";
+    const VERSION = "v6.86";
 
     // ── CONFIG ────────────────────────────────────────────────────────────────────
     const FIREBASE_CONFIG = {
@@ -2784,7 +2784,6 @@
       const [contacts,         setContacts]         = useState([]);
       const [selectedContacts, setSelectedContacts] = useState([]);
       const [shareEmail,       setShareEmail]       = useState("");
-      const [shareRole,        setShareRole]        = useState("edit");
       const [sharing,          setSharing]          = useState(false);
       const [removingShareUid, setRemovingShareUid] = useState(null);
       const [filterStatus, setFilterStatus] = useState(function() { return localStorage.getItem("buli_filter_status") || "all"; });
@@ -3064,9 +3063,23 @@
         setSharing(true);
         var total = selectedContacts.length + (emailToShare ? 1 : 0);
         var completed = 0;
-        function done() {
+        // list here only ever gets loaded via a one-time read (see loadList),
+        // not a live listener — without patching it in locally, a newly
+        // shared person never showed up in "משותפת עם" until the list was
+        // closed and reopened, even though the write itself had succeeded.
+        var sharedUids = [];
+        function done(uid) {
+          if (uid) sharedUids.push(uid);
           completed++;
           if (completed >= total) {
+            if (sharedUids.length > 0) {
+              setList(function(prev) {
+                if (!prev) return prev;
+                var nextShared = Object.assign({}, prev.sharedWith);
+                sharedUids.forEach(function(u) { nextShared[u] = "edit"; });
+                return Object.assign({}, prev, { sharedWith: nextShared });
+              });
+            }
             setShowShare(false);
             setSelectedContacts([]);
             setShareEmail("");
@@ -3076,15 +3089,17 @@
         }
         selectedContacts.forEach(function(uid) {
           // contacts[].id is already the target's uid (from listTeamMembers) — no lookup needed
-          db.ref().update({ ["lists/" + listId + "/sharedWith/" + uid]: shareRole, ["listsByUser/" + uid + "/" + listId]: true }).then(done, done);
+          db.ref().update({ ["lists/" + listId + "/sharedWith/" + uid]: "edit", ["listsByUser/" + uid + "/" + listId]: true })
+            .then(function() { done(uid); }, function() { done(null); });
         });
         if (emailToShare) {
           db.ref("usersByEmail/" + encodeEmail(shareEmail.trim().toLowerCase())).once("value").then(function(snap) {
-            if (!snap.exists()) { showToast("אימייל לא נמצא"); done(); return; }
+            if (!snap.exists()) { showToast("אימייל לא נמצא"); done(null); return; }
             var uid = snap.val();
-            if (uid === user.uid) { showToast("זה כבר האימייל שלך — הרשימה כבר שלך"); done(); return; }
-            db.ref().update({ ["lists/" + listId + "/sharedWith/" + uid]: shareRole, ["listsByUser/" + uid + "/" + listId]: true }).then(done, done);
-          }, done);
+            if (uid === user.uid) { showToast("זה כבר האימייל שלך — הרשימה כבר שלך"); done(null); return; }
+            db.ref().update({ ["lists/" + listId + "/sharedWith/" + uid]: "edit", ["listsByUser/" + uid + "/" + listId]: true })
+              .then(function() { done(uid); }, function() { done(null); });
+          }, function() { done(null); });
         }
       };
 
@@ -3701,13 +3716,6 @@
               {isOwnEmail && (
                 <p className="text-xs text-orange-500 text-right mb-2">זה כבר האימייל שלך — הרשימה כבר שלך, אין צורך לשתף</p>
               )}
-              <p className="text-xs text-gray-400 mb-2 text-right mt-2">הרשאות</p>
-              <div className="grid grid-cols-3 gap-2 mb-4">
-                {[["edit","✏️ מלאה"],["own","👤 שלי בלבד"],["view","👁️ צפייה"]].map(([v,l]) => (
-                  <button key={v} onClick={() => setShareRole(v)}
-                    className={`py-3 rounded-xl text-xs font-medium border transition ${shareRole===v?"bg-blue-600 text-white border-blue-600":"bg-white text-gray-600 border-gray-200"}`}>{l}</button>
-                ))}
-              </div>
               <button onClick={shareWithContacts} disabled={(!selectedContacts.length && !shareEmail.trim()) || (!selectedContacts.length && isOwnEmail) || sharing}
                 className="w-full bg-blue-600 text-white py-4 rounded-2xl font-semibold disabled:opacity-40 flex items-center justify-center gap-2">
                 {sharing ? <Spinner /> : "שתף"}

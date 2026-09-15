@@ -1,6 +1,6 @@
     const { useState, useEffect, useRef } = React;
 
-    const VERSION = "v6.99";
+    const VERSION = "v7.00";
 
     // ── CONFIG ────────────────────────────────────────────────────────────────────
     const FIREBASE_CONFIG = {
@@ -148,6 +148,25 @@
       d.setDate(d.getDate() + daysUntil);
       return d.toISOString().split("T")[0];
     }
+
+    // Plain-language "what is this tab for" text behind the ⓘ next to each
+    // tab's own "+" button — written for the person using the app, not for a
+    // developer, so no feature names or implementation details, just what
+    // you can do here and why it's useful.
+    var TAB_INFO = {
+      shopping: {
+        title: "קניות",
+        body: "כאן מנהלים את רשימות הקניות של המשפחה. אפשר להוסיף פריטים בהקלדה חופשית או בהקלטת קול, והאפליקציה מסדרת אותם לפי קטגוריות כדי שיהיה קל למצוא אותם בסופר. אפשר לשתף כל רשימה עם בני המשפחה כדי שכולם יראו אותה ויוכלו לעדכן אותה יחד.",
+      },
+      notes: {
+        title: "תפריטים",
+        body: "כאן מתכננים ארוחות וארועים. לכל תפריט אפשר להוסיף מנות, לצרף לכל מנה מתכון (מקישור, מתמונה שצולמה או שהועלתה), ולסמן אילו מנות מכינים הפעם. בסיום, אפשר לבקש רשימת קניות מרוכזת עם כל המרכיבים הדרושים, מותאמת אוטומטית למספר הסועדים.",
+      },
+      tasks: {
+        title: "מטלות",
+        body: "כאן שומרים על סדר בדברים שצריך לטפל בהם בבית — לא קשור לקניות. כל אחד במשפחה יכול להוסיף מטלה, לסמן שהיא בוצעה, ולראות מה עוד פתוח.",
+      },
+    };
 
     // Alphabetical (Hebrew-aware) — shared by the home screen's own list
     // order and the "copy items" destination picker, so a list never
@@ -767,6 +786,7 @@
       const [editTask,   setEditTask]   = useState(null);
       const [menuId,     setMenuId]     = useState(null);
       const [showDone,   setShowDone]   = useState(false);
+      const [showTabInfo, setShowTabInfo] = useState(null); // "shopping" | "notes" | "tasks" | null
       const [copySourceList,   setCopySourceList]   = useState(null);
       const [copyItems,        setCopyItems]        = useState([]);
       const [copyItemsLoading, setCopyItemsLoading] = useState(false);
@@ -1515,6 +1535,8 @@
               <div className="space-y-4">
                 <div className="flex items-center justify-between gap-2">
                   <button onClick={e => { e.stopPropagation(); quickCreate(); }} className="bg-blue-600 text-white text-sm font-medium px-4 py-2 rounded-full shadow">+ רשימה חדשה</button>
+                  <button onClick={e => { e.stopPropagation(); setShowTabInfo("shopping"); }} title="מה זה הטאב הזה?"
+                    className="w-7 h-7 flex items-center justify-center rounded-full text-gray-400 border border-gray-200 text-sm flex-shrink-0">ⓘ</button>
                 </div>
                 {activeShopping.length === 0
                   ? <p className="text-center text-gray-300 text-sm py-8">אין רשימות קניות — לחץ "+ רשימה חדשה"</p>
@@ -1536,6 +1558,8 @@
               <div className="space-y-4">
                 <div className="flex items-center justify-between">
                   <button onClick={e => { e.stopPropagation(); quickCreateNote(); }} className="bg-blue-600 text-white text-sm font-medium px-4 py-2 rounded-full shadow">+ תפריט חדש</button>
+                  <button onClick={e => { e.stopPropagation(); setShowTabInfo("notes"); }} title="מה זה הטאב הזה?"
+                    className="w-7 h-7 flex items-center justify-center rounded-full text-gray-400 border border-gray-200 text-sm flex-shrink-0">ⓘ</button>
                 </div>
                 {activeNotes.length === 0
                   ? <p className="text-center text-gray-300 text-sm py-8">אין תפריטים — לחץ "+ תפריט חדש"</p>
@@ -1557,6 +1581,8 @@
               <div>
                 <div className="flex items-center justify-between mb-3">
                   <button onClick={e => { e.stopPropagation(); onAddTask(); }} className="bg-blue-600 text-white text-sm font-medium px-4 py-2 rounded-full shadow">+ מטלה חדשה</button>
+                  <button onClick={e => { e.stopPropagation(); setShowTabInfo("tasks"); }} title="מה זה הטאב הזה?"
+                    className="w-7 h-7 flex items-center justify-center rounded-full text-gray-400 border border-gray-200 text-sm flex-shrink-0">ⓘ</button>
                 </div>
                 <div className="bg-white rounded-2xl border border-gray-100 shadow-sm px-4 py-1">
                   {pendingTasks.length === 0 && doneTasks.length === 0 ? (
@@ -1583,6 +1609,13 @@
           </div>
 
           {editTask && <TaskEditModal item={editTask} onChange={setEditTask} onSave={saveTaskEdit} onDelete={deleteTask} onClose={() => setEditTask(null)} />}
+
+          {showTabInfo && (
+            <Modal onClose={() => setShowTabInfo(null)}>
+              <h3 className="text-lg font-bold text-center mb-3">{TAB_INFO[showTabInfo].title}</h3>
+              <p className="text-sm text-gray-600 leading-relaxed text-right">{TAB_INFO[showTabInfo].body}</p>
+            </Modal>
+          )}
 
           {/* Copy items to another list — step 1: pick items */}
           {showCopyPicker && (

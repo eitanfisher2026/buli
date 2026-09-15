@@ -536,7 +536,11 @@ exports.setUserPreferences = onCall(
 // normally would (Google, Instagram, a cookbook) and either pastes its link
 // or attaches photo(s) of it; Buli reads that one source and extracts it.
 
-const RECIPE_FETCH_HEADERS = { 'User-Agent': 'Mozilla/5.0 (compatible; BuliBot/1.0; +https://buli-8fdf9.web.app)' };
+// A self-identifying bot UA ("BuliBot/1.0") got intermittently 403'd by at
+// least one site's WAF (mako) — this fetches one page a user explicitly
+// chose, the same as their own browser would, so there's no reason to
+// announce automation and invite that treatment.
+const RECIPE_FETCH_HEADERS = { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36' };
 const MAX_RECIPE_IMAGES = 5;
 const MAX_IMAGE_BASE64_CHARS = 6_000_000; // ~4.5MB decoded — generous given the client resizes to ~1600px JPEG first
 

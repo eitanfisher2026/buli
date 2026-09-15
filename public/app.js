@@ -1,6 +1,6 @@
     const { useState, useEffect, useRef } = React;
 
-    const VERSION = "v6.93";
+    const VERSION = "v6.94";
 
     // ── CONFIG ────────────────────────────────────────────────────────────────────
     const FIREBASE_CONFIG = {
@@ -3316,7 +3316,11 @@
         db.ref("items/" + listId + "/" + recipeItemId + "/recipe").set(toSave).then(function() {
           setItems(function(prev) { return prev.map(function(i) { return i.id === recipeItemId ? Object.assign({}, i, { recipe: toSave }) : i; }); });
           showToast("המתכון נשמר");
-          closeRecipeFlow();
+          // Deliberately doesn't close the modal — falls through to view mode
+          // so the extracted ingredients/steps are visible right away for a
+          // quick sanity check, instead of just a toast the user has to trust.
+          setRecipeForceEntry(false);
+          setRecipePendingServings(null);
         }, function(err) { showToast("שגיאה: " + (err && err.message || "?")); });
       };
 
@@ -3915,13 +3919,13 @@
                   <div className="mb-4">
                     <p className="text-xs text-gray-400 mb-1 text-right font-semibold">מרכיבים</p>
                     <ul className="text-sm text-gray-700 space-y-1 text-right list-disc list-inside">
-                      {r.ingredients.map(function(ing, i) { return <li key={i}>{ing}</li>; })}
+                      {(r.ingredients || []).map(function(ing, i) { return <li key={i}>{ing}</li>; })}
                     </ul>
                   </div>
                   <div className="mb-4">
                     <p className="text-xs text-gray-400 mb-1 text-right font-semibold">אופן ההכנה</p>
                     <ol className="text-sm text-gray-700 space-y-1.5 text-right list-decimal list-inside">
-                      {r.steps.map(function(s, i) { return <li key={i}>{s}</li>; })}
+                      {(r.steps || []).map(function(s, i) { return <li key={i}>{s}</li>; })}
                     </ol>
                   </div>
                   <div className="flex gap-2">

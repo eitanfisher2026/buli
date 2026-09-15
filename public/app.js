@@ -1,6 +1,6 @@
     const { useState, useEffect, useRef } = React;
 
-    const VERSION = "v6.94";
+    const VERSION = "v6.95";
 
     // ── CONFIG ────────────────────────────────────────────────────────────────────
     const FIREBASE_CONFIG = {
@@ -2435,8 +2435,8 @@
                   <button onClick={onMoveDown} disabled={isLast}
                     className="w-5 h-4 flex items-center justify-center text-gray-300 hover:text-blue-500 disabled:opacity-20 text-xs leading-none">▼</button>
                 </div>
-                <button onClick={function() { onRecipe(item); }} title="מתכון"
-                  className={"text-sm px-0.5 " + (item.recipe ? "text-orange-400" : "text-gray-300 hover:text-orange-400")}>🍳</button>
+                <button onClick={function() { onRecipe(item); }} title={item.recipe ? "מתכון מצורף" : "צרף מתכון"}
+                  className={"text-sm px-0.5 " + (item.recipe ? "text-green-600" : "text-gray-300 hover:text-orange-400")}>{item.recipe ? "📖" : "🍳"}</button>
                 <button onClick={function() { onEdit(item); }} className="text-gray-300 hover:text-blue-400 text-sm px-0.5">✏️</button>
                 <button onClick={function() { onDelete(item.id); }} className="text-gray-300 hover:text-red-400 text-base">🗑️</button>
               </div>
@@ -2839,6 +2839,7 @@
       const [recipePendingServings, setRecipePendingServings] = useState(null);
       const [recipeError,         setRecipeError]         = useState("");
       const [buildingShoppingList, setBuildingShoppingList] = useState(false);
+      const [shoppingPreview, setShoppingPreview] = useState(null); // { dishCount, finalItems } | null
       const [filterStatus, setFilterStatus] = useState(function() { return localStorage.getItem("buli_filter_status") || "all"; });
       const [filterPerson, setFilterPerson] = useState(function() { return localStorage.getItem("buli_filter_person") || "all"; });
       const [showFilters, setShowFilters] = useState(false);
@@ -3310,6 +3311,10 @@
           title: recipeData.title || "",
           image: recipeData.image || "",
           servings: recipeData.servings,
+          // How many people THIS dish should be scaled for, independent of
+          // the recipe's own stated yield — defaults to the menu's guest
+          // count but editable per dish (e.g. a double batch of one side).
+          targetServings: list.dinersCount || 12,
           ingredients: recipeData.ingredients || [],
           steps: recipeData.steps || [],
         };
@@ -3329,6 +3334,13 @@
           setItems(function(prev) { return prev.map(function(i) { return i.id === itemId ? Object.assign({}, i, { recipe: null }) : i; }); });
           showToast("המתכון הוסר");
         });
+      };
+
+      const updateRecipeField = (itemId, field, value) => {
+        var n = parseInt(value, 10);
+        if (!n || n < 1) return;
+        db.ref("items/" + listId + "/" + itemId + "/recipe/" + field).set(n);
+        setItems(function(prev) { return prev.map(function(i) { return i.id === itemId ? Object.assign({}, i, { recipe: Object.assign({}, i.recipe, { [field]: n }) }) : i; }); });
       };
 
       // Every picked/shot photo is downscaled to at most 1600px on its long
@@ -3372,20 +3384,18 @@
         setRecipeImages(function(prev) { return prev.filter(function(_, i) { return i !== idx; }); });
       };
 
-      // Rebuilds the linked shopping list from scratch every time — simplest
-      // to reason about, but it does mean any manual edits/checkoffs made on
-      // that shopping list since the last build are wiped, not merged.
-      const buildDinnerShoppingList = () => {
-        if (buildingShoppingList) return;
-        var withRecipes = items.filter(function(i) { return i.recipe && i.recipe.ingredients && i.recipe.ingredients.length; });
-        if (!withRecipes.length) { showToast("אין עדיין מנות עם מתכון שמור"); return; }
+      // Only checked dishes ("confirmed for this menu") that have a saved
+      // recipe count toward the shopping list — unchecking a dish drops it
+      // out without needing to remove its recipe. Each dish scales by its
+      // OWN target-servings/recipe-servings ratio, not one menu-wide number.
+      const computeShoppingIngredients = () => {
+        var withRecipes = items.filter(function(i) { return i.done && i.recipe && i.recipe.ingredients && i.recipe.ingredients.length; });
         var diners = list.dinersCount || 12;
-        setBuildingShoppingList(true);
-
         var merged = {};
         var unmerged = [];
         withRecipes.forEach(function(dish) {
-          var scale = diners / (dish.recipe.servings || diners);
+          var target = dish.recipe.targetServings || diners;
+          var scale = target / (dish.recipe.servings || target);
           dish.recipe.ingredients.forEach(function(line) {
             var parsed = parseIngredientLine(line);
             if (parsed.quantity != null && parsed.unit) {
@@ -3397,11 +3407,27 @@
             }
           });
         });
-
         var finalItems = Object.keys(merged).map(function(k) {
           var e = merged[k];
           return { name: e.name, quantity: Math.round(e.quantity * 10) / 10, unit: e.unit };
         }).concat(unmerged);
+        return { dishCount: withRecipes.length, finalItems: finalItems };
+      };
+
+      const openShoppingPreview = () => {
+        var preview = computeShoppingIngredients();
+        if (!preview.dishCount) { showToast("סמנו לפחות מנה אחת עם מתכון שמור"); return; }
+        setShoppingPreview(preview);
+      };
+
+      // Rebuilding an existing linked list replaces its items entirely —
+      // simplest to reason about, but it does mean any manual edits/checkoffs
+      // made there since the last build are wiped, not merged. "New list"
+      // sidesteps that by leaving the old one untouched and starting fresh.
+      const commitShoppingList = (mode) => {
+        if (!shoppingPreview || buildingShoppingList) return;
+        var finalItems = shoppingPreview.finalItems;
+        setBuildingShoppingList(true);
 
         function createLinkedList() {
           var newId = db.ref("lists").push().key;
@@ -3449,7 +3475,7 @@
           });
         }
 
-        var proceed = list.mealShoppingListId
+        var proceed = (mode === "update" && list.mealShoppingListId)
           ? db.ref("lists/" + list.mealShoppingListId).once("value").then(function(snap) {
               return snap.exists() ? writeItems(list.mealShoppingListId) : createLinkedList().then(writeItems);
             })
@@ -3457,6 +3483,7 @@
 
         proceed.then(function() {
           setBuildingShoppingList(false);
+          setShoppingPreview(null);
           homeDataCache = null;
           showToast("רשימת הקניות לארוחה מוכנה");
         }, function(err) {
@@ -3560,6 +3587,15 @@
             )}
           </div>
 
+          {isNotes && canEditAll && (
+            <button onClick={openShoppingPreview}
+              className="mx-4 mt-3 flex-shrink-0 bg-white border border-gray-200 rounded-2xl px-4 py-3 flex items-center gap-2 shadow-sm no-print">
+              <span className="text-lg">🛒</span>
+              <span className="text-sm font-semibold text-gray-700 flex-1 text-right">בנה רשימת קניות</span>
+              <span className="text-xs text-gray-400">{notesSorted.filter(function(i) { return i.done && i.recipe; }).length} מנות נבחרו</span>
+            </button>
+          )}
+
           {showHeaderMenu && (
             <Modal onClose={function() { setShowHeaderMenu(false); }}>
               <h3 className="text-lg font-bold text-center mb-4">פעולות</h3>
@@ -3597,13 +3633,6 @@
                     <span className="text-lg">✨</span><span className="text-sm font-medium text-gray-700">השלם קטגוריות</span>
                   </button>
                 )}
-                {isNotes && canEditAll && (
-                  <button onClick={function() { setShowHeaderMenu(false); buildDinnerShoppingList(); }}
-                    className="w-full text-right flex items-center gap-3 px-4 py-3 rounded-xl bg-gray-50 hover:bg-gray-100 border-t border-gray-100">
-                    <span className="text-lg">🛒</span><span className="text-sm font-medium text-gray-700">{buildingShoppingList ? "בונה רשימת קניות..." : "בנה רשימת קניות לארוחה"}</span>
-                  </button>
-                )}
-
                 {/* — Export — */}
                 {!isNotes && !isTasks && (
                   <button onClick={function() { setShowHeaderMenu(false); window.print(); }}
@@ -3912,8 +3941,23 @@
               var r = recItem.recipe;
               return (
                 <Modal onClose={closeRecipeFlow}>
-                  <h3 className="text-lg font-bold text-center mb-1">{r.title || recItem.name}</h3>
-                  <p className="text-xs text-gray-400 text-center mb-1">{r.servings ? r.servings + " מנות" : ""}</p>
+                  <h3 className="text-lg font-bold text-center mb-2">{r.title || recItem.name}</h3>
+                  <div className="flex items-center justify-center gap-4 mb-3 text-xs text-gray-500">
+                    <label className="flex items-center gap-1">
+                      <span>המתכון מכין</span>
+                      <input type="number" min="1" defaultValue={r.servings || ""} placeholder="?"
+                        onBlur={function(e) { if (e.target.value) updateRecipeField(recItem.id, "servings", e.target.value); }}
+                        className="w-14 border border-gray-200 rounded-lg px-1 py-0.5 text-center" />
+                      <span>מנות</span>
+                    </label>
+                    <label className="flex items-center gap-1">
+                      <span>מכינים הפעם ל-</span>
+                      <input type="number" min="1" defaultValue={r.targetServings || list.dinersCount || 12}
+                        onBlur={function(e) { if (e.target.value) updateRecipeField(recItem.id, "targetServings", e.target.value); }}
+                        className="w-14 border border-gray-200 rounded-lg px-1 py-0.5 text-center" />
+                      <span>אנשים</span>
+                    </label>
+                  </div>
                   {r.url && <a href={r.url} target="_blank" rel="noopener noreferrer" className="block text-xs text-blue-500 text-center mb-3 truncate" dir="ltr">{r.url}</a>}
                   {r.image && <img src={r.image} className="w-full h-40 object-cover rounded-xl mb-3" />}
                   <div className="mb-4">
@@ -4008,6 +4052,31 @@
               </Modal>
             );
           })()}
+
+          {shoppingPreview && (
+            <Modal onClose={function() { if (!buildingShoppingList) setShoppingPreview(null); }}>
+              <h3 className="text-lg font-bold text-center mb-1">מרכיבים לקנייה</h3>
+              <p className="text-xs text-gray-400 text-center mb-4">לפי {shoppingPreview.dishCount} מנות מסומנות, בכמויות המותאמות לכל מנה</p>
+              <ul className="text-sm text-gray-700 space-y-1.5 text-right list-disc list-inside mb-5 max-h-80 overflow-y-auto">
+                {shoppingPreview.finalItems.map(function(it, i) {
+                  return <li key={i}>{(it.quantity ? it.quantity + " " : "") + (it.unit ? it.unit + " " : "") + it.name}</li>;
+                })}
+              </ul>
+              {buildingShoppingList ? (
+                <div className="flex justify-center py-2"><Spinner large /></div>
+              ) : list.mealShoppingListId ? (
+                <div className="space-y-2">
+                  <button onClick={function() { commitShoppingList("update"); }}
+                    className="w-full bg-blue-600 text-white py-3 rounded-2xl font-semibold">עדכן את רשימת הקניות הקיימת</button>
+                  <button onClick={function() { commitShoppingList("new"); }}
+                    className="w-full bg-gray-100 text-gray-700 py-3 rounded-2xl font-medium text-sm">צור רשימה חדשה במקום</button>
+                </div>
+              ) : (
+                <button onClick={function() { commitShoppingList("new"); }}
+                  className="w-full bg-blue-600 text-white py-3 rounded-2xl font-semibold">צור רשימת קניות</button>
+              )}
+            </Modal>
+          )}
 
         </div>
       );

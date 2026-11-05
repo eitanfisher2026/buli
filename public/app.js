@@ -1,6 +1,6 @@
     const { useState, useEffect, useRef } = React;
 
-    const VERSION = "v7.01";
+    const VERSION = "v7.02";
 
     // ── CONFIG ────────────────────────────────────────────────────────────────────
     const FIREBASE_CONFIG = {
@@ -622,7 +622,6 @@
       const [listType, setListType] = useState("shopping");
       const [listName, setListName] = useState("");
       const [toast,       setToast]       = useState("");
-      const [stickyToast, setStickyToast] = useState([]);
       const histDepthRef = useRef(2);
       const navHistoryRef = useRef([{ screen: "home" }]);
 
@@ -718,23 +717,9 @@
           )}
           {screen === "home"       && <HomeScreen       user={user} isAdmin={role === "admin" && !simulateRegular} isRealAdmin={role === "admin"} simulating={simulateRegular} onToggleSimulate={toggleSimulate} onOpenList={goList} onCategories={() => go("categories")} showToast={setToast} onAddTask={() => goAdd("tasks_" + user.uid, "tasks")} onCreateShoppingList={(id, name) => goAdd(id, "shopping", name)} onCreateNotesList={(id, name) => goAdd(id, "notes", name)} autoOpenSettings={autoOpenSettings} onAutoOpenedSettings={() => setAutoOpenSettings(false)} autoOpenCopyItemsFor={autoOpenCopyItemsFor} onAutoOpenedCopyItems={() => setAutoOpenCopyItemsFor(null)} fontScale={fontScale} onSetFontScale={setFontScale} />}
           {screen === "list"       && <ListScreen       user={user} listId={listId} onBack={goBack} onMenu={goMenu} onHome={goHome} onAdd={(type, name) => goAdd(listId, type, name || listName)} onCopyItems={goCopyItems} showToast={setToast} />}
-          {screen === "add"        && <AddScreen        user={user} listId={listId} listType={listType} listName={listName} onBack={goBack} showToast={setToast} showStickyToast={setStickyToast} />}
+          {screen === "add"        && <AddScreen        user={user} listId={listId} listType={listType} listName={listName} onBack={goBack} showToast={setToast} />}
           {screen === "categories" && <CategoriesScreen user={user} onBack={goBack} showToast={setToast} />}
           {toast && <Toast msg={toast} onClose={() => setToast("")} />}
-          {stickyToast.length > 0 && (
-            <div onClick={() => setStickyToast([])}
-              className="fixed bottom-24 left-1/2 -translate-x-1/2 w-11/12 max-w-md bg-amber-50 border border-amber-300 rounded-2xl px-4 py-3 z-50 shadow-lg cursor-pointer">
-              {stickyToast.map(function(block, i) {
-                return (
-                  <div key={i} className={i > 0 ? "mt-2 pt-2 border-t border-amber-200" : ""}>
-                    <p className="font-semibold text-amber-800 text-sm mb-1">{block.title}</p>
-                    <p className="text-amber-700 text-sm leading-relaxed">{block.lines.join(" · ")}</p>
-                  </div>
-                );
-              })}
-              <p className="text-xs text-amber-400 text-center mt-2">לחץ לסגירה</p>
-            </div>
-          )}
         </div>
       );
     }
@@ -4452,7 +4437,7 @@
     }
 
     // ── ADD SCREEN ────────────────────────────────────────────────────────────────
-    function AddScreen({ user, listId, listType, listName, onBack, showToast, showStickyToast }) {
+    function AddScreen({ user, listId, listType, listName, onBack, showToast }) {
       const isTasks = listType === "tasks";
       const isNotes = listType === "notes";
       const categories = useCategories(user.uid);
@@ -4469,6 +4454,9 @@
       const [taskDueDate, setTaskDueDate]= useState(new Date().toISOString().split("T")[0]);
       const [taskSaving,  setTaskSaving] = useState(false);
       const [existingItems, setExistingItems] = useState([]);
+      // { queue: [{item, existing}], toAdd, cats, edited, editing } while
+      // walking the user through each already-on-the-list item one by one.
+      const [dupFlow, setDupFlow] = useState(null);
       const stopRef        = useRef(null);
       const heldRef        = useRef(false);
       const categoriesRef  = useRef(DEFAULT_CATEGORIES);
@@ -4488,7 +4476,7 @@
         if (!isTasks) {
           db.ref("items/" + listId).once("value").then(function(snap) {
             var arr = [];
-            snap.forEach(function(c) { arr.push(c.val()); });
+            snap.forEach(function(c) { arr.push(Object.assign({ id: c.key }, c.val())); });
             setExistingItems(arr);
           });
         }
@@ -4534,34 +4522,61 @@
       };
       const stopRec = () => { heldRef.current = false; if (stopRef.current) { stopRef.current(); stopRef.current = null; } setIsRecording(false); setInterimText(""); };
 
+      // Anything already on the list (still open, same name) is held back and
+      // asked about one at a time — edit the existing line, or don't add it —
+      // instead of being added as a second copy. Everything else in the same
+      // batch is added as usual once those questions are answered.
       const saveItems = (itemsArr, cats) => {
         if (!itemsArr.length) return;
-        setSaving(true);
 
         var activeExisting = existingItems.filter(function(i) { return !i.done; });
-        var similar = [];
+        var queue = [];
         var toAdd = [];
 
         itemsArr.forEach(function(item) {
           var rawName = ((item.name || item.item || "").trim());
           if (!rawName) return;
-
-          // Compares against each existing item's ORIGINAL typed name, not
-          // its current one. Still added, just flagged — this is a guess,
-          // not a confirmed duplicate.
+          // Compares against each existing item's ORIGINAL typed name too,
+          // so a line renamed after being added still counts as a match.
           var nLower = rawName.toLowerCase();
-          var similarExisting = activeExisting.find(function(ex) {
-            return ((ex.originalName || ex.name || "").trim().toLowerCase()) === nLower;
+          var existing = activeExisting.find(function(ex) {
+            return ((ex.originalName || ex.name || "").trim().toLowerCase()) === nLower
+              || ((ex.name || "").trim().toLowerCase()) === nLower;
           });
-          if (similarExisting) similar.push(rawName + ' (דומה ל-"' + similarExisting.name + '")');
-
-          toAdd.push(item);
+          if (existing) queue.push({ item: item, existing: existing });
+          else toAdd.push(item);
         });
 
-        if (similar.length > 0) showStickyToast([{ title: "נוסף, אך יש פריט דומה ברשימה:", lines: similar }]);
+        if (queue.length) { setDupFlow({ queue: queue, toAdd: toAdd, cats: cats, edited: 0, editing: false }); return; }
+        writeNewItems(toAdd, cats, 0);
+      };
 
-        if (!toAdd.length) { setSaving(false); return; }
+      const advanceDupFlow = (editedNow) => {
+        var f = dupFlow;
+        var rest = f.queue.slice(1);
+        var edited = f.edited + (editedNow ? 1 : 0);
+        if (rest.length) { setDupFlow(Object.assign({}, f, { queue: rest, edited: edited, editing: false })); return; }
+        setDupFlow(null);
+        writeNewItems(f.toAdd, f.cats, edited);
+      };
 
+      const saveExistingEdit = (updated) => {
+        db.ref("items/" + listId + "/" + updated.id).update({
+          name: updated.name, quantity: updated.quantity !== "" && updated.quantity != null ? Number(updated.quantity) || 1 : null,
+          unit: updated.unit, category: updated.category, note: updated.note || ""
+        }).then(function() {
+          setExistingItems(function(prev) { return prev.map(function(i) { return i.id === updated.id ? Object.assign({}, i, updated) : i; }); });
+          advanceDupFlow(true);
+        }, function(err) { showToast("שגיאה: " + (err && err.message || "?")); });
+      };
+
+      const writeNewItems = (toAdd, cats, editedCount) => {
+        if (!toAdd.length) {
+          showToast(editedCount ? (editedCount === 1 ? "הפריט הקיים עודכן" : editedCount + " פריטים קיימים עודכנו") : "לא נוספו פריטים");
+          onBack();
+          return;
+        }
+        setSaving(true);
         var catEmojis = {};
         var validCats = new Set();
         var activeCats = (cats && cats.length > 0) ? cats : categoriesRef.current;
@@ -4570,7 +4585,7 @@
         var pos = 0;
         function saveNext() {
           if (pos >= toAdd.length) {
-            showToast(toAdd.length + " פריטים נוספו!");
+            showToast(toAdd.length + " פריטים נוספו!" + (editedCount ? " (" + editedCount + " קיימים עודכנו)" : ""));
             setSaving(false);
             onBack();
             return;
@@ -4820,11 +4835,43 @@
 
           {!isRecording && (
             <div className="flex-shrink-0 px-4 pb-6 pt-2 bg-gray-50 border-t border-gray-100">
-              <button onClick={process} disabled={!inputText.trim() || processing || saving}
+              <button onClick={process} disabled={!inputText.trim() || processing || saving || !!dupFlow}
                 className="w-full bg-blue-600 text-white py-4 rounded-2xl font-semibold text-base disabled:opacity-40 flex items-center justify-center gap-2">
                 {saving ? <><Spinner /><span>שומר...</span></> : processing ? <><Spinner /><span>מנתח עם AI...</span></> : "הוסף לרשימה"}
               </button>
             </div>
+          )}
+
+          {dupFlow && !dupFlow.editing && (function() {
+            var d = dupFlow.queue[0];
+            var ex = d.existing;
+            var newName = (d.item.name || d.item.item || "").trim();
+            var exQty = (ex.quantity && ex.quantity !== 1 ? ex.quantity + " " : "") + (ex.unit && ex.unit !== "יחידות" ? ex.unit : "");
+            var total = dupFlow.queue.length;
+            return (
+              <Modal onClose={function() { advanceDupFlow(false); }}>
+                <h3 className="text-lg font-bold text-center mb-1">הפריט כבר ברשימה</h3>
+                {total > 1 && <p className="text-xs text-gray-400 text-center mb-3">עוד {total} פריטים כפולים לבדיקה</p>}
+                <div className="bg-amber-50 border border-amber-200 rounded-xl px-4 py-3 my-3 text-right">
+                  <p className="text-sm text-gray-700">ניסית להוסיף: <span className="font-semibold">{newName}</span></p>
+                  <p className="text-sm text-gray-700 mt-1">קיים ברשימה: <span className="font-semibold">{ex.name}</span>{exQty ? " (" + exQty.trim() + ")" : ""}</p>
+                </div>
+                <div className="space-y-2">
+                  <button onClick={function() { setDupFlow(Object.assign({}, dupFlow, { editing: true })); }}
+                    className="w-full bg-blue-600 text-white py-3 rounded-2xl font-semibold">ערוך את הפריט הקיים</button>
+                  <button onClick={function() { advanceDupFlow(false); }}
+                    className="w-full bg-gray-100 text-gray-700 py-3 rounded-2xl font-medium">בטל הוספה</button>
+                </div>
+              </Modal>
+            );
+          })()}
+
+          {dupFlow && dupFlow.editing && (
+            <ItemDialog mode="edit" item={dupFlow.queue[0].existing} categories={categoriesRef.current}
+              keyboardWarningEnabled={true}
+              onSave={saveExistingEdit}
+              onClose={function() { setDupFlow(Object.assign({}, dupFlow, { editing: false })); }}
+              showToast={showToast} />
           )}
 
         </div>

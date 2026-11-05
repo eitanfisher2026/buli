@@ -264,7 +264,7 @@ function cheapestModelId(models) {
 }
 
 exports.listProviderModels = onCall(
-  { timeoutSeconds: 30, memory: '128MiB', region: 'europe-west1' },
+  { timeoutSeconds: 30, memory: '256MiB', region: 'europe-west1' },
   async (request) => {
     await requireAuthorized(request);
     const { provider, apiKey } = request.data || {};
@@ -321,7 +321,7 @@ exports.listProviderModels = onCall(
 // Access control — who's allowed to use the app, and the admin panel behind it
 // ─────────────────────────────────────────────────────────────────────────────
 exports.getMyRole = onCall(
-  { timeoutSeconds: 30, memory: '128MiB', region: 'europe-west1' },
+  { timeoutSeconds: 30, memory: '256MiB', region: 'europe-west1' },
   async (request) => {
     if (!request.auth) throw new HttpsError('unauthenticated', 'Login required');
     const role = await getRole(request.auth.token.email);
@@ -337,7 +337,7 @@ exports.getMyRole = onCall(
 );
 
 exports.getCosts = onCall(
-  { timeoutSeconds: 30, memory: '128MiB', region: 'europe-west1' },
+  { timeoutSeconds: 30, memory: '256MiB', region: 'europe-west1' },
   async (request) => {
     const role = await requireAuthorized(request);
     const { scope } = request.data || {};
@@ -379,7 +379,7 @@ async function resolveUserExtra(email) {
 }
 
 exports.listAuthorizedUsers = onCall(
-  { timeoutSeconds: 30, memory: '128MiB', region: 'europe-west1' },
+  { timeoutSeconds: 30, memory: '256MiB', region: 'europe-west1' },
   async (request) => {
     const role = await requireAuthorized(request);
     const email = request.auth.token.email;
@@ -406,7 +406,7 @@ exports.listAuthorizedUsers = onCall(
 );
 
 exports.setUserNickname = onCall(
-  { timeoutSeconds: 30, memory: '128MiB', region: 'europe-west1' },
+  { timeoutSeconds: 30, memory: '256MiB', region: 'europe-west1' },
   async (request) => {
     const role = await requireAuthorized(request);
     const { email: rawEmail, nickname: rawNickname } = request.data || {};
@@ -424,7 +424,7 @@ exports.setUserNickname = onCall(
 // Unlike listAuthorizedUsers (admin-only), this is callable by any authorized user —
 // it's the "who can I share a list with" roster, not the access-management panel.
 exports.listTeamMembers = onCall(
-  { timeoutSeconds: 30, memory: '128MiB', region: 'europe-west1' },
+  { timeoutSeconds: 30, memory: '256MiB', region: 'europe-west1' },
   async (request) => {
     await requireAuthorized(request);
     const snap = await db.ref('authorizedUsers').once('value');
@@ -459,7 +459,7 @@ async function mirrorUserAccess(email, role) {
 }
 
 exports.addAuthorizedUser = onCall(
-  { timeoutSeconds: 30, memory: '128MiB', region: 'europe-west1' },
+  { timeoutSeconds: 30, memory: '256MiB', region: 'europe-west1' },
   async (request) => {
     const role = await requireAuthorized(request);
     requireAdmin(role);
@@ -488,7 +488,7 @@ exports.addAuthorizedUser = onCall(
 );
 
 exports.removeAuthorizedUser = onCall(
-  { timeoutSeconds: 30, memory: '128MiB', region: 'europe-west1' },
+  { timeoutSeconds: 30, memory: '256MiB', region: 'europe-west1' },
   async (request) => {
     const role = await requireAuthorized(request);
     requireAdmin(role);
@@ -506,7 +506,7 @@ exports.removeAuthorizedUser = onCall(
 // callable exists purely so an admin can set them for someone ELSE, same
 // self-or-admin gate as setUserNickname.
 exports.setUserPreferences = onCall(
-  { timeoutSeconds: 30, memory: '128MiB', region: 'europe-west1' },
+  { timeoutSeconds: 30, memory: '256MiB', region: 'europe-west1' },
   async (request) => {
     const role = await requireAuthorized(request);
     const { email: rawEmail, menusEnabled, tasksEnabled, keyboardWarning } = request.data || {};

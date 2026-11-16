@@ -1,6 +1,6 @@
     const { useState, useEffect, useRef } = React;
 
-    const VERSION = "v7.09";
+    const VERSION = "v7.10";
 
     // ── CONFIG ────────────────────────────────────────────────────────────────────
     const FIREBASE_CONFIG = {
@@ -200,6 +200,23 @@
         return (a.name || "").localeCompare(b.name || "", "he");
       });
     }
+    // Opens a URL in a separate browser app, not inside Buli. In the installed
+    // Android app a plain new-tab link opens as an in-app browser panel layered
+    // over Buli; an Android "intent" link instead hands the URL to the phone's
+    // default browser app. Everywhere else (desktop, iPhone, a normal browser
+    // tab) a regular new window/tab already does the right thing.
+    function openExternal(url) {
+      var isAndroid = /Android/i.test(navigator.userAgent);
+      var standalone = window.matchMedia && window.matchMedia("(display-mode: standalone)").matches;
+      if (isAndroid && standalone) {
+        var u = new URL(url);
+        window.location.href = "intent://" + u.host + u.pathname + u.search +
+          "#Intent;scheme=" + u.protocol.replace(":", "") + ";action=android.intent.action.VIEW;S.browser_fallback_url=" + encodeURIComponent(url) + ";end";
+        return;
+      }
+      window.open(url, "_blank", "noopener,noreferrer");
+    }
+
     function getListSortMode() {
       try { return localStorage.getItem("buli_list_sort") === "name" ? "name" : "updated"; } catch (e) { return "updated"; }
     }
@@ -4160,9 +4177,9 @@
                       else showToast(name);
                     }}
                     className="w-8 h-8 flex items-center justify-center rounded-full bg-gray-100 text-base flex-shrink-0">📋</button>
-                  <a title="חפש מתכון בגוגל" target="_blank" rel="noopener noreferrer"
-                    href={"https://www.google.com/search?q=" + encodeURIComponent((recItem.name || "") + " מתכון")}
-                    className="w-8 h-8 flex items-center justify-center rounded-full bg-gray-100 text-base flex-shrink-0">🔍</a>
+                  <button title="חפש מתכון בגוגל"
+                    onClick={function() { openExternal("https://www.google.com/search?q=" + encodeURIComponent((recItem.name || "") + " מתכון")); }}
+                    className="w-8 h-8 flex items-center justify-center rounded-full bg-gray-100 text-base flex-shrink-0">🔍</button>
                 </div>
                 {recipePendingServings ? (
                   <div>

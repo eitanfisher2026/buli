@@ -657,7 +657,7 @@ function recipeExtractionPrompt(sourceDescription) {
 - "ingredients" — רק שורות מרכיבים אמיתיות (כמות, יחידה ותיאור יחד, כמחרוזת אחת לכל מרכיב).
 - "steps" — רק פעולות הכנה בפועל, שלב אחד לכל איבר במערך. אם המקור מכיל רק את רשימת המרכיבים (למשל צילום מסך של חלק מהמתכון), החזר מערך ריק — זה תקין.
 - מרכיבים שמופיעים תחת כותרות משנה (כמו "לרוטב", "לציפוי") — כלול את כולם ברשימה אחת.
-- "extraIngredients" — מרכיבים שמוזכרים באופן ההכנה אבל לא מופיעים ברשימת המרכיבים. שם המרכיב בלבד, בלי כמות. אל תמציא — רק מה שכתוב במפורש. אם אין כאלה, מערך ריק.
+- "extraIngredients" — ${EXTRA_INGREDIENTS_RULE}
 - אל תכלול שום דבר מלבד אלה: לא סיפור רקע או אנקדוטה אישית של כותב/ת המתכון, לא הקדמה, לא טיפים או "איך להגיש" שאינם שלב הכנה ממשי, לא ערכים תזונתיים, לא תגובות גולשים, לא פרסומות, לא מתכונים קשורים. אם משהו מהתוכן הוא לא מרכיב ולא פעולת הכנה בפועל — השמט אותו לגמרי, גם אם הוא נראה שימושי.
 - רק אם אין במקור אף מרכיב בכלל (לא ברשימה ולא באופן ההכנה), החזר: {"error": "not_a_recipe"}`;
 }
@@ -700,6 +700,34 @@ function parseRecipeAiResponse(text) {
 // nothing to split on), the only way to make it "step 1, step 2, ..." is to
 // have AI re-break it. Only used for that one case, not the common one
 // (most sites already provide a real step array).
+// Shared by both extraction paths (AI-read page/photo, and structured-data
+// pages) so "what counts as an extra ingredient" is identical either way.
+const EXTRA_INGREDIENTS_RULE = 'מה שצריך לקנות ומוזכר באופן ההכנה אבל לא מופיע ברשימת המרכיבים — גם מרכיבי מזון (למשל מים, מלח, שמן לטיגון) וגם ציוד מתכלה למטבח (למשל נייר אפייה, נייר כסף/אלומיניום, שקית אפייה, קיסמים, שיפודים). שם בלבד, בלי כמות. אל תמציא — רק מה שכתוב במפורש. לא כלים קבועים (סיר, תבנית, מיקסר, תנור). אם אין כאלה, מערך ריק.';
+
+function extraIngredientsPrompt(ingredients, steps) {
+  return `להלן רשימת המרכיבים של מתכון ואופן ההכנה שלו.
+
+מרכיבים:
+${ingredients.map((s) => '- ' + s).join('\n')}
+
+אופן הכנה:
+${steps.map((s, i) => (i + 1) + '. ' + s).join('\n')}
+
+החזר אך ורק JSON תקין (ללא markdown, ללא הסברים) בפורמט:
+{"extraIngredients": ["שם"]}
+
+"extraIngredients" — ${EXTRA_INGREDIENTS_RULE}`;
+}
+
+function parseExtraIngredientsAiResponse(text) {
+  const cleaned = String(text || '').trim().replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/, '').trim();
+  try {
+    const data = JSON.parse(cleaned);
+    if (Array.isArray(data.extraIngredients)) return data.extraIngredients.map((s) => decodeHtmlEntities(s)).filter(Boolean);
+  } catch (e) { /* treat as none found */ }
+  return [];
+}
+
 function stepsReformatPrompt(text) {
   return `להלן טקסט אופן הכנה גולמי של מתכון, כפי שמופיע במקור (עשוי לכלול שאריות עיצוב כמו &nbsp; או קישורי HTML):
 
@@ -765,11 +793,25 @@ exports.extractRecipeFromUrl = onCall(
           if (reformatted) steps = reformatted;
         } catch (e) { /* keep the single unsplit paragraph rather than fail the whole extraction */ }
       }
+      const ingredients = found.recipeIngredient.map((s) => decodeHtmlEntities(s)).filter(Boolean);
+      // Same "mentioned in the steps but not in the ingredient list" check
+      // the photo and AI-read paths get — a small text-only call over just
+      // the two lists. Skipped (not failed) if no AI provider is set up.
+      let extraIngredients = [];
+      if (steps.length) {
+        try {
+          const ai = makeAI(request.data);
+          const { text, usage } = await callAI(ai, extraIngredientsPrompt(ingredients, steps), 400);
+          await recordCost(request, ai, usage.input_tokens, usage.output_tokens);
+          extraIngredients = parseExtraIngredientsAiResponse(text);
+        } catch (e) { /* no extras rather than fail the whole extraction */ }
+      }
       return {
         title: decodeHtmlEntities(found.name || ''),
         image: recipeImageUrl(found.image),
         servings: parseServings(found.recipeYield),
-        ingredients: found.recipeIngredient.map((s) => decodeHtmlEntities(s)).filter(Boolean),
+        ingredients,
+        extraIngredients,
         steps,
         url: parsed.toString(),
       };

@@ -1,6 +1,6 @@
     const { useState, useEffect, useRef } = React;
 
-    const VERSION = "v7.03";
+    const VERSION = "v7.04";
 
     // ── CONFIG ────────────────────────────────────────────────────────────────────
     const FIREBASE_CONFIG = {
@@ -479,37 +479,54 @@
       );
     }
     function Modal({ onClose, children, disableClose, footer }) {
-      const [dragY, setDragY] = React.useState(0);
-      const startYRef = React.useRef(null);
-      const handleRef = React.useRef(null);
+      // The top strip is a resize handle (mouse or touch): drag up to make
+      // the sheet taller, down to shorten it, and far enough down to close.
+      // null height = size to content (the default).
+      const MIN_SHEET_H = 160;
+      const [sheetH, setSheetH] = React.useState(null);
+      const [dragging, setDragging] = React.useState(false);
+      const dragRef = React.useRef(null); // { startY, startH }
+      const sheetRef = React.useRef(null);
+      const maxH = function() { return window.innerHeight; };
 
       const onPointerDown = (e) => {
-        if (disableClose) return;
-        startYRef.current = e.clientY;
-        if (handleRef.current) handleRef.current.setPointerCapture(e.pointerId);
+        if (e.target.closest && e.target.closest("button")) return;
+        dragRef.current = { startY: e.clientY, startH: sheetRef.current ? sheetRef.current.offsetHeight : 0 };
+        setDragging(true);
+        e.currentTarget.setPointerCapture(e.pointerId);
       };
       const onPointerMove = (e) => {
-        if (startYRef.current === null) return;
-        setDragY(Math.max(0, e.clientY - startYRef.current));
+        if (!dragRef.current) return;
+        var h = dragRef.current.startH - (e.clientY - dragRef.current.startY);
+        setSheetH(Math.min(maxH(), Math.max(disableClose ? MIN_SHEET_H : 60, h)));
       };
       const onPointerUp = () => {
-        if (dragY > 80) { onClose(); }
-        else { setDragY(0); }
-        startYRef.current = null;
+        if (!dragRef.current) return;
+        dragRef.current = null;
+        setDragging(false);
+        if (!disableClose && sheetH !== null && sheetH < MIN_SHEET_H) { onClose(); return; }
       };
+      const isFull = sheetH !== null && sheetH >= maxH() - 4;
+      const toggleFull = () => { setSheetH(isFull ? null : maxH()); };
 
       return (
         <div className="fixed inset-0 bg-black/40 z-40 flex items-end" onClick={disableClose ? undefined : onClose}>
-          <div className="relative bg-white w-full max-w-md sm:max-w-lg md:max-w-xl mx-auto rounded-t-3xl flex flex-col"
-            style={{ transform: "translateY(" + dragY + "px)", transition: dragY === 0 ? "transform 0.2s ease" : "none", maxHeight: "88dvh" }}
+          <div ref={sheetRef} className={"relative bg-white w-full max-w-md sm:max-w-lg md:max-w-xl mx-auto flex flex-col " + (isFull ? "" : "rounded-t-3xl")}
+            style={{
+              height: sheetH !== null ? sheetH + "px" : undefined,
+              maxHeight: sheetH !== null ? "100dvh" : "88dvh",
+              transition: dragging ? "none" : "height 0.2s ease",
+            }}
             onClick={e => e.stopPropagation()}>
-            <div className="relative flex-shrink-0 px-6 pt-6">
-              <div ref={handleRef}
-                onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={onPointerUp}
-                className={"w-10 h-1.5 bg-gray-200 rounded-full mx-auto mb-4 " + (disableClose ? "" : "cursor-grab active:cursor-grabbing touch-none")} />
+            <div onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={onPointerUp} onPointerCancel={onPointerUp}
+              title="גרור למעלה או למטה כדי לשנות גודל"
+              className="relative flex-shrink-0 px-6 pt-4 pb-1 cursor-ns-resize touch-none select-none">
+              <div className="w-12 h-1.5 bg-gray-300 rounded-full mx-auto mb-4" />
               {!disableClose && (
-                <button onClick={onClose} className="absolute top-4 left-4 text-gray-400 hover:text-gray-600 text-2xl leading-none w-8 h-8 flex items-center justify-center">×</button>
+                <button onClick={onClose} className="absolute top-2 left-3 text-gray-400 hover:text-gray-600 text-2xl leading-none w-8 h-8 flex items-center justify-center">×</button>
               )}
+              <button onClick={toggleFull} title={isFull ? "הקטן" : "מסך מלא"}
+                className="absolute top-2 right-3 text-gray-400 hover:text-gray-600 text-lg leading-none w-8 h-8 flex items-center justify-center">{isFull ? "⤡" : "⤢"}</button>
             </div>
             {/* flex-1 + min-h-0 lets this shrink so a sticky footer (below)
                 always stays on screen without needing to scroll past the

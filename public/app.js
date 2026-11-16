@@ -1,6 +1,6 @@
     const { useState, useEffect, useRef } = React;
 
-    const VERSION = "v7.07";
+    const VERSION = "v7.08";
 
     // ── CONFIG ────────────────────────────────────────────────────────────────────
     const FIREBASE_CONFIG = {
@@ -186,13 +186,22 @@
       },
     };
 
-    // Alphabetical (Hebrew-aware) — shared by the home screen's own list
-    // order and the "copy items" destination picker, so a list never
-    // appears in a different order in one place than the other.
-    function sortListsByName(lists) {
+    // Shared by the home screen's own list order and the "copy items"
+    // destination picker, so a list never appears in a different order in
+    // one place than the other. "updated" = most recently touched first
+    // (updatedAt is stamped server-side on any item change; lists nobody has
+    // touched since fall back to their creation time).
+    function sortLists(lists, mode) {
       return lists.slice().sort(function(a, b) {
+        if (mode === "updated") {
+          var d = (b.updatedAt || b.createdAt || 0) - (a.updatedAt || a.createdAt || 0);
+          if (d) return d;
+        }
         return (a.name || "").localeCompare(b.name || "", "he");
       });
+    }
+    function getListSortMode() {
+      try { return localStorage.getItem("buli_list_sort") === "name" ? "name" : "updated"; } catch (e) { return "updated"; }
     }
 
     function formatDinnerDate(dateStr) {
@@ -807,6 +816,7 @@
       const [menuId,     setMenuId]     = useState(null);
       const [showDone,   setShowDone]   = useState(false);
       const [showTabInfo, setShowTabInfo] = useState(null); // "shopping" | "notes" | "tasks" | null
+      const [listSort, setListSort] = useState(getListSortMode); // "updated" | "name"
       const [copySourceList,   setCopySourceList]   = useState(null);
       const [copyItems,        setCopyItems]        = useState([]);
       const [copyItemsLoading, setCopyItemsLoading] = useState(false);
@@ -1185,7 +1195,18 @@
           setLoadError((err && err.message) || "שגיאה בטעינת הרשימות");
         });
       };
-      useEffect(function() { loadHome(); }, []);
+      // A cached home view (returning from a list) shows instantly but can be
+      // stale — e.g. a list you just added items to should jump to the top
+      // under "last updated" sorting. Quietly re-read the lists behind it.
+      useEffect(function() {
+        var hadCache = !!homeDataCache;
+        loadHome();
+        if (!hadCache) return;
+        loadMyListsFor(user.uid).then(function(fresh) {
+          if (homeDataCache) homeDataCache = Object.assign({}, homeDataCache, { lists: fresh });
+          setLists(fresh);
+        }, function() { /* keep showing the cached view */ });
+      }, []);
 
       // Contacts marked "תמיד" (Settings → אנשי קשר) are shared with
       // automatically the moment a new shopping list is created — no need
@@ -1346,7 +1367,7 @@
           return copySourceList && l.id !== copySourceList.id && l.type !== "notes" && !l.done &&
             (l.ownerId === user.uid || (l.sharedWith && (l.sharedWith[user.uid] === "edit" || l.sharedWith[user.uid] === "own")));
         });
-        return sortListsByName(filtered);
+        return sortLists(filtered, listSort);
       };
       const copyItemsToDest = (destId) => {
         if (copyBusy) return;
@@ -1469,8 +1490,8 @@
         }
       };
 
-      var activeShopping = sortListsByName(lists.filter(function(l) { return !l.done && l.type !== "notes"; }));
-      var doneLists      = sortListsByName(lists.filter(function(l) { return  l.done && l.type !== "notes"; }));
+      var activeShopping = sortLists(lists.filter(function(l) { return !l.done && l.type !== "notes"; }), listSort);
+      var doneLists      = sortLists(lists.filter(function(l) { return  l.done && l.type !== "notes"; }), listSort);
       var byDinnerDate   = function(a, b) { return (b.dinnerDate || "").localeCompare(a.dinnerDate || ""); };
       var activeNotes    = lists.filter(function(l) { return !l.done && l.type === "notes"; }).sort(byDinnerDate);
       var doneNotes      = lists.filter(function(l) { return  l.done && l.type === "notes"; }).sort(byDinnerDate);
@@ -1546,8 +1567,18 @@
               <div className="space-y-4">
                 <div className="flex items-center justify-between gap-2">
                   <button onClick={e => { e.stopPropagation(); quickCreate(); }} className="bg-blue-600 text-white text-sm font-medium px-4 py-2 rounded-full shadow">+ רשימה חדשה</button>
+                  <div className="flex items-center gap-2">
+                  <div className="flex bg-gray-100 rounded-full p-0.5" onClick={e => e.stopPropagation()}>
+                    {[["updated","עדכון אחרון"],["name","א-ב"]].map(function(o) {
+                      return (
+                        <button key={o[0]} onClick={function() { setListSort(o[0]); try { localStorage.setItem("buli_list_sort", o[0]); } catch (err) {} }}
+                          className={"text-xs px-3 py-1 rounded-full transition " + (listSort === o[0] ? "bg-white text-blue-600 font-semibold shadow-sm" : "text-gray-500")}>{o[1]}</button>
+                      );
+                    })}
+                  </div>
                   <button onClick={e => { e.stopPropagation(); setShowTabInfo("shopping"); }} title="מה זה הטאב הזה?"
                     className="w-7 h-7 flex items-center justify-center rounded-full text-gray-600 border-2 border-gray-400 text-base font-bold flex-shrink-0">ⓘ</button>
+                  </div>
                 </div>
                 {activeShopping.length === 0
                   ? <p className="text-center text-gray-300 text-sm py-8">אין רשימות קניות — לחץ "+ רשימה חדשה"</p>

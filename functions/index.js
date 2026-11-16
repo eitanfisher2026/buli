@@ -1,4 +1,5 @@
 const { onCall, HttpsError } = require('firebase-functions/v2/https');
+const { onValueWritten } = require('firebase-functions/v2/database');
 const admin = require('firebase-admin');
 const Anthropic = require('@anthropic-ai/sdk');
 const { GoogleGenerativeAI } = require('@google/generative-ai');
@@ -857,5 +858,22 @@ exports.extractRecipeFromImages = onCall(
     await recordCost(request, ai, usage.input_tokens, usage.output_tokens);
     const recipe = parseRecipeAiResponse(text);
     return Object.assign({}, recipe, { image: '', url: null });
+  }
+);
+
+// ─── List "last updated" stamp ──────────────────────────────────────────────────
+// Any write to any item of a list — from any screen or device — stamps
+// lists/{listId}/updatedAt, which the home screen sorts by. Done here rather
+// than at every client write site so nothing can be missed. Skipped when the
+// list itself doesn't exist (the per-user tasks lists, or a deleted list —
+// deletion removes the list and its items in one atomic write, so by the time
+// this runs the list is already gone), so it never recreates one as a stub.
+exports.stampListUpdated = onValueWritten(
+  { ref: '/items/{listId}/{itemId}', region: 'europe-west1', memory: '256MiB' },
+  async (event) => {
+    const listId = event.params.listId;
+    const exists = await db.ref(`lists/${listId}/type`).once('value');
+    if (!exists.exists()) return;
+    await db.ref(`lists/${listId}/updatedAt`).set(Date.now());
   }
 );

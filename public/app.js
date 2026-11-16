@@ -1,6 +1,6 @@
     const { useState, useEffect, useRef } = React;
 
-    const VERSION = "v7.12";
+    const VERSION = "v7.13";
 
     // ── CONFIG ────────────────────────────────────────────────────────────────────
     const FIREBASE_CONFIG = {
@@ -492,7 +492,7 @@
         </div>
       );
     }
-    function Modal({ onClose, children, disableClose, footer }) {
+    function Modal({ onClose, children, disableClose, footer, closeLabel }) {
       // The top strip is a resize handle (mouse or touch): drag up to make
       // the sheet taller, down to shorten it, and far enough down to close.
       // null height = size to content (the default).
@@ -537,7 +537,11 @@
               className="relative flex-shrink-0 px-6 pt-4 pb-1 cursor-ns-resize touch-none select-none">
               <div className="w-12 h-1.5 bg-gray-300 rounded-full mx-auto mb-4" />
               {!disableClose && (
-                <button onClick={onClose} className="absolute top-2 left-3 text-gray-400 hover:text-gray-600 text-2xl leading-none w-8 h-8 flex items-center justify-center">×</button>
+                closeLabel ? (
+                  <button onClick={onClose} className="absolute top-2 left-3 bg-blue-600 text-white text-sm font-semibold px-3 h-8 rounded-full">{closeLabel}</button>
+                ) : (
+                  <button onClick={onClose} className="absolute top-2 left-3 text-gray-400 hover:text-gray-600 text-2xl leading-none w-8 h-8 flex items-center justify-center">×</button>
+                )
               )}
               <button onClick={toggleFull} title={isFull ? "הקטן" : "מסך מלא"}
                 className="absolute top-2 right-3 text-gray-400 hover:text-gray-600 text-lg leading-none w-8 h-8 flex items-center justify-center">{isFull ? "⤡" : "⤢"}</button>
@@ -4173,7 +4177,7 @@
               var fieldCls = "w-full border border-gray-200 rounded-xl px-3 py-2 text-right text-sm focus:outline-none focus:border-blue-400";
               var numCls = "w-14 border border-gray-200 rounded-lg px-1 py-0.5 text-center";
               return (
-                <Modal onClose={function() { saveRecipeEdit(recItem, d); closeRecipeFlow(); }}>
+                <Modal closeLabel="שמור וצא" onClose={function() { saveRecipeEdit(recItem, d); closeRecipeFlow(); }}>
                   <label className="text-xs text-gray-400 block mb-1 text-right">שם המנה</label>
                   <input value={d.name} onChange={function(e) { setD({ name: e.target.value }); }} className={fieldCls + " mb-3 text-base font-semibold"} />
                   <div className="flex items-center justify-center gap-4 mb-3 text-xs text-gray-500">

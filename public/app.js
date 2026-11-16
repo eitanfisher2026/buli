@@ -1,6 +1,6 @@
     const { useState, useEffect, useRef } = React;
 
-    const VERSION = "v7.11";
+    const VERSION = "v7.12";
 
     // ── CONFIG ────────────────────────────────────────────────────────────────────
     const FIREBASE_CONFIG = {
@@ -171,7 +171,7 @@
           ["+ תפריט חדש", "יוצר תפריט לארוחה או לאירוע, עם תאריך ומספר הסועדים המשוער."],
           ["הוספת מנות", "כל מנה היא שורה בתפריט, עם אפשרות להוסיף לה הערה חופשית."],
           ["צירוף מתכון (🍳)", "שלוש דרכים לצרף מתכון למנה: הדבקת קישור, העלאת תמונה, או צילום ישיר במצלמה. האפליקציה קוראת את זה ומוציאה משם את המרכיבים ואת אופן ההכנה, כולל כמה מנות המתכון מכין."],
-          ["עריכת מתכון", "אחרי שהמתכון צורף (📖), אפשר לתקן כמה מנות הוא מכין בפועל, ובנפרד — לכמה אנשים מכינים אותו הפעם (בברירת מחדל, מספר הסועדים של התפריט)."],
+          ["עריכת מתכון", "אחרי שמתכון צורף, שם המנה הופך לקישור. לחיצה עליו פותחת את המתכון ישר לעריכה: שם המנה, כמה מנות המתכון מכין, לכמה אנשים מכינים אותו הפעם (בברירת מחדל מספר הסועדים של התפריט), המרכיבים ואופן ההכנה. השינויים נשמרים אוטומטית כשסוגרים את החלון."],
           ["סימון מנה", "התיבה ליד כל מנה מסמנת שהיא אכן מבושלת הפעם — רק מנות מסומנות עם מתכון נכנסות לרשימת הקניות."],
           ["בנה רשימת קניות", "מרכז את המרכיבים מכל המנות המסומנות, מתאים את הכמויות למספר האנשים שהוגדר לכל מנה, ומאחד מרכיבים זהים בין מנות שונות. אפשר לעדכן רשימה קיימת מארוחה קודמת או להתחיל רשימה חדשה."],
         ],
@@ -2544,7 +2544,14 @@
           <div className="flex items-center gap-2 px-3 py-2.5">
             <Checkbox checked={!!item.done} onChange={function() { onToggle(item); }} />
             <div className="flex-1 min-w-0">
-              <span className={"text-sm block " + (item.done ? "font-semibold text-blue-900" : "font-medium text-gray-800")}>{item.name}</span>
+              {item.recipe && canEdit ? (
+                // With a recipe attached, the name itself opens it (straight
+                // into editing) — replaces the separate 📖 and ✏️ icons.
+                <button onClick={function() { onRecipe(item); }}
+                  className={"text-sm block text-right underline underline-offset-2 decoration-blue-300 " + (item.done ? "font-semibold text-blue-900" : "font-medium text-blue-700")}>{item.name}</button>
+              ) : (
+                <span className={"text-sm block " + (item.done ? "font-semibold text-blue-900" : "font-medium text-gray-800")}>{item.name}</span>
+              )}
               {!editingNote && item.note ? (
                 <div onClick={canEdit ? openNote : undefined}
                   className={"text-xs text-gray-400 mt-0.5 flex items-start gap-1 " + (canEdit ? "cursor-pointer hover:text-gray-600" : "")}>
@@ -2564,9 +2571,13 @@
                   <button onClick={onMoveDown} disabled={isLast}
                     className="w-5 h-4 flex items-center justify-center text-gray-300 hover:text-blue-500 disabled:opacity-20 text-xs leading-none">▼</button>
                 </div>
-                <button onClick={function() { onRecipe(item); }} title={item.recipe ? "מתכון מצורף" : "צרף מתכון"}
-                  className={"text-sm px-0.5 " + (item.recipe ? "text-green-600" : "text-gray-300 hover:text-orange-400")}>{item.recipe ? "📖" : "🍳"}</button>
-                <button onClick={function() { onEdit(item); }} className="text-gray-300 hover:text-blue-400 text-sm px-0.5">✏️</button>
+                {!item.recipe && (
+                  <button onClick={function() { onRecipe(item); }} title="צרף מתכון"
+                    className="text-sm px-0.5 text-gray-300 hover:text-orange-400">🍳</button>
+                )}
+                {!item.recipe && (
+                  <button onClick={function() { onEdit(item); }} className="text-gray-300 hover:text-blue-400 text-sm px-0.5">✏️</button>
+                )}
                 <button onClick={function() { onDelete(item.id); }} className="text-gray-300 hover:text-red-400 text-base">🗑️</button>
               </div>
             )}
@@ -2962,7 +2973,7 @@
       const [removingShareUid, setRemovingShareUid] = useState(null);
       const [recipeItemId,        setRecipeItemId]        = useState(null);
       const [recipeForceEntry,    setRecipeForceEntry]    = useState(false);
-      const [recipeEditDraft,     setRecipeEditDraft]     = useState(null); // { title, ingredients, steps } as editable text while editing a saved recipe
+      const [recipeEditDraft,     setRecipeEditDraft]     = useState(null); // editable text of the dish + its recipe while the recipe sheet is open (see recipeDraftFrom)
       const [recipeUrlInput,      setRecipeUrlInput]      = useState("");
       const [recipeImages,        setRecipeImages]        = useState([]);
       const [recipeExtracting,    setRecipeExtracting]    = useState(false);
@@ -3471,23 +3482,46 @@
         });
       };
 
-      const saveRecipeEdit = (itemId) => {
-        var d = recipeEditDraft;
-        if (!d) return;
-        var lines = function(s) { return String(s || "").split("\n").map(function(x) { return x.trim(); }).filter(Boolean); };
-        var patch = { title: d.title.trim(), ingredients: lines(d.ingredients), steps: lines(d.steps) };
-        db.ref("items/" + listId + "/" + itemId + "/recipe").update(patch).then(function() {
-          setItems(function(prev) { return prev.map(function(i) { return i.id === itemId ? Object.assign({}, i, { recipe: Object.assign({}, i.recipe, patch) }) : i; }); });
-          setRecipeEditDraft(null);
-          showToast("המתכון עודכן");
-        }, function(err) { showToast("שגיאה: " + (err && err.message || "?")); });
+      // Editable text snapshot of a dish + its recipe, for the recipe sheet.
+      const recipeDraftFrom = (item) => {
+        var r = item.recipe || {};
+        return {
+          name: item.name || "",
+          servings: r.servings ? String(r.servings) : "",
+          targetServings: String(r.targetServings || list.dinersCount || 12),
+          ingredients: (r.ingredients || []).join("\n"),
+          steps: (r.steps || []).join("\n"),
+        };
       };
 
-      const updateRecipeField = (itemId, field, value) => {
-        var n = parseInt(value, 10);
-        if (!n || n < 1) return;
-        db.ref("items/" + listId + "/" + itemId + "/recipe/" + field).set(n);
-        setItems(function(prev) { return prev.map(function(i) { return i.id === itemId ? Object.assign({}, i, { recipe: Object.assign({}, i.recipe, { [field]: n }) }) : i; }); });
+      // Writes only what actually differs from what's saved, so just opening
+      // and closing a recipe doesn't write anything or show a toast.
+      const saveRecipeEdit = (item, d) => {
+        if (!d) return;
+        var orig = recipeDraftFrom(item);
+        var lines = function(s) { return String(s || "").split("\n").map(function(x) { return x.trim(); }).filter(Boolean); };
+        var posInt = function(s) { var n = parseInt(s, 10); return n > 0 ? n : null; };
+        var updates = {};
+        var recipePatch = {};
+        var base = "items/" + listId + "/" + item.id;
+        if (d.name.trim() && d.name.trim() !== orig.name) updates[base + "/name"] = d.name.trim();
+        if (d.ingredients !== orig.ingredients) recipePatch.ingredients = lines(d.ingredients);
+        if (d.steps !== orig.steps) recipePatch.steps = lines(d.steps);
+        if (d.servings !== orig.servings && posInt(d.servings)) recipePatch.servings = posInt(d.servings);
+        if (d.targetServings !== orig.targetServings && posInt(d.targetServings)) recipePatch.targetServings = posInt(d.targetServings);
+        Object.keys(recipePatch).forEach(function(k) { updates[base + "/recipe/" + k] = recipePatch[k]; });
+        if (!Object.keys(updates).length) return;
+        var newName = updates[base + "/name"];
+        setItems(function(prev) {
+          return prev.map(function(i) {
+            if (i.id !== item.id) return i;
+            var next = Object.assign({}, i, { recipe: Object.assign({}, i.recipe, recipePatch) });
+            if (newName) next.name = newName;
+            return next;
+          });
+        });
+        db.ref().update(updates).then(function() { showToast("השינויים נשמרו"); },
+          function(err) { showToast("שגיאה בשמירה: " + (err && err.message || "?")); });
       };
 
       // Every picked/shot photo is downscaled to at most 1600px on its long
@@ -4088,7 +4122,6 @@
             onSave={saveEdit} onClose={() => setEditItem(null)} showToast={showToast} />}
           {noteEdit && <NoteEditModal item={noteEdit} onSave={saveNoteEdit} onClose={function() { setNoteEdit(null); }} />}
           {taskEdit && <TaskEditModal item={taskEdit} onChange={setTaskEdit} onSave={saveTaskEdit} onDelete={deleteTask} onClose={() => setTaskEdit(null)} />}
-          {confirmDialog && <ConfirmDialog message={confirmDialog.message} confirmLabel={confirmDialog.confirmLabel} onConfirm={confirmDialog.onConfirm} onClose={function() { setConfirmDialog(null); }} />}
 
 
 
@@ -4130,77 +4163,53 @@
             var recItem = items.find(function(i) { return i.id === recipeItemId; });
             if (!recItem) return null;
             var viewingSaved = recItem.recipe && !recipeForceEntry && !recipePendingServings;
-            if (viewingSaved && recipeEditDraft) {
-              var d = recipeEditDraft;
-              var setD = function(patch) { setRecipeEditDraft(Object.assign({}, d, patch)); };
-              var fieldCls = "w-full border border-gray-200 rounded-xl px-3 py-2 text-right text-sm focus:outline-none focus:border-blue-400";
-              return (
-                <Modal onClose={function() { setRecipeEditDraft(null); }}
-                  footer={
-                    <div className="flex gap-2">
-                      <button onClick={function() { saveRecipeEdit(recItem.id); }}
-                        className="flex-1 bg-blue-600 text-white py-3 rounded-xl font-semibold text-sm">שמור</button>
-                      <button onClick={function() { setRecipeEditDraft(null); }}
-                        className="flex-1 bg-gray-100 text-gray-700 py-3 rounded-xl font-medium text-sm">ביטול</button>
-                    </div>
-                  }>
-                  <h3 className="text-lg font-bold text-center mb-4">עריכת מתכון</h3>
-                  <label className="text-xs text-gray-400 block mb-1 text-right">שם</label>
-                  <input value={d.title} onChange={function(e) { setD({ title: e.target.value }); }} className={fieldCls + " mb-3"} />
-                  <label className="text-xs text-gray-400 block mb-1 text-right">מרכיבים — שורה לכל מרכיב</label>
-                  <textarea value={d.ingredients} onChange={function(e) { setD({ ingredients: e.target.value }); }} rows={8} className={fieldCls + " mb-3 resize-y"} />
-                  <label className="text-xs text-gray-400 block mb-1 text-right">אופן ההכנה — שורה לכל שלב</label>
-                  <textarea value={d.steps} onChange={function(e) { setD({ steps: e.target.value }); }} rows={8} className={fieldCls + " resize-y"} />
-                </Modal>
-              );
-            }
+            // A dish that already has a recipe opens straight into an editable
+            // form — no separate view/edit modes. Closing the sheet (×, tap
+            // outside, swipe down) saves whatever changed.
             if (viewingSaved) {
               var r = recItem.recipe;
+              var d = recipeEditDraft || recipeDraftFrom(recItem);
+              var setD = function(patch) { setRecipeEditDraft(Object.assign({}, d, patch)); };
+              var fieldCls = "w-full border border-gray-200 rounded-xl px-3 py-2 text-right text-sm focus:outline-none focus:border-blue-400";
+              var numCls = "w-14 border border-gray-200 rounded-lg px-1 py-0.5 text-center";
               return (
-                <Modal onClose={closeRecipeFlow}>
-                  <h3 className="text-lg font-bold text-center mb-2">{r.title || recItem.name}</h3>
+                <Modal onClose={function() { saveRecipeEdit(recItem, d); closeRecipeFlow(); }}>
+                  <label className="text-xs text-gray-400 block mb-1 text-right">שם המנה</label>
+                  <input value={d.name} onChange={function(e) { setD({ name: e.target.value }); }} className={fieldCls + " mb-3 text-base font-semibold"} />
                   <div className="flex items-center justify-center gap-4 mb-3 text-xs text-gray-500">
                     <label className="flex items-center gap-1">
                       <span>המתכון מכין</span>
-                      <input type="number" min="1" defaultValue={r.servings || ""} placeholder="?"
-                        onBlur={function(e) { if (e.target.value) updateRecipeField(recItem.id, "servings", e.target.value); }}
-                        className="w-14 border border-gray-200 rounded-lg px-1 py-0.5 text-center" />
+                      <input type="number" min="1" value={d.servings} placeholder="?" onChange={function(e) { setD({ servings: e.target.value }); }} className={numCls} />
                       <span>מנות</span>
                     </label>
                     <label className="flex items-center gap-1">
                       <span>מכינים הפעם ל-</span>
-                      <input type="number" min="1" defaultValue={r.targetServings || list.dinersCount || 12}
-                        onBlur={function(e) { if (e.target.value) updateRecipeField(recItem.id, "targetServings", e.target.value); }}
-                        className="w-14 border border-gray-200 rounded-lg px-1 py-0.5 text-center" />
+                      <input type="number" min="1" value={d.targetServings} onChange={function(e) { setD({ targetServings: e.target.value }); }} className={numCls} />
                       <span>אנשים</span>
                     </label>
                   </div>
                   {r.url && <a href={r.url} target="_blank" rel="noopener noreferrer" className="block text-xs text-blue-500 text-center mb-3 truncate" dir="ltr">{r.url}</a>}
-                  {r.image && <img src={r.image} className="w-full h-40 object-cover rounded-xl mb-3" />}
-                  <div className="mb-4">
-                    <p className="text-xs text-gray-400 mb-1 text-right font-semibold">מרכיבים</p>
-                    <ul className="text-sm text-gray-700 space-y-1 text-right list-disc list-inside">
-                      {(r.ingredients || []).map(function(ing, i) { return <li key={i}>{ing}</li>; })}
-                    </ul>
-                    {(r.extraIngredients || []).length > 0 && (
-                      <div className="mt-2">
-                        <p className="text-xs text-gray-400 text-right">מופיעים באופן ההכנה בלבד (בלי כמות):</p>
-                        <p className="text-sm text-gray-600 text-right">{r.extraIngredients.join(", ")}</p>
-                      </div>
-                    )}
-                  </div>
-                  <div className="mb-4">
-                    <p className="text-xs text-gray-400 mb-1 text-right font-semibold">אופן ההכנה</p>
-                    <ol className="text-sm text-gray-700 space-y-1.5 text-right list-decimal list-inside">
-                      {(r.steps || []).map(function(s, i) { return <li key={i}>{s}</li>; })}
-                    </ol>
-                  </div>
+                  <label className="text-xs text-gray-400 block mb-1 text-right">מרכיבים — שורה לכל מרכיב</label>
+                  <textarea value={d.ingredients} onChange={function(e) { setD({ ingredients: e.target.value }); }} rows={8} className={fieldCls + " mb-2 resize-y"} />
+                  {(r.extraIngredients || []).length > 0 && (
+                    <div className="mb-3">
+                      <p className="text-xs text-gray-400 text-right">מופיעים באופן ההכנה בלבד (בלי כמות):</p>
+                      <p className="text-sm text-gray-600 text-right">{r.extraIngredients.join(", ")}</p>
+                    </div>
+                  )}
+                  <label className="text-xs text-gray-400 block mb-1 text-right">אופן ההכנה — שורה לכל שלב</label>
+                  <textarea value={d.steps} onChange={function(e) { setD({ steps: e.target.value }); }} rows={8} className={fieldCls + " mb-4 resize-y"} />
+                  <p className="text-xs text-gray-400 text-center mb-3">השינויים נשמרים אוטומטית ביציאה</p>
                   <div className="flex gap-2">
-                    <button onClick={function() { setRecipeEditDraft({ title: r.title || recItem.name || "", ingredients: (r.ingredients || []).join("\n"), steps: (r.steps || []).join("\n") }); }}
-                      className="flex-1 bg-blue-50 text-blue-700 py-3 rounded-xl font-medium text-sm">ערוך מתכון</button>
-                    <button onClick={function() { setRecipeForceEntry(true); setRecipeUrlInput(""); setRecipeImages([]); setRecipeError(""); }}
+                    <button onClick={function() { saveRecipeEdit(recItem, d); setRecipeEditDraft(null); setRecipeForceEntry(true); setRecipeUrlInput(""); setRecipeImages([]); setRecipeError(""); }}
                       className="flex-1 bg-gray-100 text-gray-700 py-3 rounded-xl font-medium text-sm">בחר מתכון אחר</button>
-                    <button onClick={function() { removeRecipeFromItem(recItem.id); closeRecipeFlow(); }}
+                    <button onClick={function() {
+                        setConfirmDialog({
+                          message: "להסיר את המתכון מהמנה \"" + (recItem.name || "") + "\"?",
+                          confirmLabel: "הסר מתכון",
+                          onConfirm: function() { removeRecipeFromItem(recItem.id); closeRecipeFlow(); },
+                        });
+                      }}
                       className="flex-1 bg-red-50 text-red-500 py-3 rounded-xl font-medium text-sm">הסר מתכון</button>
                   </div>
                 </Modal>
@@ -4320,6 +4329,10 @@
               )}
             </Modal>
           )}
+
+          {/* Rendered last so it always sits on top of any other open sheet
+              (e.g. confirming "remove recipe" from inside the recipe sheet). */}
+          {confirmDialog && <ConfirmDialog message={confirmDialog.message} confirmLabel={confirmDialog.confirmLabel} onConfirm={confirmDialog.onConfirm} onClose={function() { setConfirmDialog(null); }} />}
 
         </div>
       );

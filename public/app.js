@@ -1,6 +1,6 @@
     const { useState, useEffect, useRef } = React;
 
-    const VERSION = "v7.06";
+    const VERSION = "v7.07";
 
     // ── CONFIG ────────────────────────────────────────────────────────────────────
     const FIREBASE_CONFIG = {
@@ -3535,10 +3535,31 @@
         var finalItems = shoppingPreview.finalItems;
         setBuildingShoppingList(true);
 
+        // "תפריט #2 - קניות", then "(2)", "(3)"... — checked against every
+        // list this user can see, so a second build never produces a list
+        // with a name that's already on the home screen.
+        function uniqueListName(base) {
+          return db.ref("listsByUser/" + user.uid).once("value").then(function(snap) {
+            var ids = Object.keys(snap.val() || {});
+            return Promise.all(ids.map(function(id) {
+              return db.ref("lists/" + id + "/name").once("value").then(function(s) { return s.val(); }, function() { return null; });
+            }));
+          }).then(function(names) {
+            var taken = {};
+            names.forEach(function(n) { if (n) taken[n.trim()] = 1; });
+            if (!taken[base]) return base;
+            for (var i = 2; ; i++) { var candidate = base + " (" + i + ")"; if (!taken[candidate]) return candidate; }
+          });
+        }
+
         function createLinkedList() {
+          return uniqueListName((list.name || "ארוחה") + " - קניות").then(insertLinkedList);
+        }
+
+        function insertLinkedList(name) {
           var newId = db.ref("lists").push().key;
           var newList = {
-            name: (list.name || "ארוחה") + " - קניות",
+            name: name,
             type: "shopping",
             ownerId: user.uid,
             ownerName: user.displayName,

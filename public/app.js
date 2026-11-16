@@ -1,6 +1,6 @@
     const { useState, useEffect, useRef } = React;
 
-    const VERSION = "v7.05";
+    const VERSION = "v7.06";
 
     // ── CONFIG ────────────────────────────────────────────────────────────────────
     const FIREBASE_CONFIG = {
@@ -273,18 +273,6 @@
       "קטנה":1,"קטן":1,"קטנות":1,"קטנים":1,
       "או":1,
     };
-    // Scaled quantities come out like "0.5 בצל" or "30 גרם חמאה" — nobody buys
-    // those. Rounded up: grams/ml to the next 100, everything else to the
-    // next whole unit. Items with no quantity are left alone.
-    function roundShoppingItem(it, enabled) {
-      if (!enabled || it.quantity == null) return it;
-      var q = it.quantity;
-      var rounded = (it.unit === "גרם" || it.unit === "מ\"ל")
-        ? Math.max(100, Math.ceil(q / 100 - 1e-9) * 100)
-        : Math.max(1, Math.ceil(q - 1e-9));
-      return Object.assign({}, it, { quantity: rounded });
-    }
-
     function coreIngredientName(name) {
       var words = String(name || "").replace(/,/g, " ").split(/\s+/).filter(Boolean);
       var core = words.filter(function(w) { return !INGREDIENT_DESCRIPTOR_WORDS[w]; });
@@ -2933,7 +2921,6 @@
       const [recipeError,         setRecipeError]         = useState("");
       const [buildingShoppingList, setBuildingShoppingList] = useState(false);
       const [shoppingPreview, setShoppingPreview] = useState(null); // { dishCount, finalItems } | null
-      const [roundUpQty, setRoundUpQty] = useState(function() { try { return localStorage.getItem("buli_round_up_qty") !== "0"; } catch (e) { return true; } });
       const [filterStatus, setFilterStatus] = useState(function() { return localStorage.getItem("buli_filter_status") || "all"; });
       const [filterPerson, setFilterPerson] = useState(function() { return localStorage.getItem("buli_filter_person") || "all"; });
       const [showFilters, setShowFilters] = useState(false);
@@ -3545,7 +3532,7 @@
       // sidesteps that by leaving the old one untouched and starting fresh.
       const commitShoppingList = (mode) => {
         if (!shoppingPreview || buildingShoppingList) return;
-        var finalItems = shoppingPreview.finalItems.map(function(it) { return roundShoppingItem(it, roundUpQty); });
+        var finalItems = shoppingPreview.finalItems;
         setBuildingShoppingList(true);
 
         function createLinkedList() {
@@ -4184,15 +4171,9 @@
           {shoppingPreview && (
             <Modal onClose={function() { if (!buildingShoppingList) setShoppingPreview(null); }}>
               <h3 className="text-lg font-bold text-center mb-1">מרכיבים לקנייה</h3>
-              <p className="text-xs text-gray-400 text-center mb-3">לפי {shoppingPreview.dishCount} מנות מסומנות, בכמויות המותאמות לכל מנה</p>
-              <label className="flex items-center gap-2 bg-gray-50 rounded-xl px-3 py-2 mb-3 cursor-pointer">
-                <input type="checkbox" checked={roundUpQty} className="w-4 h-4 flex-shrink-0"
-                  onChange={function(e) { var v = e.target.checked; setRoundUpQty(v); try { localStorage.setItem("buli_round_up_qty", v ? "1" : "0"); } catch (err) {} }} />
-                <span className="text-sm text-gray-700 flex-1 text-right">עגל כמויות כלפי מעלה <span className="text-xs text-gray-400">(גרם ומ״ל ל-100 הקרוב, השאר ליחידה שלמה)</span></span>
-              </label>
+              <p className="text-xs text-gray-400 text-center mb-4">לפי {shoppingPreview.dishCount} מנות מסומנות, בכמויות המותאמות לכל מנה</p>
               <ul className="text-sm text-gray-700 space-y-1.5 text-right list-disc list-inside mb-5 max-h-80 overflow-y-auto">
-                {shoppingPreview.finalItems.map(function(raw, i) {
-                  var it = roundShoppingItem(raw, roundUpQty);
+                {shoppingPreview.finalItems.map(function(it, i) {
                   return (
                     <li key={i}>
                       {(it.quantity ? it.quantity + " " : "") + (it.unit ? it.unit + " " : "") + it.name}

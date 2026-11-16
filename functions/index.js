@@ -649,7 +649,7 @@ function recipeExtractionPrompt(sourceDescription) {
   return `להלן ${sourceDescription}. חלץ ממנו מתכון בישול, אם יש כזה.
 
 החזר אך ורק JSON תקין (ללא markdown, ללא הסברים, ללא טקסט נוסף) בפורמט הבא:
-{"title": "שם המנה", "servings": מספר או null, "ingredients": ["מרכיב 1", "מרכיב 2"], "steps": ["שלב 1", "שלב 2"]}
+{"title": "שם המנה", "servings": מספר או null, "ingredients": ["מרכיב 1", "מרכיב 2"], "extraIngredients": ["שם מרכיב"], "steps": ["שלב 1", "שלב 2"]}
 
 כללים:
 - "title" — שם המנה בלבד, כפי שמופיע במקור.
@@ -657,8 +657,9 @@ function recipeExtractionPrompt(sourceDescription) {
 - "ingredients" — רק שורות מרכיבים אמיתיות (כמות, יחידה ותיאור יחד, כמחרוזת אחת לכל מרכיב).
 - "steps" — רק פעולות הכנה בפועל, שלב אחד לכל איבר במערך. אם המקור מכיל רק את רשימת המרכיבים (למשל צילום מסך של חלק מהמתכון), החזר מערך ריק — זה תקין.
 - מרכיבים שמופיעים תחת כותרות משנה (כמו "לרוטב", "לציפוי") — כלול את כולם ברשימה אחת.
-- אל תכלול שום דבר מלבד השלושה האלה: לא סיפור רקע או אנקדוטה אישית של כותב/ת המתכון, לא הקדמה, לא טיפים או "איך להגיש" שאינם שלב הכנה ממשי, לא ערכים תזונתיים, לא תגובות גולשים, לא פרסומות, לא מתכונים קשורים. אם משהו מהתוכן הוא לא מרכיב ולא פעולת הכנה בפועל — השמט אותו לגמרי, גם אם הוא נראה שימושי.
-- רק אם אין במקור אף מרכיב בכלל, החזר: {"error": "not_a_recipe"}`;
+- "extraIngredients" — מרכיבים שמוזכרים באופן ההכנה אבל לא מופיעים ברשימת המרכיבים. שם המרכיב בלבד, בלי כמות. אל תמציא — רק מה שכתוב במפורש. אם אין כאלה, מערך ריק.
+- אל תכלול שום דבר מלבד אלה: לא סיפור רקע או אנקדוטה אישית של כותב/ת המתכון, לא הקדמה, לא טיפים או "איך להגיש" שאינם שלב הכנה ממשי, לא ערכים תזונתיים, לא תגובות גולשים, לא פרסומות, לא מתכונים קשורים. אם משהו מהתוכן הוא לא מרכיב ולא פעולת הכנה בפועל — השמט אותו לגמרי, גם אם הוא נראה שימושי.
+- רק אם אין במקור אף מרכיב בכלל (לא ברשימה ולא באופן ההכנה), החזר: {"error": "not_a_recipe"}`;
 }
 
 // Some sites' structured data still carries raw HTML leftovers (a literal
@@ -687,10 +688,11 @@ function parseRecipeAiResponse(text) {
   }
   if (data.error) throw new HttpsError('not-found', 'לא זוהה מתכון בתוכן שסופק — נסה קישור או תמונה אחרת');
   const ingredients = Array.isArray(data.ingredients) ? data.ingredients.map((s) => decodeHtmlEntities(s)).filter(Boolean) : [];
-  if (!ingredients.length) throw new HttpsError('not-found', 'לא זוהה מתכון בתוכן שסופק — נסה קישור או תמונה אחרת');
+  const extraIngredients = Array.isArray(data.extraIngredients) ? data.extraIngredients.map((s) => decodeHtmlEntities(s)).filter(Boolean) : [];
+  if (!ingredients.length && !extraIngredients.length) throw new HttpsError('not-found', 'לא זוהה מתכון בתוכן שסופק — נסה קישור או תמונה אחרת');
   const steps = Array.isArray(data.steps) ? data.steps.map((s) => decodeHtmlEntities(s)).filter(Boolean) : [];
   const servings = (typeof data.servings === 'number' && data.servings > 0) ? Math.round(data.servings) : null;
-  return { title: decodeHtmlEntities(data.title || ''), servings, ingredients, steps };
+  return { title: decodeHtmlEntities(data.title || ''), servings, ingredients, extraIngredients, steps };
 }
 
 // If a site's own structured data dumps the whole method as one unbroken

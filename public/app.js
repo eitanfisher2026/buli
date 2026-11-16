@@ -1,6 +1,6 @@
     const { useState, useEffect, useRef } = React;
 
-    const VERSION = "v7.02";
+    const VERSION = "v7.03";
 
     // ── CONFIG ────────────────────────────────────────────────────────────────────
     const FIREBASE_CONFIG = {
@@ -273,6 +273,18 @@
       "קטנה":1,"קטן":1,"קטנות":1,"קטנים":1,
       "או":1,
     };
+    // Scaled quantities come out like "0.5 בצל" or "30 גרם חמאה" — nobody buys
+    // those. Rounded up: grams/ml to the next 100, everything else to the
+    // next whole unit. Items with no quantity are left alone.
+    function roundShoppingItem(it, enabled) {
+      if (!enabled || it.quantity == null) return it;
+      var q = it.quantity;
+      var rounded = (it.unit === "גרם" || it.unit === "מ\"ל")
+        ? Math.max(100, Math.ceil(q / 100 - 1e-9) * 100)
+        : Math.max(1, Math.ceil(q - 1e-9));
+      return Object.assign({}, it, { quantity: rounded });
+    }
+
     function coreIngredientName(name) {
       var words = String(name || "").replace(/,/g, " ").split(/\s+/).filter(Boolean);
       var core = words.filter(function(w) { return !INGREDIENT_DESCRIPTOR_WORDS[w]; });
@@ -2902,6 +2914,7 @@
       const [recipeError,         setRecipeError]         = useState("");
       const [buildingShoppingList, setBuildingShoppingList] = useState(false);
       const [shoppingPreview, setShoppingPreview] = useState(null); // { dishCount, finalItems } | null
+      const [roundUpQty, setRoundUpQty] = useState(function() { try { return localStorage.getItem("buli_round_up_qty") !== "0"; } catch (e) { return true; } });
       const [filterStatus, setFilterStatus] = useState(function() { return localStorage.getItem("buli_filter_status") || "all"; });
       const [filterPerson, setFilterPerson] = useState(function() { return localStorage.getItem("buli_filter_person") || "all"; });
       const [showFilters, setShowFilters] = useState(false);
@@ -3378,6 +3391,9 @@
           // count but editable per dish (e.g. a double batch of one side).
           targetServings: list.dinersCount || 12,
           ingredients: recipeData.ingredients || [],
+          // Names only, no quantity — mentioned in the steps but missing
+          // from the recipe's own ingredient list.
+          extraIngredients: recipeData.extraIngredients || [],
           steps: recipeData.steps || [],
         };
         db.ref("items/" + listId + "/" + recipeItemId + "/recipe").set(toSave).then(function() {
@@ -3451,15 +3467,19 @@
       // out without needing to remove its recipe. Each dish scales by its
       // OWN target-servings/recipe-servings ratio, not one menu-wide number.
       const computeShoppingIngredients = () => {
-        var withRecipes = items.filter(function(i) { return i.done && i.recipe && i.recipe.ingredients && i.recipe.ingredients.length; });
+        var withRecipes = items.filter(function(i) {
+          return i.done && i.recipe && ((i.recipe.ingredients && i.recipe.ingredients.length) || (i.recipe.extraIngredients && i.recipe.extraIngredients.length));
+        });
         var diners = list.dinersCount || 12;
         var merged = {};
         var unmergedSeen = {};
         var unmerged = [];
+        var extraNames = [];
         withRecipes.forEach(function(dish) {
           var target = dish.recipe.targetServings || diners;
           var scale = target / (dish.recipe.servings || target);
-          dish.recipe.ingredients.forEach(function(line) {
+          (dish.recipe.extraIngredients || []).forEach(function(n) { extraNames.push(coreIngredientName(n)); });
+          (dish.recipe.ingredients || []).forEach(function(line) {
             var parsed = parseIngredientLine(line);
             var coreName = coreIngredientName(parsed.name);
             if (parsed.quantity != null && parsed.unit) {
@@ -3475,6 +3495,17 @@
               unmerged.push({ name: coreName, unit: parsed.unit, quantity: parsed.quantity != null ? Math.round(parsed.quantity * scale * 10) / 10 : null });
             }
           });
+        });
+        // Ingredients only mentioned in a recipe's steps: added by name with
+        // no quantity, unless that ingredient already came in from any
+        // dish's real ingredient list.
+        var knownNames = {};
+        Object.keys(merged).forEach(function(k) { knownNames[merged[k].name] = 1; });
+        unmerged.forEach(function(u) { knownNames[u.name] = 1; });
+        extraNames.forEach(function(n) {
+          if (!n || knownNames[n]) return;
+          knownNames[n] = 1;
+          unmerged.push({ name: n, unit: null, quantity: null, fromSteps: true });
         });
         var finalItems = Object.keys(merged).map(function(k) {
           var e = merged[k];
@@ -3495,7 +3526,7 @@
       // sidesteps that by leaving the old one untouched and starting fresh.
       const commitShoppingList = (mode) => {
         if (!shoppingPreview || buildingShoppingList) return;
-        var finalItems = shoppingPreview.finalItems;
+        var finalItems = shoppingPreview.finalItems.map(function(it) { return roundShoppingItem(it, roundUpQty); });
         setBuildingShoppingList(true);
 
         function createLinkedList() {
@@ -3534,9 +3565,10 @@
                 categoryEmoji: "🛍️",
                 quantity: it.quantity || 1,
                 unit: it.unit || "יחידות",
-                note: "",
+                note: it.fromSteps ? "כמות לא ידועה — מופיע באופן ההכנה" : "",
                 done: false,
-                addedBy: user.displayName,
+                addedBy: user.uid,
+                addedByName: user.displayName,
                 addedAt: now,
               };
             });
@@ -4036,6 +4068,12 @@
                     <ul className="text-sm text-gray-700 space-y-1 text-right list-disc list-inside">
                       {(r.ingredients || []).map(function(ing, i) { return <li key={i}>{ing}</li>; })}
                     </ul>
+                    {(r.extraIngredients || []).length > 0 && (
+                      <div className="mt-2">
+                        <p className="text-xs text-gray-400 text-right">מופיעים באופן ההכנה בלבד (בלי כמות):</p>
+                        <p className="text-sm text-gray-600 text-right">{r.extraIngredients.join(", ")}</p>
+                      </div>
+                    )}
                   </div>
                   <div className="mb-4">
                     <p className="text-xs text-gray-400 mb-1 text-right font-semibold">אופן ההכנה</p>
@@ -4127,10 +4165,21 @@
           {shoppingPreview && (
             <Modal onClose={function() { if (!buildingShoppingList) setShoppingPreview(null); }}>
               <h3 className="text-lg font-bold text-center mb-1">מרכיבים לקנייה</h3>
-              <p className="text-xs text-gray-400 text-center mb-4">לפי {shoppingPreview.dishCount} מנות מסומנות, בכמויות המותאמות לכל מנה</p>
+              <p className="text-xs text-gray-400 text-center mb-3">לפי {shoppingPreview.dishCount} מנות מסומנות, בכמויות המותאמות לכל מנה</p>
+              <label className="flex items-center gap-2 bg-gray-50 rounded-xl px-3 py-2 mb-3 cursor-pointer">
+                <input type="checkbox" checked={roundUpQty} className="w-4 h-4 flex-shrink-0"
+                  onChange={function(e) { var v = e.target.checked; setRoundUpQty(v); try { localStorage.setItem("buli_round_up_qty", v ? "1" : "0"); } catch (err) {} }} />
+                <span className="text-sm text-gray-700 flex-1 text-right">עגל כמויות כלפי מעלה <span className="text-xs text-gray-400">(גרם ומ״ל ל-100 הקרוב, השאר ליחידה שלמה)</span></span>
+              </label>
               <ul className="text-sm text-gray-700 space-y-1.5 text-right list-disc list-inside mb-5 max-h-80 overflow-y-auto">
-                {shoppingPreview.finalItems.map(function(it, i) {
-                  return <li key={i}>{(it.quantity ? it.quantity + " " : "") + (it.unit ? it.unit + " " : "") + it.name}</li>;
+                {shoppingPreview.finalItems.map(function(raw, i) {
+                  var it = roundShoppingItem(raw, roundUpQty);
+                  return (
+                    <li key={i}>
+                      {(it.quantity ? it.quantity + " " : "") + (it.unit ? it.unit + " " : "") + it.name}
+                      {it.fromSteps && <span className="text-xs text-gray-400"> — כמות לא ידועה (מאופן ההכנה)</span>}
+                    </li>
+                  );
                 })}
               </ul>
               {buildingShoppingList ? (

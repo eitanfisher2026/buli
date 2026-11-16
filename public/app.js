@@ -1,6 +1,6 @@
     const { useState, useEffect, useRef } = React;
 
-    const VERSION = "v7.04";
+    const VERSION = "v7.05";
 
     // ── CONFIG ────────────────────────────────────────────────────────────────────
     const FIREBASE_CONFIG = {
@@ -2502,11 +2502,13 @@
       var cancelNote = function(e) { e.stopPropagation(); setNoteVal(item.note || ""); setEditingNote(false); };
 
       return (
-        <div className="bg-white rounded-xl border border-gray-100 overflow-hidden">
+        // Checked here means "selected for this menu's shopping list", not
+        // "finished" — so a highlight, not a strikethrough.
+        <div className={"rounded-xl border overflow-hidden " + (item.done ? "bg-blue-50 border-blue-200" : "bg-white border-gray-100")}>
           <div className="flex items-center gap-2 px-3 py-2.5">
             <Checkbox checked={!!item.done} onChange={function() { onToggle(item); }} />
             <div className="flex-1 min-w-0">
-              <span className={"text-sm font-medium block " + (item.done ? "line-through text-gray-400" : "text-gray-800")}>{item.name}</span>
+              <span className={"text-sm block " + (item.done ? "font-semibold text-blue-900" : "font-medium text-gray-800")}>{item.name}</span>
               {!editingNote && item.note ? (
                 <div onClick={canEdit ? openNote : undefined}
                   className={"text-xs text-gray-400 mt-0.5 flex items-start gap-1 " + (canEdit ? "cursor-pointer hover:text-gray-600" : "")}>

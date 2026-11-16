@@ -1,6 +1,6 @@
     const { useState, useEffect, useRef } = React;
 
-    const VERSION = "v7.08";
+    const VERSION = "v7.09";
 
     // ── CONFIG ────────────────────────────────────────────────────────────────────
     const FIREBASE_CONFIG = {
@@ -4150,7 +4150,20 @@
             }
             return (
               <Modal onClose={closeRecipeFlow}>
-                <h3 className="text-lg font-bold text-center mb-4">מתכון ל{recItem.name}</h3>
+                <div className="flex items-center justify-center gap-2 mb-4">
+                  <h3 className="text-lg font-bold text-center">מתכון ל{recItem.name}</h3>
+                  <button title="העתק את שם המנה"
+                    onClick={function() {
+                      var name = recItem.name || "";
+                      var done = function() { showToast("השם הועתק"); };
+                      if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(name).then(done, function() { showToast(name); });
+                      else showToast(name);
+                    }}
+                    className="w-8 h-8 flex items-center justify-center rounded-full bg-gray-100 text-base flex-shrink-0">📋</button>
+                  <a title="חפש מתכון בגוגל" target="_blank" rel="noopener noreferrer"
+                    href={"https://www.google.com/search?q=" + encodeURIComponent((recItem.name || "") + " מתכון")}
+                    className="w-8 h-8 flex items-center justify-center rounded-full bg-gray-100 text-base flex-shrink-0">🔍</a>
+                </div>
                 {recipePendingServings ? (
                   <div>
                     <p className="text-sm text-gray-600 text-center mb-3">כמה מנות המתכון הזה מכין?</p>

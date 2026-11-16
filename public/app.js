@@ -1,6 +1,6 @@
     const { useState, useEffect, useRef } = React;
 
-    const VERSION = "v7.10";
+    const VERSION = "v7.11";
 
     // ── CONFIG ────────────────────────────────────────────────────────────────────
     const FIREBASE_CONFIG = {
@@ -2962,6 +2962,7 @@
       const [removingShareUid, setRemovingShareUid] = useState(null);
       const [recipeItemId,        setRecipeItemId]        = useState(null);
       const [recipeForceEntry,    setRecipeForceEntry]    = useState(false);
+      const [recipeEditDraft,     setRecipeEditDraft]     = useState(null); // { title, ingredients, steps } as editable text while editing a saved recipe
       const [recipeUrlInput,      setRecipeUrlInput]      = useState("");
       const [recipeImages,        setRecipeImages]        = useState([]);
       const [recipeExtracting,    setRecipeExtracting]    = useState(false);
@@ -3369,6 +3370,7 @@
       const closeRecipeFlow = () => {
         setRecipeItemId(null);
         setRecipeForceEntry(false);
+        setRecipeEditDraft(null);
         setRecipeUrlInput("");
         setRecipeImages([]);
         setRecipeError("");
@@ -3378,6 +3380,7 @@
       const openRecipeFor = (item) => {
         setRecipeItemId(item.id);
         setRecipeForceEntry(false);
+        setRecipeEditDraft(null);
         setRecipeUrlInput("");
         setRecipeImages([]);
         setRecipeError("");
@@ -3466,6 +3469,18 @@
           setItems(function(prev) { return prev.map(function(i) { return i.id === itemId ? Object.assign({}, i, { recipe: null }) : i; }); });
           showToast("המתכון הוסר");
         });
+      };
+
+      const saveRecipeEdit = (itemId) => {
+        var d = recipeEditDraft;
+        if (!d) return;
+        var lines = function(s) { return String(s || "").split("\n").map(function(x) { return x.trim(); }).filter(Boolean); };
+        var patch = { title: d.title.trim(), ingredients: lines(d.ingredients), steps: lines(d.steps) };
+        db.ref("items/" + listId + "/" + itemId + "/recipe").update(patch).then(function() {
+          setItems(function(prev) { return prev.map(function(i) { return i.id === itemId ? Object.assign({}, i, { recipe: Object.assign({}, i.recipe, patch) }) : i; }); });
+          setRecipeEditDraft(null);
+          showToast("המתכון עודכן");
+        }, function(err) { showToast("שגיאה: " + (err && err.message || "?")); });
       };
 
       const updateRecipeField = (itemId, field, value) => {
@@ -4115,6 +4130,30 @@
             var recItem = items.find(function(i) { return i.id === recipeItemId; });
             if (!recItem) return null;
             var viewingSaved = recItem.recipe && !recipeForceEntry && !recipePendingServings;
+            if (viewingSaved && recipeEditDraft) {
+              var d = recipeEditDraft;
+              var setD = function(patch) { setRecipeEditDraft(Object.assign({}, d, patch)); };
+              var fieldCls = "w-full border border-gray-200 rounded-xl px-3 py-2 text-right text-sm focus:outline-none focus:border-blue-400";
+              return (
+                <Modal onClose={function() { setRecipeEditDraft(null); }}
+                  footer={
+                    <div className="flex gap-2">
+                      <button onClick={function() { saveRecipeEdit(recItem.id); }}
+                        className="flex-1 bg-blue-600 text-white py-3 rounded-xl font-semibold text-sm">שמור</button>
+                      <button onClick={function() { setRecipeEditDraft(null); }}
+                        className="flex-1 bg-gray-100 text-gray-700 py-3 rounded-xl font-medium text-sm">ביטול</button>
+                    </div>
+                  }>
+                  <h3 className="text-lg font-bold text-center mb-4">עריכת מתכון</h3>
+                  <label className="text-xs text-gray-400 block mb-1 text-right">שם</label>
+                  <input value={d.title} onChange={function(e) { setD({ title: e.target.value }); }} className={fieldCls + " mb-3"} />
+                  <label className="text-xs text-gray-400 block mb-1 text-right">מרכיבים — שורה לכל מרכיב</label>
+                  <textarea value={d.ingredients} onChange={function(e) { setD({ ingredients: e.target.value }); }} rows={8} className={fieldCls + " mb-3 resize-y"} />
+                  <label className="text-xs text-gray-400 block mb-1 text-right">אופן ההכנה — שורה לכל שלב</label>
+                  <textarea value={d.steps} onChange={function(e) { setD({ steps: e.target.value }); }} rows={8} className={fieldCls + " resize-y"} />
+                </Modal>
+              );
+            }
             if (viewingSaved) {
               var r = recItem.recipe;
               return (
@@ -4157,6 +4196,8 @@
                     </ol>
                   </div>
                   <div className="flex gap-2">
+                    <button onClick={function() { setRecipeEditDraft({ title: r.title || recItem.name || "", ingredients: (r.ingredients || []).join("\n"), steps: (r.steps || []).join("\n") }); }}
+                      className="flex-1 bg-blue-50 text-blue-700 py-3 rounded-xl font-medium text-sm">ערוך מתכון</button>
                     <button onClick={function() { setRecipeForceEntry(true); setRecipeUrlInput(""); setRecipeImages([]); setRecipeError(""); }}
                       className="flex-1 bg-gray-100 text-gray-700 py-3 rounded-xl font-medium text-sm">בחר מתכון אחר</button>
                     <button onClick={function() { removeRecipeFromItem(recItem.id); closeRecipeFlow(); }}
